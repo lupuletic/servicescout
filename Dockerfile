@@ -14,11 +14,27 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin
+    PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git ripgrep tini gosu \
     && rm -rf /var/lib/apt/lists/*
+
+# Optional: trust extra CA certificates from ./certs/ (e.g. corporate TLS-
+# inspecting proxies). Anything copied into /usr/local/share/ca-certificates/
+# is picked up by update-ca-certificates. The COPY uses a wildcard so the
+# build still works when the directory is absent.
+COPY certs* /tmp/extra-ca/
+RUN if [ -d /tmp/extra-ca ] && ls /tmp/extra-ca/*.pem >/dev/null 2>&1; then \
+        for f in /tmp/extra-ca/*.pem; do cp "$f" "/usr/local/share/ca-certificates/$(basename "$f" .pem).crt"; done && \
+        update-ca-certificates && \
+        echo "Trusted extra CA bundles: $(ls /tmp/extra-ca/*.pem | wc -l)"; \
+    fi && rm -rf /tmp/extra-ca
+
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 # gh CLI via apt (signed, works in restricted networks)
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
@@ -57,9 +73,11 @@ RUN if [ -d frontend ]; then \
         || (echo "WARN: frontend build failed — dashboard will show fallback page" && rm -rf node_modules) ; \
     fi
 
-# Non-root user with home for credential mounts
-RUN (getent group cg || groupadd -g 1000 cg) \
-    && (id -u cg >/dev/null 2>&1 || useradd -u 1000 -g 1000 -m -s /bin/bash cg) \
+# Non-root user with home for credential mounts. The base image already has a
+# user `pn` at UID 1000, so create `cg` at 1001. The entrypoint re-aligns to
+# HOST_UID/HOST_GID at runtime via gosu.
+RUN groupadd -g 1001 cg \
+    && useradd -u 1001 -g 1001 -m -s /bin/bash cg \
     && mkdir -p /data /workspace && chown -R cg:cg /app /data /workspace /home/cg
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
