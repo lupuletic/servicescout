@@ -50,27 +50,31 @@ The crawler is auto-convergent: it clones repos referenced by the catalog,
 re-runs extraction, and stops when no new repos are discovered. Budget cap
 in `.env` (`BUDGET_USD=100` by default) is a hard stop.
 
-**3. Install the Claude Code skills (one line):**
+**3. Wire it up to your coding agent (one line):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lupuletic/servicescout/main/install-skills.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lupuletic/servicescout/main/install.sh | bash
 ```
 
-Or run `./install-skills.sh` from your local checkout. Copies the
-`servicescout` and `journey` skills into `~/.claude/skills/`.
+Interactive — asks which agent (Claude Code / Codex / both) and the MCP
+URL (default `http://127.0.0.1:8765/mcp`). Installs the `servicescout` and
+`journey` skills into `~/.claude/skills/` **and** registers the MCP server
+with your chosen agent(s).
 
-**4. Point your MCP-aware agent at the server.** Add this to your Claude
-Code, Cursor, or Codex MCP config:
+Headless / scripted:
 
-```json
-{
-  "mcpServers": {
-    "servicescout": {
-      "type": "http",
-      "url": "http://127.0.0.1:8765/mcp"
-    }
-  }
-}
+```bash
+curl -fsSL https://raw.githubusercontent.com/lupuletic/servicescout/main/install.sh \
+  | bash -s -- --agent both --url http://127.0.0.1:8765/mcp --yes
+```
+
+Or from a local checkout: `./install.sh` (same flags).
+
+Under the hood it runs the equivalent of:
+
+```bash
+claude mcp add servicescout --scope user --transport http http://127.0.0.1:8765/mcp
+codex  mcp add servicescout --url http://127.0.0.1:8765/mcp
 ```
 
 Restart the agent. Ask: *"trace the login flow end-to-end"* and watch it
