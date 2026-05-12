@@ -4,8 +4,6 @@
 #   docker compose run --rm crawler   # one-shot crawl
 #   docker compose run --rm reconcile # final LLM reconcile pass
 #
-#   docker compose --profile neo4j up -d neo4j   # optional Neo4j browser
-#
 # Required mounts (from your host):
 #   ~/.config/gh        → gh CLI auth for repo discovery + cloning
 #   ~/.config/gcloud    → ADC for Vertex AI embeddings
@@ -28,10 +26,6 @@ x-servicescout: &servicescout
     GOOGLE_APPLICATION_CREDENTIALS: /home/cg/.config/gcloud/application_default_credentials.json
     OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-    NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
-    NEO4J_USER: ${NEO4J_USER:-neo4j}
-    NEO4J_PASSWORD: ${NEO4J_PASSWORD:-servicescout}
-    NEO4J_DATABASE: ${NEO4J_DATABASE:-neo4j}
 
 services:
   mcp:
@@ -47,7 +41,7 @@ services:
     ports:
       - "127.0.0.1:8765:8765"
     volumes:
-      - catalog-data:/data:ro
+      - ./data:/data
       - ${HOME}/.config/gcloud:/home/cg/.config/gcloud:ro
     restart: unless-stopped
 
@@ -61,7 +55,7 @@ services:
     ports:
       - "127.0.0.1:8788:8788"
     volumes:
-      - catalog-data:/data
+      - ./data:/data
     restart: unless-stopped
 
   crawler:
@@ -81,10 +75,11 @@ services:
       --max-discovery-rounds 10
       --reconcile
       --embed
+      --build-kuzu
       --stream-logs
     volumes:
       - ${WORKSPACE_ROOT:?Set WORKSPACE_ROOT in .env}:/workspace
-      - catalog-data:/data
+      - ./data:/data
       - ${HOME}/.config/gh:/home/cg/.config/gh:ro
       - ${HOME}/.config/gcloud:/home/cg/.config/gcloud:ro
       - ${HOME}/.codex:/home/cg/.codex:ro
@@ -100,35 +95,6 @@ services:
       --llm-provider ${LLM_PROVIDER:-codex}
       --llm-model ${LLM_MODEL:-gpt-5.4-mini}
     volumes:
-      - catalog-data:/data
+      - ./data:/data
       - ${HOME}/.codex:/home/cg/.codex:ro
       - ${HOME}/.claude:/home/cg/.claude:ro
-
-  # Optional — Neo4j Browser UI for human exploration of the catalog.
-  # Bring up with: docker compose --profile neo4j up -d neo4j
-  # Populate via:  docker compose run --rm crawler --neo4j-import
-  neo4j:
-    image: neo4j:5-community
-    profiles: ["neo4j"]
-    environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-servicescout}
-      NEO4J_server_memory_heap_initial__size: 1G
-      NEO4J_server_memory_heap_max__size: 2G
-      NEO4J_server_memory_pagecache_size: 1G
-    ports:
-      - "127.0.0.1:7474:7474"
-      - "127.0.0.1:7687:7687"
-    volumes:
-      - neo4j-data:/data
-      - neo4j-logs:/logs
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:7474"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-
-volumes:
-  catalog-data:
-  neo4j-data:
-  neo4j-logs:

@@ -197,13 +197,9 @@ def _step_budget() -> dict[str, str]:
         "Where to store cloned repos",
         default=str(Path.home() / "servicescout-workspace"),
     ).ask()
-    neo4j_password = questionary.password(
-        "Set a Neo4j password (used inside docker compose)",
-    ).ask() or "servicescout"
     return {
         "BUDGET_USD": budget,
         "WORKSPACE_ROOT": workspace_root,
-        "NEO4J_PASSWORD": neo4j_password,
     }
 
 
@@ -260,7 +256,7 @@ def _outro(env: dict[str, str]) -> None:
     print(" Next steps:")
     print()
     print("   # Start the persistent services")
-    print("   docker compose up -d neo4j mcp dashboard")
+    print("   docker compose up -d mcp dashboard")
     print()
     print("   # Run a crawl (one-shot)")
     print("   docker compose run --rm crawler")

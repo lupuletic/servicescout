@@ -1,10 +1,10 @@
-"""Embed catalog entities and (optionally) push to a Neo4j vector index.
+"""Embed catalog entities for hybrid retrieval.
 
 Uses Vertex AI via google-genai with Application Default Credentials. Each
-Component / API / Resource is embedded from a concatenation of its description,
-spec, annotations, and evidence snippets. Embeddings are written back into the
-catalog JSON under each entity's `embedding` field, and optionally upserted into
-a Neo4j vector index named `catalog_entity_vector`.
+Component / API / Resource / Provider is embedded from a concatenation of its
+description, spec, annotations, and evidence snippets. Embeddings are written
+back into the catalog JSON under each entity's `embedding` field; the Kuzu
+backend (`build_kuzu.py`) then pushes them into an on-disk HNSW vector index.
 
 Run:
   python embed_catalog.py --catalog data/catalog.json --project your-gcp-project --location us-central1
@@ -149,83 +149,6 @@ def attach_embeddings(catalog_path: Path, *, model: str, dim: int, project: str 
     return payload
 
 
-def upsert_to_neo4j(catalog_path: Path, *, uri: str, user: str, password: str, database: str, dim: int, index_name: str) -> dict[str, Any]:
-    from neo4j import GraphDatabase
-    payload = json.loads(catalog_path.read_text(encoding="utf-8"))
-    entities = payload.get("entities") or []
-    relations = payload.get("relations") or []
-
-    driver = GraphDatabase.driver(uri, auth=(user, password))
-    try:
-        with driver.session(database=database) as session:
-            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (n:CatalogEntity) REQUIRE (n.kind, n.name) IS UNIQUE")
-            session.run(
-                f"""
-                CREATE VECTOR INDEX {index_name} IF NOT EXISTS
-                FOR (n:CatalogEntity)
-                ON n.embedding
-                OPTIONS {{ indexConfig: {{
-                    `vector.dimensions`: {int(dim)},
-                    `vector.similarity_function`: 'cosine'
-                }} }}
-                """
-            )
-            for entity in entities:
-                session.run(
-                    """
-                    MERGE (n:CatalogEntity {kind: $kind, name: $name})
-                    SET n.description = $description,
-                        n.type = $type,
-                        n.system = $system,
-                        n.domain = $domain,
-                        n.lifecycle = $lifecycle,
-                        n.aliases = $aliases,
-                        n.tags = $tags,
-                        n.source_repos = $source_repos,
-                        n.confidence = $confidence,
-                        n.embedding = $embedding
-                    """,
-                    {
-                        "kind": entity.get("kind"),
-                        "name": entity["metadata"]["name"],
-                        "description": entity["metadata"].get("description", ""),
-                        "type": entity.get("spec", {}).get("type", ""),
-                        "system": entity.get("spec", {}).get("system", ""),
-                        "domain": entity.get("spec", {}).get("domain", ""),
-                        "lifecycle": entity.get("spec", {}).get("lifecycle", ""),
-                        "aliases": entity["metadata"].get("annotations", {}).get("aliases", []),
-                        "tags": entity["metadata"].get("tags", []),
-                        "source_repos": entity["metadata"].get("annotations", {}).get("source_repos", []),
-                        "confidence": entity.get("confidence", ""),
-                        "embedding": entity.get("embedding"),
-                    },
-                )
-            for relation in relations:
-                from_kind, from_name = relation["from"].split(":", 1)
-                to_kind, to_name = relation["to"].split(":", 1)
-                rel_type = relation["type"]
-                session.run(
-                    f"""
-                    MATCH (a:CatalogEntity {{kind: $from_kind, name: $from_name}})
-                    MATCH (b:CatalogEntity {{kind: $to_kind, name: $to_name}})
-                    MERGE (a)-[r:{rel_type}]->(b)
-                    SET r.confidence = $confidence,
-                        r.properties = $properties
-                    """,
-                    {
-                        "from_kind": from_kind,
-                        "from_name": from_name,
-                        "to_kind": to_kind,
-                        "to_name": to_name,
-                        "confidence": relation.get("confidence"),
-                        "properties": json.dumps(relation.get("properties") or {}),
-                    },
-                )
-        return {"uri": uri, "database": database, "entities": len(entities), "relations": len(relations), "index": index_name}
-    finally:
-        driver.close()
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
@@ -235,12 +158,6 @@ def main() -> int:
     parser.add_argument("--location", default=os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--only-kinds", nargs="*", default=None)
-    parser.add_argument("--neo4j", action="store_true", help="Also upsert entities/relations + create vector index in Neo4j.")
-    parser.add_argument("--neo4j-uri", default=os.getenv("NEO4J_URI", "bolt://localhost:7687"))
-    parser.add_argument("--neo4j-user", default=os.getenv("NEO4J_USER", "neo4j"))
-    parser.add_argument("--neo4j-password", default=os.getenv("NEO4J_PASSWORD", "servicescout"))
-    parser.add_argument("--neo4j-database", default=os.getenv("NEO4J_DATABASE", "neo4j"))
-    parser.add_argument("--neo4j-index", default="catalog_entity_vector")
     args = parser.parse_args()
 
     only_kinds = set(args.only_kinds) if args.only_kinds else None
@@ -254,16 +171,6 @@ def main() -> int:
         only_kinds=only_kinds,
     )
     out = {"embedded": result.get("summary", {}).get("embedded_entities", 0), "dim": args.dim, "model": args.model}
-    if args.neo4j:
-        out["neo4j"] = upsert_to_neo4j(
-            args.catalog,
-            uri=args.neo4j_uri,
-            user=args.neo4j_user,
-            password=args.neo4j_password,
-            database=args.neo4j_database,
-            dim=args.dim,
-            index_name=args.neo4j_index,
-        )
     print(json.dumps(out, indent=2))
     return 0
 

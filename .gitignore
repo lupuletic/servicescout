@@ -30,9 +30,8 @@ node_modules/
 *.log
 logs/
 
-# --- Container volumes ---
-neo4j-data/
-neo4j-logs/
+# --- Optional corporate CA bundle (TLS-inspecting proxies). Never commit. ---
+certs/
 
 # --- Legacy / experiment scratch ---
 legacy/

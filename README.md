@@ -110,7 +110,7 @@ rarely needs the operator tool.
 | `servicescout_evidence(source, target=None)` | File:line citations for an edge. |
 | `servicescout_status()` | Read-only catalog state. |
 
-Write operations (rebuild / embed / push-to-Neo4j) are intentionally
+Write operations (rebuild / embed / reconcile / build-kuzu) are intentionally
 **not** exposed over MCP — they run from the CLI only.
 
 ---
@@ -125,7 +125,6 @@ interface.
 |---|---|---|
 | **KuzuDB** *(recommended)* | Embedded graph DB with HNSW vector index + BM25 FTS. Persistent, fast at any size. | `pip install kuzu` (already in `requirements.txt`); run `python build_kuzu.py` after each crawl. |
 | **JSON** | Zero-dependency fallback. Reads `data/catalog.json` into memory. Fine up to ~50k entities. | No setup — just point at `data/catalog.json`. |
-| **Neo4j** *(optional, dev only)* | Cypher console + Bloom UI for human exploration. | `docker compose --profile neo4j up -d neo4j`, then `python embed_catalog.py --neo4j`. |
 
 Select with `--backend kuzu|json|auto` (default `auto` — Kuzu when a
 database exists, JSON otherwise). The interface is the same six tools
@@ -195,7 +194,6 @@ k=60) and exposes six tools for agents to navigate the result.
 | `LLM_MODEL` | yes | `gpt-5.4-mini` | Model name passed to the harness. |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | one of | — | Credential for the harness. Skip if your CLI is already logged in. |
 | `GOOGLE_CLOUD_PROJECT` | optional | — | GCP project for Vertex AI embeddings. Empty disables embeddings (lexical-only fallback). |
-| `NEO4J_PASSWORD` | optional | `servicescout` | Password for the optional Neo4j Browser container (Kuzu is the default backend, not Neo4j). |
 | `BUDGET_USD` | optional | `100` | Hard cost cap per crawl. |
 
 See `.env.example` for the full list. The first-run wizard

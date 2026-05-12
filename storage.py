@@ -9,7 +9,7 @@ Two backends ship today:
                    larger catalogs and production use.
 
 The MCP server is a thin shim over the Backend interface, so adding a new
-backend (Neo4j, Memgraph, in-memory NetworkX) means implementing this
+backend (Memgraph, SQLite, in-memory NetworkX) means implementing this
 interface and registering it in `make_backend()`.
 
 The Backend interface is small on purpose — the heavy lifting (hybrid

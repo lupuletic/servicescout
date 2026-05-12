@@ -7,8 +7,3 @@ fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 jinja2>=3.1.0
 questionary>=2.0.1
-
-# Optional — Neo4j Browser UI for human exploration of the catalog. The
-# server uses Kuzu (above) by default; Neo4j is only needed if you run
-# `embed_catalog.py --neo4j` to populate a Neo4j instance.
-neo4j>=6.0.0,<7.0.0

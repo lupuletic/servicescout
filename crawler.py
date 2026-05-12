@@ -235,7 +235,6 @@ def crawl(
     budget_usd: float,
     repos_filter: list[str] | None,
     embed: bool,
-    neo4j_import: bool,
     build_kuzu: bool,
     stream_logs: bool,
     discover: bool,
@@ -350,8 +349,6 @@ def crawl(
     if embed:
         emit({"event": "embed_start"})
         embed_cmd = [sys.executable, str(HERE / "embed_catalog.py"), "--catalog", str(catalog_output)]
-        if neo4j_import:
-            embed_cmd.append("--neo4j")
         completed = subprocess.run(embed_cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         emit({"event": "embed_done", "returncode": completed.returncode, "tail": completed.stdout[-1000:]})
 
@@ -387,7 +384,6 @@ def main() -> int:
     parser.add_argument("--budget-usd", type=float, default=200.0, help="Hard stop on cumulative LLM spend. Default 200 is sized for a medium-large enterprise crawl.")
     parser.add_argument("--repos", nargs="*", default=None, help="Limit crawl to specific repo names/ids")
     parser.add_argument("--embed", action="store_true", help="Run embed_catalog.py after extraction")
-    parser.add_argument("--neo4j-import", action="store_true", help="Also push to Neo4j after embedding (legacy; Kuzu is the default backend now).")
     parser.add_argument("--build-kuzu", action="store_true", help="Run build_kuzu.py after --embed to populate data/catalog.kuzu (the MCP server's primary backend).")
     parser.add_argument("--stream-logs", action="store_true")
     parser.add_argument("--discover", action="store_true", help="Search configured GH orgs for repos that the catalog references but are not cloned; clone and extract them.")
@@ -413,7 +409,6 @@ def main() -> int:
         budget_usd=args.budget_usd,
         repos_filter=args.repos,
         embed=args.embed,
-        neo4j_import=args.neo4j_import,
         build_kuzu=args.build_kuzu,
         stream_logs=args.stream_logs,
         discover=args.discover,
