@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: hsl(220 12% 7%);
+  --color-bg-elevated: hsl(220 12% 10%);
+  --color-fg: hsl(220 12% 92%);
+  --color-fg-muted: hsl(220 8% 65%);
+  --color-fg-dim: hsl(220 8% 45%);
+  --color-border: hsl(220 8% 18%);
+  --color-border-strong: hsl(220 8% 30%);
+  --color-accent: hsl(160 80% 50%);
+  --color-accent-fg: hsl(220 12% 7%);
+  --color-component: hsl(212 90% 60%);
+  --color-api: hsl(45 95% 55%);
+  --color-resource: hsl(280 75% 65%);
+  --color-provider: hsl(340 80% 60%);
+  --color-system: hsl(160 70% 50%);
+  --color-domain: hsl(190 75% 55%);
+  --color-group: hsl(20 80% 60%);
+}
+
+@layer base {
+  html {
+    @apply bg-bg text-fg;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  body {
+    @apply m-0 min-h-screen antialiased;
+  }
+
+  *,
+  ::before,
+  ::after {
+    border-color: var(--color-border);
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-border-strong);
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-fg-dim);
+  }
+}
+
+/* Sigma container — full canvas fills its parent. */
+.sigma-container {
+  width: 100%;
+  height: 100%;
+  background: var(--color-bg);
+}

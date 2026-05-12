@@ -1,0 +1,70 @@
+# syntax=docker/dockerfile:1.7
+#
+# ServiceScout — single image used by mcp, dashboard, and crawler services.
+# - Python 3.12 + project deps via pip
+# - Node 22 + codex / claude / gh CLIs (the crawler needs these; bundling in
+#   the same image keeps the service count to one).
+# - Non-root user `cg` (uid/gid overridable via build arg + entrypoint).
+
+FROM nikolaik/python-nodejs:python3.12-nodejs22-slim AS base
+
+ARG GH_VERSION=2.62.0
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates git ripgrep tini gosu \
+    && rm -rf /var/lib/apt/lists/*
+
+# gh CLI via apt (signed, works in restricted networks)
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+       | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# codex + claude CLIs — best-effort install.
+# Only the crawler service actually uses these; mcp + dashboard work without
+# them. In restricted networks, install on host and mount ~/.codex / ~/.claude
+# as documented in README.
+RUN npm install -g @openai/codex@latest @anthropic-ai/claude-code@latest \
+    && npm cache clean --force \
+    || echo "WARN: codex / claude CLI install failed; crawler service must run with host-mounted CLIs."
+
+# Python venv with project deps
+RUN python -m venv /opt/venv
+COPY requirements.txt /tmp/requirements.txt
+RUN /opt/venv/bin/pip install -r /tmp/requirements.txt
+
+WORKDIR /app
+COPY . /app/
+
+# Build the React dashboard. The same Python-Nodejs base image has npm,
+# so we do this in-place rather than a separate stage. node_modules is
+# discarded afterwards to keep the image slim.
+RUN if [ -d frontend ]; then \
+        cd frontend \
+        && npm install --no-audit --no-fund \
+        && npm run build \
+        && rm -rf node_modules \
+        || (echo "WARN: frontend build failed — dashboard will show fallback page" && rm -rf node_modules) ; \
+    fi
+
+# Non-root user with home for credential mounts
+RUN (getent group cg || groupadd -g 1000 cg) \
+    && (id -u cg >/dev/null 2>&1 || useradd -u 1000 -g 1000 -m -s /bin/bash cg) \
+    && mkdir -p /data /workspace && chown -R cg:cg /app /data /workspace /home/cg
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+USER cg
+ENTRYPOINT ["tini", "--", "/usr/local/bin/entrypoint.sh"]
+CMD ["python", "mcp_server.py", "--catalog", "/data/catalog.json", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8765"]

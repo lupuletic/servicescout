@@ -1,0 +1,51 @@
+# --- Local config and secrets ---
+.env
+.env.local
+*.local.json
+workspace.json
+seeds/*.json
+!seeds/*.example.json
+
+# --- Generated catalog state ---
+data/
+
+# --- Roadmap notes kept locally ---
+FUTURE.md
+
+# --- Runtime state ---
+.claude/scheduled_tasks.lock
+.claude/projects/
+
+# --- Build artifacts ---
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+node_modules/
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Container volumes ---
+neo4j-data/
+neo4j-logs/
+
+# --- Legacy / experiment scratch ---
+legacy/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Coverage / test output ---
+.pytest_cache/
+.coverage
+htmlcov/

@@ -1,0 +1,12 @@
+.venv/
+.git/
+data/
+legacy/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+*.pyc
+.DS_Store
+data/catalog_v2_logs/
+FUTURE.md

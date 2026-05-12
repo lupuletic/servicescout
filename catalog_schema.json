@@ -1,0 +1,317 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://servicescout.local/catalog-schema.json",
+  "title": "Backstage-aligned repo extraction",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repo", "components", "apis", "resources", "dependencies", "domain_attributes", "glossary", "providers"],
+  "properties": {
+    "repo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "tagline", "capability_sheet", "summary", "system", "domain", "owner", "lifecycle"],
+      "properties": {
+        "id": {"type": "string"},
+        "tagline": {
+          "type": "string",
+          "description": "One-line description (<=160 chars) used by routing/rerankers. Should name the primary domain and one or two distinguishing capabilities. Empty string if unknown."
+        },
+        "capability_sheet": {
+          "type": "string",
+          "description": "1-page markdown summary of what this service does, important business rules, public surface, persistence, and external dependencies. Read by coding agents AFTER routing. Empty string if not produced."
+        },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["purpose", "primary_language", "runtime", "notes", "evidence"],
+          "properties": {
+            "purpose": {"type": "string"},
+            "primary_language": {"type": "string"},
+            "runtime": {"type": "string"},
+            "notes": {"type": "string"},
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "line", "snippet"],
+                "properties": {
+                  "path": {"type": "string"},
+                  "line": {"type": "integer"},
+                  "snippet": {"type": "string"}
+                }
+              }
+            }
+          }
+        },
+        "system": {"type": "string"},
+        "domain": {"type": "string"},
+        "owner": {"type": "string"},
+        "lifecycle": {"type": "string", "enum": ["production", "experimental", "deprecated", "unknown"]}
+      }
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "type", "runtime", "lifecycle", "subcomponent_of", "notes", "tags", "environments", "evidence"],
+        "properties": {
+          "name": {"type": "string"},
+          "type": {
+            "type": "string",
+            "description": "Backstage-aligned coarse kind. Use 'service' for any long-running backend; for finer grain set `runtime` below.",
+            "enum": ["service", "website", "mobile-app", "worker", "cron", "library", "function", "consumer", "producer", "unknown"]
+          },
+          "runtime": {
+            "type": "string",
+            "description": "Backstage's spec.type is too coarse for agent reasoning. Add the runtime shape: how this component executes. Empty string if undiscoverable.",
+            "enum": ["long-running", "cron", "lambda", "consumer", "batch", "library", "frontend", "mobile", ""]
+          },
+          "lifecycle": {
+            "type": "string",
+            "description": "Backstage-aligned. Use the canonical three values plus a fallback. Empty maps to omitted in exports.",
+            "enum": ["production", "experimental", "deprecated", ""]
+          },
+          "subcomponent_of": {
+            "type": "string",
+            "description": "Name of the parent Component this is a subcomponent of. Used for *-client-interface libraries that ship as a published artefact of a larger service. Empty string if standalone."
+          },
+          "notes": {"type": "string"},
+          "tags": {"type": "array", "items": {"type": "string"}},
+          "environments": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Environments / regions this component is deployed to (e.g. ['prod', 'staging', 'eu-west-2', 'gb1']). Extracted from k8s manifests, helm values, env.yaml, terraform, or CI config. Empty array if undiscoverable."
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "line", "snippet"],
+              "properties": {
+                "path": {"type": "string"},
+                "line": {"type": "integer"},
+                "snippet": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "apis": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "type", "exposed_by", "operations", "notes", "evidence"],
+        "properties": {
+          "name": {"type": "string"},
+          "type": {"type": "string", "enum": ["openapi", "graphql", "grpc", "asyncapi", "rest", "soap", "unknown"]},
+          "exposed_by": {"type": "string"},
+          "operations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "method", "path"],
+              "properties": {
+                "name": {"type": "string"},
+                "method": {"type": "string"},
+                "path": {"type": "string"}
+              }
+            }
+          },
+          "notes": {"type": "string"},
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "line", "snippet"],
+              "properties": {
+                "path": {"type": "string"},
+                "line": {"type": "integer"},
+                "snippet": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name", "type", "technology", "host_or_instance", "database_or_schema",
+          "tables_or_collections", "access", "env_or_config_keys", "used_by",
+          "messaging_pattern", "subscribes_to", "datasource_url",
+          "confidence", "notes", "evidence"
+        ],
+        "properties": {
+          "name": {"type": "string"},
+          "type": {"type": "string", "enum": ["database", "cache", "search-index", "object-store", "data-warehouse", "queue", "topic", "virtual-topic", "consumer-queue", "stream", "auth-mechanism", "config-store", "feature-flag", "unknown"]},
+          "technology": {"type": "string"},
+          "host_or_instance": {"type": "string"},
+          "database_or_schema": {"type": "string"},
+          "tables_or_collections": {"type": "array", "items": {"type": "string"}},
+          "access": {"type": "string", "enum": ["read", "write", "read-write", "publish", "consume", "publish-consume", "unknown"]},
+          "env_or_config_keys": {"type": "array", "items": {"type": "string"}},
+          "used_by": {"type": "string"},
+          "messaging_pattern": {"type": "string", "enum": ["broker-queue", "broker-topic", "virtual-topic", "consumer-queue", "pubsub-topic", "pubsub-subscription", "kafka-topic", "unknown", ""]},
+          "subscribes_to": {"type": "string"},
+          "datasource_url": {"type": "string"},
+          "confidence": {"type": "string", "enum": ["high", "medium", "low", "review"]},
+          "notes": {"type": "string"},
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "line", "snippet"],
+              "properties": {
+                "path": {"type": "string"},
+                "line": {"type": "integer"},
+                "snippet": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "providers": {
+      "type": "array",
+      "description": "Third-party services / SaaS / cloud providers this repo depends on (Stripe, Auth0, AWS, GCP, Twilio, Snowflake, Datadog, etc.). First-class entities so agents can answer cross-service blast-radius questions like 'what does a Stripe outage break?'. Distinct from `resources` (which are owned dependencies like the repo's own database).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "category", "description", "aliases", "evidence"],
+        "properties": {
+          "name": {"type": "string", "description": "Canonical brand name (e.g. 'Stripe', 'Auth0', 'AWS S3', 'Twilio')."},
+          "category": {
+            "type": "string",
+            "enum": ["saas", "cloud", "payment", "identity", "analytics", "messaging", "observability", "cdn", "search", "ai-ml", "logistics", "tax", "fraud", "communications", "other"]
+          },
+          "description": {"type": "string", "description": "One line: what this provider is used for in this repo."},
+          "aliases": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Variant names found in code: SDK class names, config keys, hostnames, marketing labels."
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "line", "snippet"],
+              "properties": {
+                "path": {"type": "string"},
+                "line": {"type": "integer"},
+                "snippet": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "domain_attributes": {
+      "type": "array",
+      "description": "Business-rule discriminators this repo branches on: enum values, string literals compared in if/switch/when, config keys, feature-flag names, status codes. Each entry is one attribute with the distinct values seen. Used by retrieval to route rare-token queries (e.g. a question mentioning a specific enum value) to the right repo.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["attribute", "values", "meaning", "evidence"],
+        "properties": {
+          "attribute": {"type": "string", "description": "Name of the attribute / field / enum / config key, in source form."},
+          "values": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Distinct values observed for this attribute. Include every literal value the code branches on, even if it appears only once."
+          },
+          "meaning": {"type": "string", "description": "One-line explanation grounded in the code: when each value is set, what each value causes the service to do."},
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "line", "snippet"],
+              "properties": {
+                "path": {"type": "string"},
+                "line": {"type": "integer"},
+                "snippet": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "glossary": {
+      "type": "array",
+      "description": "10-20 terms a new engineer would need defined to understand this service: abbreviations, enum values, status codes, domain-specific terms. Indexed at high weight for routing — this is the ubiquitous-language layer that Backstage's Domain kind only hints at.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["term", "definition", "synonyms", "evidence"],
+        "properties": {
+          "term": {"type": "string"},
+          "definition": {"type": "string", "description": "One-line definition grounded in this repo's code."},
+          "synonyms": {"type": "array", "items": {"type": "string"}},
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "line", "snippet"],
+              "properties": {
+                "path": {"type": "string"},
+                "line": {"type": "integer"},
+                "snippet": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source", "target", "target_kind", "kind", "protocol",
+          "operation_or_usage", "message_or_event_name", "env_or_config_keys",
+          "aliases", "confidence", "notes", "evidence"
+        ],
+        "properties": {
+          "source": {"type": "string"},
+          "target": {"type": "string"},
+          "target_kind": {"type": "string", "enum": ["component", "api", "resource", "provider", "external", "unknown"]},
+          "kind": {"type": "string", "enum": ["dependsOn", "consumesApi", "producesMessage", "consumesMessage", "readsResource", "writesResource"]},
+          "protocol": {"type": "string", "enum": ["http", "graphql", "jms", "activemq", "pubsub", "kafka", "grpc", "database", "cache-protocol", "unknown"]},
+          "operation_or_usage": {"type": "string"},
+          "message_or_event_name": {"type": "string"},
+          "env_or_config_keys": {"type": "array", "items": {"type": "string"}},
+          "aliases": {"type": "array", "items": {"type": "string"}},
+          "confidence": {"type": "string", "enum": ["high", "medium", "low", "review"]},
+          "notes": {"type": "string"},
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "line", "snippet"],
+              "properties": {
+                "path": {"type": "string"},
+                "line": {"type": "integer"},
+                "snippet": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "_comment": "Optional, additive architecture facts you don't want the LLM to rediscover. Drop into seeds/ as .json (not .example.json) and rebuild. See README for the two supported shapes.",
+  "platform": "my-ecommerce-platform",
+  "hub_repo": "my-org/my-graphql-hub",
+  "frontends": [
+    {
+      "name": "main-storefront",
+      "storefront_repo": "my-org/main-storefront",
+      "config_repo": "my-org/main-storefront-config"
+    }
+  ],
+  "native_apps": [
+    {
+      "name": "mobile-app",
+      "app_repo": "my-org/mobile-app"
+    }
+  ]
+}

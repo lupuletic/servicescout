@@ -1,0 +1,17 @@
+{
+  "_comment": "Hand-curated config_name -> repo mapping. Useful when the LLM cannot resolve an alias from source alone. Drop into seeds/ as .json (not .example.json).",
+  "source_repo": "my-org/my-graphql-hub",
+  "resolved": [
+    {
+      "config_name": "account-service",
+      "repo": "my-org/account-service",
+      "confidence": "review",
+      "notes": "Optional human note."
+    },
+    {
+      "config_name": "checkout-service",
+      "repo": "my-org/checkout-service",
+      "confidence": "review"
+    }
+  ]
+}

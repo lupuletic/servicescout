@@ -1,0 +1,428 @@
+"""Recursive crawl: discover repos, extract stale, rebuild catalog, embed, repeat.
+
+Single entry point for the full pipeline. Stops when the frontier is empty,
+the depth budget is exhausted, the USD budget is hit, or a max wall-clock is
+reached. Stateless across runs apart from data/catalog/*.json files and the
+extraction ledger.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Any
+
+from repo_discovery import find_repos, load_workspace_config
+from build_catalog import build as build_catalog, canonical_key, host_to_key
+
+
+HERE = Path(__file__).parent
+DEFAULT_CATALOG_DIR = HERE / "data" / "catalog"
+DEFAULT_CATALOG = HERE / "data" / "catalog.json"
+DEFAULT_STATE = HERE / "data" / "crawler_state.json"
+
+
+def is_stale(repo: dict[str, Any], catalog_dir: Path, max_age_hours: float) -> str | None:
+    name = repo["name"]
+    path = catalog_dir / f"{name}.json"
+    if not path.exists():
+        return "missing"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "corrupt"
+    meta = payload.get("_meta", {})
+    if meta.get("commit") and repo["commit"] and meta["commit"] != repo["commit"]:
+        return "commit_changed"
+    extracted_at = meta.get("extracted_at")
+    if not extracted_at:
+        return "no_timestamp"
+    try:
+        when = dt.datetime.fromisoformat(extracted_at)
+    except ValueError:
+        return "bad_timestamp"
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=dt.timezone.utc)
+    age = dt.datetime.now(dt.timezone.utc) - when
+    if age.total_seconds() > max_age_hours * 3600:
+        return "stale"
+    return None
+
+
+def repo_total_cost(catalog_dir: Path) -> float:
+    total = 0.0
+    for path in catalog_dir.glob("*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        cost = (((payload.get("_meta") or {}).get("run") or {}).get("cost") or {}).get("estimated_usd")
+        if isinstance(cost, (int, float)):
+            total += float(cost)
+    return round(total, 4)
+
+
+def run_extractor(
+    repo: dict[str, Any],
+    *,
+    provider: str,
+    model: str | None,
+    effort: str,
+    timeout_seconds: int,
+    catalog_dir: Path,
+    workspace_path: Path,
+    stream_logs: bool,
+) -> dict[str, Any]:
+    cmd = [
+        sys.executable,
+        str(HERE / "extractor.py"),
+        repo["name"],
+        "--root",
+        str(Path(repo["absolute_path"]).parent),
+        "--provider",
+        provider,
+        "--effort",
+        effort,
+        "--timeout-seconds",
+        str(timeout_seconds),
+        "--output-dir",
+        str(catalog_dir),
+        "--workspace",
+        str(workspace_path),
+    ]
+    if model:
+        cmd.extend(["--model", model])
+    if stream_logs:
+        cmd.append("--stream-logs")
+    started = time.monotonic()
+    completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    duration = round(time.monotonic() - started, 2)
+    payload: dict[str, Any] = {"stdout_tail": completed.stdout[-2000:]}
+    for line in reversed(completed.stdout.splitlines()):
+        if line.startswith("EXTRACTOR_RESULT "):
+            try:
+                payload = json.loads(line[len("EXTRACTOR_RESULT "):])
+            except json.JSONDecodeError:
+                pass
+            break
+    payload["repo"] = repo["id"]
+    payload["returncode"] = completed.returncode
+    payload["duration_seconds"] = duration
+    return payload
+
+
+def emit(event: dict[str, Any]) -> None:
+    print(json.dumps({"ts": dt.datetime.now(dt.timezone.utc).isoformat(), **event}, sort_keys=True), flush=True)
+
+
+def list_org_repos(org: str, timeout_seconds: int = 60) -> list[dict[str, str]]:
+    """List all repos in a GitHub org via `gh repo list`."""
+    cmd = ["gh", "repo", "list", org, "--json", "name,nameWithOwner,description,isArchived", "--limit", "1000"]
+    try:
+        result = subprocess.run(cmd, text=True, capture_output=True, check=False, timeout=timeout_seconds)
+        if result.returncode != 0:
+            emit({"event": "gh_repo_list_failed", "org": org, "stderr_tail": result.stderr[-300:]})
+            return []
+        return json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        emit({"event": "gh_repo_list_error", "org": org, "error": str(exc)})
+        return []
+
+
+def build_org_repo_index(orgs: list[str]) -> dict[str, str]:
+    """Return {canonical_key(repo_name): 'org/name'} across all configured orgs.
+    Skips archived repos.
+    """
+    index: dict[str, str] = {}
+    for org in orgs:
+        repos = list_org_repos(org)
+        for repo in repos:
+            if repo.get("isArchived"):
+                continue
+            name = repo.get("name") or ""
+            full = repo.get("nameWithOwner") or ""
+            if not name or not full:
+                continue
+            key = canonical_key(name)
+            if key and key not in index:
+                index[key] = full
+        emit({"event": "org_scanned", "org": org, "repos_found": len(repos)})
+    return index
+
+
+def find_missing_repos(
+    catalog_path: Path,
+    org_repo_index: dict[str, str],
+    cloned_ids: set[str],
+) -> list[dict[str, str]]:
+    """Identify unresolved/external Components whose canonical name (or alias) matches an
+    uncloned repo in the configured orgs.
+    """
+    if not catalog_path.exists():
+        return []
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    candidates: dict[str, dict[str, str]] = {}
+    for entity in catalog.get("entities") or []:
+        if entity.get("kind") != "Component":
+            continue
+        meta = entity.get("metadata", {})
+        annotations = meta.get("annotations", {})
+        is_external = annotations.get("external") == "true"
+        already_resolved = bool(annotations.get("source_repos"))
+        if not is_external and already_resolved:
+            continue
+        candidate_labels = [meta.get("name") or ""] + list(annotations.get("aliases") or [])
+        for label in candidate_labels:
+            for key in (canonical_key(label), host_to_key(label)):
+                if not key:
+                    continue
+                match = org_repo_index.get(key)
+                if match and match not in cloned_ids and match not in candidates:
+                    candidates[match] = {
+                        "repo": match,
+                        "matched_label": label,
+                        "matched_via": meta.get("name") or "",
+                    }
+                    break
+    return list(candidates.values())
+
+
+def clone_repo(repo_full_name: str, workspace_root: Path, timeout_seconds: int = 300) -> tuple[bool, str]:
+    short = repo_full_name.split("/", 1)[1]
+    dest = workspace_root / short
+    if dest.exists():
+        return False, "already_exists"
+    cmd = ["gh", "repo", "clone", repo_full_name, str(dest)]
+    try:
+        result = subprocess.run(cmd, text=True, capture_output=True, check=False, timeout=timeout_seconds)
+        if result.returncode == 0:
+            return True, ""
+        return False, (result.stderr or result.stdout)[-300:]
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+
+
+def write_state(path: Path, state: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def crawl(
+    *,
+    root: Path,
+    catalog_dir: Path,
+    catalog_output: Path,
+    workspace_path: Path,
+    seeds_dir: Path,
+    state_path: Path,
+    provider: str,
+    model: str | None,
+    effort: str,
+    timeout_seconds: int,
+    max_age_hours: float,
+    parallelism: int,
+    batch_size: int,
+    max_batches: int,
+    budget_usd: float,
+    repos_filter: list[str] | None,
+    embed: bool,
+    neo4j_import: bool,
+    build_kuzu: bool,
+    stream_logs: bool,
+    discover: bool,
+    max_discovery_rounds: int,
+    reconcile_after_build: bool,
+    reconcile_llm: bool,
+) -> dict[str, Any]:
+    workspace = load_workspace_config(workspace_path)
+    repos = find_repos(root, workspace.get("orgs") or [], workspace.get("excluded_repos") or [])
+    if repos_filter:
+        wanted = set(repos_filter)
+        repos = [r for r in repos if r["name"] in wanted or r["id"] in wanted]
+
+    org_repo_index: dict[str, str] = {}
+    if discover:
+        emit({"event": "discovery_index_start", "orgs": workspace.get("orgs") or []})
+        org_repo_index = build_org_repo_index(workspace.get("orgs") or [])
+        emit({"event": "discovery_index_done", "repos_indexed": len(org_repo_index)})
+
+    state: dict[str, Any] = {
+        "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "root": str(root),
+        "workspace_repos": len(repos),
+        "batches": [],
+        "discovery_rounds": [],
+    }
+    emit({"event": "crawl_start", "workspace_repos": len(repos), "discover": discover})
+
+    discovery_rounds = 0
+
+    batches_done = 0
+    while batches_done < max_batches:
+        stale: list[tuple[dict[str, Any], str]] = []
+        for repo in repos:
+            reason = is_stale(repo, catalog_dir, max_age_hours)
+            if reason:
+                stale.append((repo, reason))
+        if not stale:
+            emit({"event": "frontier_empty"})
+            if not discover or discovery_rounds >= max_discovery_rounds:
+                break
+            cloned_ids = {r["id"] for r in repos}
+            missing = find_missing_repos(catalog_output, org_repo_index, cloned_ids)
+            if not missing:
+                emit({"event": "discovery_no_new_repos"})
+                break
+            emit({"event": "discovery_round_start", "round": discovery_rounds + 1, "candidates": len(missing)})
+            cloned_now = []
+            for candidate in missing:
+                ok, err = clone_repo(candidate["repo"], root)
+                emit({"event": "repo_cloned" if ok else "repo_clone_failed", **candidate, "error": err if not ok else ""})
+                if ok:
+                    cloned_now.append(candidate["repo"])
+            state["discovery_rounds"].append({"round": discovery_rounds + 1, "cloned": cloned_now, "candidates": len(missing)})
+            discovery_rounds += 1
+            if not cloned_now:
+                emit({"event": "discovery_round_no_clones"})
+                break
+            repos = find_repos(root, workspace.get("orgs") or [], workspace.get("excluded_repos") or [])
+            emit({"event": "discovery_round_done", "workspace_repos_now": len(repos)})
+            continue
+
+        current_total = repo_total_cost(catalog_dir)
+        if current_total >= budget_usd:
+            emit({"event": "budget_exhausted", "spent": current_total, "budget": budget_usd})
+            break
+
+        batch = stale[:batch_size]
+        emit({"event": "batch_start", "n": len(batch), "spent_so_far": current_total})
+        results: list[dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=parallelism) as executor:
+            futures = {
+                executor.submit(
+                    run_extractor,
+                    repo,
+                    provider=provider,
+                    model=model,
+                    effort=effort,
+                    timeout_seconds=timeout_seconds,
+                    catalog_dir=catalog_dir,
+                    workspace_path=workspace_path,
+                    stream_logs=stream_logs,
+                ): repo
+                for repo, _ in batch
+            }
+            for future in as_completed(futures):
+                repo = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    result = {"repo": repo["id"], "status": "error", "error": str(exc)}
+                results.append(result)
+                emit({"event": "repo_done", "repo": result["repo"], "status": result.get("status")})
+
+        state["batches"].append({"results": results, "completed_at": dt.datetime.now(dt.timezone.utc).isoformat()})
+        write_state(state_path, state)
+
+        emit({"event": "build_catalog_start"})
+        summary = build_catalog(root, catalog_dir, seeds_dir, catalog_output, workspace)
+        emit({"event": "build_catalog_done", **summary})
+
+        if reconcile_after_build:
+            reconcile_args = [sys.executable, str(HERE / "reconcile.py"), "--catalog", str(catalog_output)]
+            if reconcile_llm:
+                reconcile_args.append("--llm-assist")
+            emit({"event": "reconcile_start", "llm_assist": reconcile_llm})
+            rc = subprocess.run(reconcile_args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            emit({"event": "reconcile_done", "returncode": rc.returncode, "stdout_tail": rc.stdout[-1500:]})
+
+        batches_done += 1
+
+    if embed:
+        emit({"event": "embed_start"})
+        embed_cmd = [sys.executable, str(HERE / "embed_catalog.py"), "--catalog", str(catalog_output)]
+        if neo4j_import:
+            embed_cmd.append("--neo4j")
+        completed = subprocess.run(embed_cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        emit({"event": "embed_done", "returncode": completed.returncode, "tail": completed.stdout[-1000:]})
+
+    if build_kuzu:
+        emit({"event": "build_kuzu_start"})
+        kuzu_cmd = [sys.executable, str(HERE / "build_kuzu.py"), "--catalog", str(catalog_output)]
+        completed = subprocess.run(kuzu_cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        emit({"event": "build_kuzu_done", "returncode": completed.returncode, "tail": completed.stdout[-800:]})
+
+    state["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    state["total_cost_usd"] = repo_total_cost(catalog_dir)
+    write_state(state_path, state)
+    emit({"event": "crawl_done", "spent": state["total_cost_usd"]})
+    return state
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument("--catalog-dir", type=Path, default=DEFAULT_CATALOG_DIR)
+    parser.add_argument("--catalog-output", type=Path, default=DEFAULT_CATALOG)
+    parser.add_argument("--workspace", type=Path, default=HERE / "workspace.json")
+    parser.add_argument("--seeds-dir", type=Path, default=HERE / "seeds")
+    parser.add_argument("--state", type=Path, default=DEFAULT_STATE)
+    parser.add_argument("--provider", choices=("codex", "claude"), default="codex")
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--effort", default="high")
+    parser.add_argument("--timeout-seconds", type=int, default=1200)
+    parser.add_argument("--max-age-hours", type=float, default=24.0)
+    parser.add_argument("--parallelism", type=int, default=2)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--max-batches", type=int, default=999, help="Safety cap; default is effectively unbounded. Real termination should be frontier_empty + discovery exhausted, or budget.")
+    parser.add_argument("--budget-usd", type=float, default=200.0, help="Hard stop on cumulative LLM spend. Default 200 is sized for a medium-large enterprise crawl.")
+    parser.add_argument("--repos", nargs="*", default=None, help="Limit crawl to specific repo names/ids")
+    parser.add_argument("--embed", action="store_true", help="Run embed_catalog.py after extraction")
+    parser.add_argument("--neo4j-import", action="store_true", help="Also push to Neo4j after embedding (legacy; Kuzu is the default backend now).")
+    parser.add_argument("--build-kuzu", action="store_true", help="Run build_kuzu.py after --embed to populate data/catalog.kuzu (the MCP server's primary backend).")
+    parser.add_argument("--stream-logs", action="store_true")
+    parser.add_argument("--discover", action="store_true", help="Search configured GH orgs for repos that the catalog references but are not cloned; clone and extract them.")
+    parser.add_argument("--max-discovery-rounds", type=int, default=10, help="Maximum rounds of discover→clone→extract before stopping. Each round indexes the configured orgs, finds unresolved Components that match an uncloned repo, clones them, then re-enters extraction.")
+    parser.add_argument("--reconcile", action="store_true", help="Run reconcile.py after each build_catalog (collapse external duplicates).")
+    parser.add_argument("--reconcile-llm", action="store_true", help="Use --llm-assist on reconcile.py (LLM-judgment merges for ambiguous duplicates).")
+    args = parser.parse_args()
+    crawl(
+        root=args.root.resolve(),
+        catalog_dir=args.catalog_dir,
+        catalog_output=args.catalog_output,
+        workspace_path=args.workspace,
+        seeds_dir=args.seeds_dir,
+        state_path=args.state,
+        provider=args.provider,
+        model=args.model,
+        effort=args.effort,
+        timeout_seconds=args.timeout_seconds,
+        max_age_hours=args.max_age_hours,
+        parallelism=args.parallelism,
+        batch_size=args.batch_size,
+        max_batches=args.max_batches,
+        budget_usd=args.budget_usd,
+        repos_filter=args.repos,
+        embed=args.embed,
+        neo4j_import=args.neo4j_import,
+        build_kuzu=args.build_kuzu,
+        stream_logs=args.stream_logs,
+        discover=args.discover,
+        max_discovery_rounds=args.max_discovery_rounds,
+        reconcile_after_build=args.reconcile,
+        reconcile_llm=args.reconcile_llm,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

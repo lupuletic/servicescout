@@ -1,0 +1,215 @@
+import { useState, useMemo } from "react";
+import useSWR from "swr";
+import { useSearchParams, useNavigate } from "react-router-dom";
+import { type EntityRecord } from "@/lib/api";
+import { Input, KindBadge, PageHeader } from "@/components/ui";
+import { cn } from "@/lib/cn";
+
+type FacetEntry = { value: string; count: number };
+type FacetsPayload = {
+  kind: FacetEntry[];
+  type: FacetEntry[];
+  owner: FacetEntry[];
+  lifecycle: FacetEntry[];
+  environment: FacetEntry[];
+  tag: FacetEntry[];
+  runtime: FacetEntry[];
+};
+
+// URL params we sync. Each is a comma-separated list (kind=Component,Provider).
+const FACET_KEYS = ["kind", "type", "owner", "lifecycle", "environment", "tag", "runtime"] as const;
+type FacetKey = (typeof FACET_KEYS)[number];
+
+function readSelection(sp: URLSearchParams, key: FacetKey): Set<string> {
+  const raw = sp.get(key);
+  if (!raw) return new Set();
+  return new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+}
+
+export function EntitiesPage() {
+  const [sp, setSp] = useSearchParams();
+  const [query, setQuery] = useState(sp.get("q") || "");
+  const navigate = useNavigate();
+
+  const selections = useMemo<Record<FacetKey, Set<string>>>(() => {
+    return Object.fromEntries(FACET_KEYS.map((k) => [k, readSelection(sp, k)])) as any;
+  }, [sp]);
+
+  const { data: facets } = useSWR<FacetsPayload>("/api/facets");
+
+  const entitiesUrl = useMemo(() => {
+    const params = new URLSearchParams();
+    // kind is single-select (server only supports one); pick the first.
+    const kindSel = Array.from(selections.kind);
+    if (kindSel.length === 1) params.set("kind", kindSel[0]);
+    for (const key of ["owner", "lifecycle", "environment", "tag", "runtime"] as FacetKey[]) {
+      Array.from(selections[key]).forEach((v) => params.append(key, v));
+    }
+    if (query.trim()) params.set("query", query.trim());
+    params.set("limit", "500");
+    return `/api/entities?${params.toString()}`;
+  }, [selections, query]);
+
+  const { data, isLoading } = useSWR<{ entities: EntityRecord[]; count: number }>(entitiesUrl);
+
+  const toggle = (key: FacetKey, value: string) => {
+    const next = new URLSearchParams(sp);
+    const current = readSelection(sp, key);
+    current.has(value) ? current.delete(value) : current.add(value);
+    if (current.size > 0) {
+      next.set(key, Array.from(current).join(","));
+    } else {
+      next.delete(key);
+    }
+    setSp(next, { replace: true });
+  };
+
+  const clearFacet = (key: FacetKey) => {
+    const next = new URLSearchParams(sp);
+    next.delete(key);
+    setSp(next, { replace: true });
+  };
+
+  const clearAll = () => {
+    const next = new URLSearchParams();
+    if (query.trim()) next.set("q", query.trim());
+    setSp(next, { replace: true });
+  };
+
+  const rows = data?.entities ?? [];
+  const anyFacetActive = FACET_KEYS.some((k) => selections[k].size > 0);
+
+  return (
+    <div className="h-full grid grid-rows-[auto_1fr]">
+      <PageHeader
+        title="Catalog"
+        description={data ? `${data.count} entities` : "Loading…"}
+        actions={
+          <Input
+            placeholder="Search names, aliases, source repos…"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              const next = new URLSearchParams(sp);
+              if (e.target.value.trim()) next.set("q", e.target.value.trim());
+              else next.delete("q");
+              setSp(next, { replace: true });
+            }}
+            className="w-80"
+          />
+        }
+      />
+      <div className="grid grid-cols-[260px_1fr] min-h-0">
+        <aside className="border-r border-border bg-bg-elevated/40 overflow-auto p-4 space-y-5 text-sm">
+          {anyFacetActive && (
+            <button
+              onClick={clearAll}
+              className="text-xs text-fg-dim hover:text-accent w-full text-left"
+            >
+              Clear all filters
+            </button>
+          )}
+          <FacetGroup title="Kind"          entries={facets?.kind        || []} selected={selections.kind}        onToggle={(v) => toggle("kind", v)}        onClear={() => clearFacet("kind")} renderLabel={(v) => v} />
+          <FacetGroup title="Lifecycle"     entries={facets?.lifecycle   || []} selected={selections.lifecycle}   onToggle={(v) => toggle("lifecycle", v)}   onClear={() => clearFacet("lifecycle")} renderLabel={(v) => v} />
+          <FacetGroup title="Runtime"       entries={facets?.runtime     || []} selected={selections.runtime}     onToggle={(v) => toggle("runtime", v)}     onClear={() => clearFacet("runtime")} renderLabel={(v) => v} />
+          <FacetGroup title="Environment"   entries={facets?.environment || []} selected={selections.environment} onToggle={(v) => toggle("environment", v)} onClear={() => clearFacet("environment")} renderLabel={(v) => v} />
+          <FacetGroup title="Owner"         entries={facets?.owner       || []} selected={selections.owner}       onToggle={(v) => toggle("owner", v)}       onClear={() => clearFacet("owner")} renderLabel={(v) => v} max={12} />
+          <FacetGroup title="Type"          entries={facets?.type        || []} selected={selections.type}        onToggle={(v) => toggle("type", v)}        onClear={() => clearFacet("type")} renderLabel={(v) => v} max={10} />
+          <FacetGroup title="Tag"           entries={facets?.tag         || []} selected={selections.tag}         onToggle={(v) => toggle("tag", v)}         onClear={() => clearFacet("tag")} renderLabel={(v) => v} max={12} />
+        </aside>
+
+        <div className="overflow-auto">
+          {isLoading && <div className="p-6 text-fg-muted">Loading entities…</div>}
+          {!isLoading && rows.length === 0 && (
+            <div className="p-6 text-fg-muted">No entities match the current filters.</div>
+          )}
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-bg-elevated text-xs uppercase tracking-wider text-fg-dim">
+              <tr>
+                <th className="text-left px-6 py-2.5 font-medium">Kind</th>
+                <th className="text-left px-3 py-2.5 font-medium">Name</th>
+                <th className="text-left px-3 py-2.5 font-medium">Tagline</th>
+                <th className="text-left px-3 py-2.5 font-medium">Repo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((e) => (
+                <tr
+                  key={e.ref}
+                  onClick={() => navigate(`/entity/${encodeURIComponent(e.ref)}`)}
+                  className="border-t border-border hover:bg-bg-elevated cursor-pointer"
+                >
+                  <td className="px-6 py-2.5"><KindBadge kind={e.kind} /></td>
+                  <td className="px-3 py-2.5 font-medium text-fg">{e.name}</td>
+                  <td className="px-3 py-2.5 text-fg-muted truncate max-w-xl">{e.tagline || e.description || ""}</td>
+                  <td className="px-3 py-2.5 text-fg-dim text-xs font-mono">{e.source_repos?.[0] || ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FacetGroup({
+  title,
+  entries,
+  selected,
+  onToggle,
+  onClear,
+  renderLabel,
+  max = 8,
+}: {
+  title: string;
+  entries: FacetEntry[];
+  selected: Set<string>;
+  onToggle: (v: string) => void;
+  onClear: () => void;
+  renderLabel: (v: string) => string;
+  max?: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  if (entries.length === 0) return null;
+  const visible = expanded ? entries : entries.slice(0, max);
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <h3 className="text-xs uppercase tracking-wider text-fg-dim">{title}</h3>
+        {selected.size > 0 && (
+          <button onClick={onClear} className="text-[10px] text-fg-dim hover:text-accent">clear</button>
+        )}
+      </div>
+      <ul className="space-y-0.5">
+        {visible.map((e) => {
+          const isOn = selected.has(e.value);
+          return (
+            <li key={e.value}>
+              <button
+                onClick={() => onToggle(e.value)}
+                className={cn(
+                  "w-full flex items-center justify-between px-2 py-1 rounded text-xs transition-colors",
+                  isOn
+                    ? "bg-accent/15 text-fg border border-accent/30"
+                    : "text-fg-muted hover:bg-bg hover:text-fg border border-transparent",
+                )}
+              >
+                <span className="truncate">{renderLabel(e.value)}</span>
+                <span className="text-fg-dim ml-2 shrink-0">{e.count}</span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {entries.length > max && (
+        <button
+          onClick={() => setExpanded((x) => !x)}
+          className="mt-1 text-[10px] text-fg-dim hover:text-accent"
+        >
+          {expanded ? "Show less" : `Show ${entries.length - max} more`}
+        </button>
+      )}
+    </div>
+  );
+}

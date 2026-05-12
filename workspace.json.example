@@ -1,0 +1,9 @@
+{
+  "orgs": [
+    "your-github-org",
+    "your-github-org-2"
+  ],
+  "excluded_repos": [
+    "your-github-org/repo-you-want-to-skip"
+  ]
+}
