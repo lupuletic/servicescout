@@ -75,25 +75,27 @@ function GraphLoader({
 
   useEffect(() => {
     loadGraph(graph);
-    // FA2 with stronger gravity + more iterations than the default 3.5s, so
-    // the layout reaches a clean steady state for larger graphs. We bias the
-    // layout by giving each node an initial position around its system's
-    // cluster (set in the page-level useMemo), so FA2 finishes faster.
+    // FA2 settings tuned for our shape of graph: dense, ~400 nodes, many
+    // hubs. `linLogMode: true` emphasises community separation; low gravity
+    // (1.0) prevents collapse into a central knot; high scalingRatio keeps
+    // unrelated clusters apart. `outboundAttractionDistribution` is OFF —
+    // it collapsed hub-rich graphs into a single point at our scale.
     const layout = new ForceAtlas2Layout(graph, {
       settings: {
-        gravity: 1.5,
-        scalingRatio: 10,
-        slowDown: 5,
+        gravity: 1.0,
+        scalingRatio: 18,
+        slowDown: 6,
         strongGravityMode: false,
         barnesHutOptimize: true,
         adjustSizes: true,
-        outboundAttractionDistribution: true,
-        linLogMode: false,
+        outboundAttractionDistribution: false,
+        linLogMode: true,
       },
     });
     layout.start();
-    // 6s gives a much more relaxed layout on 400+ node graphs.
-    const stopTimer = setTimeout(() => layout.stop(), 6000);
+    // 4s is enough at our scale; longer just over-converges and hubs eat
+    // their neighbourhoods.
+    const stopTimer = setTimeout(() => layout.stop(), 4000);
     return () => {
       clearTimeout(stopTimer);
       layout.kill();
@@ -195,29 +197,33 @@ export function GraphPage() {
       inDegree[e.target] = (inDegree[e.target] || 0) + 1;
       outDegree[e.source] = (outDegree[e.source] || 0) + 1;
     });
-    // ----- system clustering: each system gets a stable angle on a circle,
-    //       so nodes start near their system's "cluster centre" rather than
-    //       being seeded uniformly random. FA2 still pulls them apart, but
-    //       the structure forms cleanly instead of from chaos. -----
+    // Each system gets a stable angle on a circle (radius 45 so FA2 has room
+    // to breathe rather than fighting the gravity well). Nodes are jittered
+    // around that anchor with a deterministic per-id hash so React StrictMode
+    // double-mounts produce identical seeds.
     const systems = Array.from(new Set(data.nodes.map((n) => n.system || "_"))).sort();
     const systemAngle: Record<string, number> = {};
     systems.forEach((s, i) => { systemAngle[s] = (2 * Math.PI * i) / systems.length; });
-    const seedRadius = 8;
-    const jitter = () => (Math.random() - 0.5) * 1.6;
+    const ringRadius = 45;
+    const seed = (id: string, salt: number) => {
+      let h = salt;
+      for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+      return ((h >>> 0) / 0xffffffff) - 0.5;
+    };
     data.nodes.forEach((n) => {
-      const ang = systemAngle[n.system || "_"];
       const deg = (inDegree[n.id] || 0) + (outDegree[n.id] || 0);
       const sysBoost = (n.system && n.system !== "") ? 1.2 : 1.0;
+      const ang = systemAngle[n.system || "_"];
+      const r = ringRadius + seed(n.id, 1) * 8;
+      const a = ang + seed(n.id, 2) * 0.5;
       g.addNode(n.id, {
         label: n.label,
         kind: n.kind,
         system: n.system || "",
         color: KIND_COLOR[n.kind] || "#666",
-        // Size = sqrt(degree) * system-membership weight; capped to keep
-        // very-high-degree hubs from drowning the canvas.
         size: Math.min(16, (3 + Math.sqrt(deg) * 1.4) * sysBoost),
-        x: seedRadius * Math.cos(ang) + jitter(),
-        y: seedRadius * Math.sin(ang) + jitter(),
+        x: r * Math.cos(a),
+        y: r * Math.sin(a),
         type: "circle",
       });
     });
