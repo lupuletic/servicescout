@@ -104,4 +104,5 @@ def load_workspace_config(config_path: Path) -> dict[str, object]:
     return {
         "orgs": list(payload.get("orgs", [])),
         "excluded_repos": list(payload.get("excluded_repos", [])),
+        "communication_discovery_role_suffixes": list(payload.get("communication_discovery_role_suffixes", [])),
     }

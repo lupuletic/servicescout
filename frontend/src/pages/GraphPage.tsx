@@ -3,7 +3,7 @@ import Graph from "graphology";
 import useSWR from "swr";
 import { SigmaContainer, useLoadGraph, useRegisterEvents, useSigma } from "@react-sigma/core";
 import { NodeCircleProgram, EdgeArrowProgram } from "sigma/rendering";
-import ForceAtlas2Layout from "graphology-layout-forceatlas2/worker";
+import forceAtlas2 from "graphology-layout-forceatlas2";
 import { type EntityRecord, type GraphPayload } from "@/lib/api";
 import { Button, Input, KindBadge, PageHeader } from "@/components/ui";
 
@@ -46,7 +46,11 @@ const KIND_COLOR: Record<string, string> = {
 
 const ALL_KINDS = ["Component", "API", "Resource", "Provider", "System", "Domain", "Group"];
 
-const ALL_EDGE_TYPES: Array<{ value: string; label: string }> = [
+const FLOW_EDGE_TYPES: Array<{ value: string; label: string }> = [
+  { value: "communicatesWith", label: "communicatesWith" },
+];
+
+const EVIDENCE_EDGE_TYPES: Array<{ value: string; label: string }> = [
   { value: "consumesApi", label: "consumesApi" },
   { value: "providesApi", label: "providesApi" },
   { value: "dependsOn", label: "dependsOn" },
@@ -74,17 +78,16 @@ function GraphLoader({
   const [hovered, setHovered] = useState<string | null>(null);
 
   useEffect(() => {
-    loadGraph(graph);
-    // FA2 settings tuned for our shape of graph: dense, ~400 nodes, many
-    // hubs. `linLogMode: true` emphasises community separation; low gravity
-    // (1.0) prevents collapse into a central knot; high scalingRatio keeps
-    // unrelated clusters apart. `outboundAttractionDistribution` is OFF —
-    // it collapsed hub-rich graphs into a single point at our scale.
-    const layout = new ForceAtlas2Layout(graph, {
+    // Pre-compute the layout synchronously so the user sees the final state
+    // on first paint — no FA2 worker, no per-tick refresh, no visible jump.
+    // 200 iterations is enough for ~400 nodes; it costs ~500ms blocking on
+    // a modern laptop, vs. ~3s of laggy animation with the worker.
+    forceAtlas2.assign(graph, {
+      iterations: 200,
       settings: {
-        gravity: 1.0,
-        scalingRatio: 18,
-        slowDown: 6,
+        gravity: 0.3,
+        scalingRatio: 32,
+        slowDown: 8,
         strongGravityMode: false,
         barnesHutOptimize: true,
         adjustSizes: true,
@@ -92,15 +95,9 @@ function GraphLoader({
         linLogMode: true,
       },
     });
-    layout.start();
-    // 4s is enough at our scale; longer just over-converges and hubs eat
-    // their neighbourhoods.
-    const stopTimer = setTimeout(() => layout.stop(), 4000);
-    return () => {
-      clearTimeout(stopTimer);
-      layout.kill();
-    };
-  }, [graph, loadGraph]);
+    loadGraph(graph);
+    sigma.getCamera().animatedReset({ duration: 300 });
+  }, [graph, loadGraph, sigma]);
 
   // Notify the parent so it can wire camera-control buttons.
   useEffect(() => {
@@ -151,7 +148,7 @@ function GraphLoader({
 
 export function GraphPage() {
   const [kinds, setKinds] = useState<Set<string>>(new Set(["Component", "Provider", "Resource"]));
-  const [edgeTypes, setEdgeTypes] = useState<Set<string>>(new Set()); // empty = no filter
+  const [edgeTypes, setEdgeTypes] = useState<Set<string>>(new Set(["communicatesWith"]));
   const [limit, setLimit] = useState(400);
   const [selectedRef, setSelectedRef] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -230,9 +227,12 @@ export function GraphPage() {
     data.edges.forEach((e) => {
       if (g.hasNode(e.source) && g.hasNode(e.target) && !g.hasEdge(e.source, e.target)) {
         g.addEdge(e.source, e.target, {
-          color: "#2a3242",
+          color: e.type === "communicatesWith" ? "#14b8a6" : "#2a3242",
           type: "arrow",
-          size: 0.8,
+          size: e.type === "communicatesWith" ? 1.1 : 0.8,
+          relationType: e.type,
+          endpoint: e.properties?.endpoint || "",
+          transport: e.properties?.transport || "",
         });
       }
     });
@@ -254,6 +254,10 @@ export function GraphPage() {
       return next;
     });
   };
+
+  const showFlowView = () => setEdgeTypes(new Set(["communicatesWith"]));
+  const showEvidenceView = () => setEdgeTypes(new Set());
+  const flowActive = edgeTypes.size === 1 && edgeTypes.has("communicatesWith");
 
   const filteredSearch = useMemo(() => {
     if (!data || !search.trim()) return [];
@@ -311,9 +315,51 @@ export function GraphPage() {
             ))}
           </div>
 
-          {/* Edge-type filter row (toggle ALL = none-active = show all) */}
-          <div className="absolute top-12 left-3 z-10 flex flex-wrap gap-1 max-w-[70%]">
-            {ALL_EDGE_TYPES.map((et) => {
+          <div className="absolute top-12 left-3 z-10 flex flex-col gap-1.5 max-w-[72%]">
+            <div className="flex flex-wrap items-center gap-1">
+              <button
+                onClick={showFlowView}
+                className={`rounded border px-2 py-0.5 text-[10px] transition-colors ${
+                  flowActive
+                    ? "border-accent/50 bg-accent/15 text-fg"
+                    : "border-border bg-bg/40 text-fg-muted hover:text-fg"
+                }`}
+              >
+                Flow
+              </button>
+              <button
+                onClick={showEvidenceView}
+                className={`rounded border px-2 py-0.5 text-[10px] transition-colors ${
+                  !flowActive
+                    ? "border-accent/50 bg-accent/15 text-fg"
+                    : "border-border bg-bg/40 text-fg-muted hover:text-fg"
+                }`}
+              >
+                Evidence
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1">
+              {FLOW_EDGE_TYPES.map((et) => {
+                const on = edgeTypes.has(et.value);
+                return (
+                  <button
+                    key={et.value}
+                    onClick={() => setEdgeTypes(new Set([et.value]))}
+                    className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
+                      on
+                        ? "border-teal-400/50 bg-teal-400/15 text-fg"
+                        : "border-border bg-bg/40 text-fg-muted hover:text-fg"
+                    }`}
+                  >
+                    {et.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-wrap gap-1">
+              {EVIDENCE_EDGE_TYPES.map((et) => {
               const on = edgeTypes.has(et.value);
               const anyOn = edgeTypes.size > 0;
               return (
@@ -337,9 +383,10 @@ export function GraphPage() {
                 onClick={() => setEdgeTypes(new Set())}
                 className="rounded border border-border bg-bg/40 px-1.5 py-0.5 text-[10px] text-fg-dim hover:text-accent"
               >
-                clear
+                all evidence
               </button>
             )}
+            </div>
           </div>
 
           {/* Search results overlay */}

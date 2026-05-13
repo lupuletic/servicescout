@@ -28,6 +28,7 @@ DEFAULT_DB = HERE / "data" / "catalog.kuzu"
 DEFAULT_DIM = 768
 
 REL_TYPES = [
+    "communicatesWith",
     "consumesApi",
     "consumesMessage",
     "producesMessage",
@@ -37,6 +38,7 @@ REL_TYPES = [
     "providesApi",
     "ownedBy",
     "partOf",
+    "subcomponentOf",
 ]
 
 

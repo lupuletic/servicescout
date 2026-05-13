@@ -12,6 +12,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -161,37 +162,144 @@ def find_missing_repos(
     catalog_path: Path,
     org_repo_index: dict[str, str],
     cloned_ids: set[str],
+    endpoint_role_suffixes: list[str] | None = None,
 ) -> list[dict[str, str]]:
-    """Identify unresolved/external Components whose canonical name (or alias) matches an
-    uncloned repo in the configured orgs.
+    """Identify catalog hints that match uncloned repos in the configured orgs.
+
+    Component names/aliases are the highest-confidence hints. Communication
+    endpoints (API names, route paths, queue/topic/stream/resource names) are
+    also useful for recursive discovery because a consumer may reveal the
+    missing producer before the producer repo has been cloned.
     """
     if not catalog_path.exists():
         return []
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
     candidates: dict[str, dict[str, str]] = {}
+
+    def add_candidate(label: str, *, matched_via: str, matched_from: str, allow_namespace_roles: bool = False) -> None:
+        if not label:
+            return
+        keys = [(canonical_key(label), "canonical"), (host_to_key(label), "host")]
+        keys.extend(
+            (key, source)
+            for key, source in communication_endpoint_keys(
+                label,
+                allow_namespace_roles=allow_namespace_roles,
+                role_suffixes=endpoint_role_suffixes or [],
+            )
+        )
+        for key, key_source in keys:
+            if not key:
+                continue
+            match = org_repo_index.get(key)
+            if match and match not in cloned_ids and match not in candidates:
+                candidates[match] = {
+                    "repo": match,
+                    "matched_label": label,
+                    "matched_via": matched_via,
+                    "matched_from": matched_from,
+                    "matched_key": key,
+                    "matched_key_source": key_source,
+                }
+                return
+
     for entity in catalog.get("entities") or []:
-        if entity.get("kind") != "Component":
-            continue
+        kind = entity.get("kind")
         meta = entity.get("metadata", {})
         annotations = meta.get("annotations", {})
-        is_external = annotations.get("external") == "true"
-        already_resolved = bool(annotations.get("source_repos"))
-        if not is_external and already_resolved:
-            continue
-        candidate_labels = [meta.get("name") or ""] + list(annotations.get("aliases") or [])
-        for label in candidate_labels:
-            for key in (canonical_key(label), host_to_key(label)):
-                if not key:
+        name = meta.get("name") or ""
+        ref = f"{kind}:{name}" if kind and name else name
+        if kind == "Component":
+            is_external = annotations.get("external") == "true"
+            already_resolved = bool(annotations.get("source_repos"))
+            if not is_external and already_resolved:
+                continue
+            candidate_labels = [name] + list(annotations.get("aliases") or [])
+            for label in candidate_labels:
+                add_candidate(label, matched_via=name, matched_from="component_identity")
+        elif kind == "API":
+            add_candidate(name, matched_via=ref, matched_from="communication_endpoint")
+            for operation in annotations.get("operations") or []:
+                if not isinstance(operation, dict):
                     continue
-                match = org_repo_index.get(key)
-                if match and match not in cloned_ids and match not in candidates:
-                    candidates[match] = {
-                        "repo": match,
-                        "matched_label": label,
-                        "matched_via": meta.get("name") or "",
-                    }
-                    break
+                add_candidate(operation.get("path") or "", matched_via=ref, matched_from="communication_endpoint")
+                add_candidate(operation.get("name") or "", matched_via=ref, matched_from="communication_endpoint")
+        elif kind == "Resource":
+            labels = [name]
+            for key in ("subscribes_to", "datasource_url"):
+                value = annotations.get(key)
+                if value:
+                    labels.append(str(value))
+            labels.extend(str(v) for v in (annotations.get("env_keys") or []) if v)
+            for label in labels:
+                add_candidate(
+                    label,
+                    matched_via=ref,
+                    matched_from="communication_endpoint",
+                    allow_namespace_roles=True,
+                )
     return list(candidates.values())
+
+
+def communication_endpoint_keys(
+    label: str,
+    *,
+    allow_namespace_roles: bool,
+    role_suffixes: list[str],
+) -> list[tuple[str, str]]:
+    """Candidate repo keys from protocol-agnostic endpoint strings.
+
+    This is deliberately conservative. Exact canonical/host matching happens in
+    `find_missing_repos`; this helper adds endpoint-aware namespace keys, such
+    as a business-domain prefix from a route, topic, stream, queue, or webhook
+    name. Namespace-role expansion is only enabled when the workspace config
+    provides role suffixes.
+    """
+    if not label:
+        return []
+    raw = label.strip()
+    lowered = raw.lower()
+    out: list[tuple[str, str]] = []
+
+    # Strip URL scheme/host path noise into tokens but keep dotted endpoint
+    # names useful for stream/topic-style conventions.
+    endpoint = re.sub(r"^https?://", "", lowered)
+    endpoint = endpoint.split("?", 1)[0]
+    endpoint = endpoint.split("#", 1)[0]
+    endpoint = endpoint.replace(":", ".").replace("/", ".")
+    parts = [p for p in re.split(r"[^a-z0-9]+", endpoint) if p]
+
+    if "virtualtopic" in parts:
+        idx = parts.index("virtualtopic")
+        parts = parts[idx + 1:]
+    elif parts[:1] == ["consumer"] and len(parts) > 2:
+        parts = parts[2:]
+
+    ignored = {
+        "consumer", "producer", "publisher", "subscriber", "subscription",
+        "queue", "topic", "stream", "event", "events", "exchange", "routing",
+        "key", "v1", "v2", "v3", "api", "http", "https", "com", "org", "net",
+    }
+    meaningful = [p for p in parts if len(p) >= 3 and p not in ignored and not p.isdigit()]
+    for token in meaningful[:3]:
+        key = canonical_key(token)
+        if key:
+            out.append((key, "endpoint_namespace"))
+
+    if allow_namespace_roles and meaningful and role_suffixes:
+        namespace = canonical_key(meaningful[0])
+        for suffix in role_suffixes:
+            suffix_key = canonical_key(suffix)
+            if suffix_key:
+                out.append((f"{namespace}{suffix_key}", "endpoint_namespace_role"))
+
+    deduped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in out:
+        if item not in seen:
+            deduped.append(item)
+            seen.add(item)
+    return deduped
 
 
 def clone_repo(repo_full_name: str, workspace_root: Path, timeout_seconds: int = 300) -> tuple[bool, str]:
@@ -277,7 +385,12 @@ def crawl(
             if not discover or discovery_rounds >= max_discovery_rounds:
                 break
             cloned_ids = {r["id"] for r in repos}
-            missing = find_missing_repos(catalog_output, org_repo_index, cloned_ids)
+            missing = find_missing_repos(
+                catalog_output,
+                org_repo_index,
+                cloned_ids,
+                list(workspace.get("communication_discovery_role_suffixes") or []),
+            )
             if not missing:
                 emit({"event": "discovery_no_new_repos"})
                 break

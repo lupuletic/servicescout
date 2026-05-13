@@ -9,8 +9,8 @@ Output:
 
 The catalog uses Backstage's node kinds: Component, API, Resource, System,
 Domain, Group. Relations: ownedBy, partOf, dependsOn, providesApi, consumesApi,
-hasPart. Every node and edge carries provenance (source repo, evidence, run id)
-and a confidence label.
+communicatesWith, hasPart. Every node and edge carries provenance (source repo,
+evidence, run id) and a confidence label.
 
 Service-identity reconciliation:
 - A Component is keyed by its canonical name (lowercased, hyphens, suffixes like
@@ -41,15 +41,13 @@ DEFAULT_SEEDS_DIR = HERE / "seeds"
 
 
 SUFFIXES_TO_STRIP = ["serviceapi", "apiservice", "service", "api", "backend", "frontend", "client", "gateway"]
-SUFFIX_ALLOWLIST = {"paymentinterface", "userinterface"}
+COMMUNICATION_RELATION = "communicatesWith"
 
 
 def canonical_key(name: str) -> str:
     if not name:
         return ""
     key = re.sub(r"[^a-z0-9]+", "", name.lower())
-    if key in SUFFIX_ALLOWLIST:
-        return key
     changed = True
     while changed:
         changed = False
@@ -208,10 +206,10 @@ def merge_relation(into: dict[str, Any], other: dict[str, Any]) -> None:
             seen.add(sig)
     props_into = into.setdefault("properties", {})
     for key, value in (other.get("properties") or {}).items():
-        if key == "aliases":
-            existing = set(props_into.get("aliases") or [])
+        if key in {"aliases", "endpoints", "transports", "mechanisms", "via_edges"}:
+            existing = set(props_into.get(key) or [])
             new = value if isinstance(value, list) else [value]
-            props_into["aliases"] = sorted(existing | set(new))
+            props_into[key] = sorted(existing | set(new))
         else:
             props_into.setdefault(key, value)
     if other.get("confidence"):
@@ -601,7 +599,7 @@ def short_repo_name(repo_id: str) -> str:
     return repo_id.split("/", 1)[-1] if "/" in repo_id else repo_id
 
 
-def add_seed_ecomm(catalog: Catalog, seed: dict[str, Any]) -> None:
+def add_seed_platform(catalog: Catalog, seed: dict[str, Any]) -> None:
     system_name = canonical_name(seed.get("platform") or "platform")
     system_entity = catalog.upsert({
         "kind": "System",
@@ -800,6 +798,324 @@ def filter_evidence_required(catalog: Catalog) -> int:
     catalog.relations = kept
     catalog._relation_keys = {relation_key(r) for r in kept}
     return dropped
+
+
+def _ref_kind(ref: str) -> str:
+    return ref.split(":", 1)[0] if ":" in ref else ""
+
+
+def _entity_by_ref(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        f"{entity.get('kind')}:{entity.get('metadata', {}).get('name')}": entity
+        for entity in (payload.get("entities") or [])
+        if entity.get("kind") and entity.get("metadata", {}).get("name")
+    }
+
+
+def _resource_endpoint(resource_ref: str, entity: dict[str, Any] | None) -> str:
+    """Return the protocol-agnostic shared endpoint represented by a resource.
+
+    Subscription resources normalize back to their shared topic/stream when the
+    extractor captured that link; direct queues/files/tables remain keyed by
+    their own resource name.
+    """
+    if not entity:
+        return resource_ref.split(":", 1)[-1]
+    meta = entity.get("metadata", {}) or {}
+    annotations = meta.get("annotations", {}) or {}
+    explicit = annotations.get("subscribes_to")
+    if explicit:
+        return str(explicit)
+    name = meta.get("name") or resource_ref.split(":", 1)[-1]
+    marker = ".VirtualTopic."
+    if name.startswith("Consumer.") and marker in name:
+        return "VirtualTopic." + name.split(marker, 1)[1]
+    return name
+
+
+def _transport_for(ref: str, entity: dict[str, Any] | None, relation: dict[str, Any]) -> str:
+    props = relation.get("properties") or {}
+    if props.get("protocol") and props["protocol"] != "unknown":
+        return str(props["protocol"])
+    spec = (entity or {}).get("spec", {}) or {}
+    for key in ("technology", "type", "category"):
+        value = spec.get(key)
+        if value:
+            return str(value)
+    return _ref_kind(ref).lower() or "unknown"
+
+
+def _operation_or_endpoint(relation: dict[str, Any], fallback: str) -> str:
+    props = relation.get("properties") or {}
+    for key in ("operation_or_usage", "message_or_event_name", "endpoint"):
+        value = props.get(key)
+        if value:
+            return str(value)
+    return fallback
+
+
+def _edge_sig(relation: dict[str, Any]) -> str:
+    return f"{relation.get('from')}|{relation.get('type')}|{relation.get('to')}"
+
+
+def _confidence_floor(*values: str | None) -> str:
+    present = [v for v in values if v]
+    if not present:
+        return "medium"
+    return min(present, key=lambda v: CONFIDENCE_RANK.get(v, -1))
+
+
+def _merge_property_list(props: dict[str, Any], key: str, values: Iterable[str]) -> None:
+    existing = {str(v) for v in (props.get(key) or []) if v}
+    existing.update(str(v) for v in values if v)
+    if existing:
+        props[key] = sorted(existing)
+
+
+def _add_communication_relation(
+    relations: list[dict[str, Any]],
+    index: dict[tuple[str, str, str], dict[str, Any]],
+    *,
+    source: str,
+    target: str,
+    endpoint: str,
+    transport: str,
+    mechanism: str,
+    confidence: str,
+    evidence: list[dict[str, Any]],
+    via_edges: list[str],
+) -> bool:
+    if not source or not target or source == target:
+        return False
+    if _ref_kind(source) != "Component" or _ref_kind(target) != "Component":
+        return False
+    key = (source, COMMUNICATION_RELATION, target)
+    relation = index.get(key)
+    created = False
+    if relation is None:
+        relation = {
+            "from": source,
+            "type": COMMUNICATION_RELATION,
+            "to": target,
+            "evidence": [],
+            "confidence": confidence or "medium",
+            "properties": {
+                "derived": True,
+                "endpoint": endpoint,
+                "transport": transport,
+                "mechanism": mechanism,
+                "endpoints": [],
+                "transports": [],
+                "mechanisms": [],
+                "via_edges": [],
+            },
+        }
+        relations.append(relation)
+        index[key] = relation
+        created = True
+    props = relation.setdefault("properties", {})
+    _merge_property_list(props, "endpoints", [endpoint])
+    _merge_property_list(props, "transports", [transport])
+    _merge_property_list(props, "mechanisms", [mechanism])
+    _merge_property_list(props, "via_edges", via_edges)
+    props.setdefault("endpoint", endpoint)
+    props.setdefault("transport", transport)
+    props.setdefault("mechanism", mechanism)
+
+    seen_evidence = {(ev.get("path"), ev.get("line"), ev.get("snippet")) for ev in relation.setdefault("evidence", [])}
+    for ev in evidence:
+        sig = (ev.get("path"), ev.get("line"), ev.get("snippet"))
+        if sig not in seen_evidence:
+            relation["evidence"].append(ev)
+            seen_evidence.add(sig)
+    relation["confidence"] = _confidence_floor(relation.get("confidence"), confidence)
+    return created
+
+
+def derive_communication_flows(payload: dict[str, Any]) -> int:
+    """Derive service-to-service communication flows from lower-level catalog facts.
+
+    The derived edge is intentionally protocol-agnostic. It keeps APIs,
+    resources, and raw dependency edges intact, while adding a `communicatesWith`
+    shortcut that agents and humans can traverse without knowing whether the
+    underlying mechanism was HTTP, GraphQL, a broker topic, a direct queue, or a
+    shared handoff resource.
+    """
+    entities = _entity_by_ref(payload)
+    relations = payload.setdefault("relations", [])
+    relation_index: dict[tuple[str, str, str], dict[str, Any]] = {
+        (r.get("from"), r.get("type"), r.get("to")): r
+        for r in relations
+        if r.get("from") and r.get("type") and r.get("to")
+    }
+    existing_communication_keys = {
+        key for key, rel in relation_index.items()
+        if rel.get("type") == COMMUNICATION_RELATION
+    }
+
+    api_providers: dict[str, list[dict[str, Any]]] = {}
+    producers_by_endpoint: dict[str, list[dict[str, Any]]] = {}
+    consumers_by_endpoint: dict[str, list[dict[str, Any]]] = {}
+    writers_by_resource: dict[str, list[dict[str, Any]]] = {}
+    readers_by_resource: dict[str, list[dict[str, Any]]] = {}
+
+    for relation in relations:
+        rtype = relation.get("type")
+        target = relation.get("to")
+        if rtype == "providesApi" and _ref_kind(target) == "API":
+            api_providers.setdefault(target, []).append(relation)
+        elif rtype == "producesMessage":
+            if _ref_kind(target) == "Resource":
+                endpoint = _resource_endpoint(target, entities.get(target))
+                producers_by_endpoint.setdefault(endpoint, []).append(relation)
+        elif rtype == "consumesMessage":
+            if _ref_kind(target) == "Resource":
+                endpoint = _resource_endpoint(target, entities.get(target))
+                consumers_by_endpoint.setdefault(endpoint, []).append(relation)
+        elif rtype == "writesResource" and _ref_kind(target) == "Resource":
+            writers_by_resource.setdefault(target, []).append(relation)
+        elif rtype == "readsResource" and _ref_kind(target) == "Resource":
+            readers_by_resource.setdefault(target, []).append(relation)
+
+    added = 0
+
+    # Synchronous API-like calls.
+    for relation in list(relations):
+        if relation.get("type") != "consumesApi":
+            continue
+        source = relation.get("from")
+        target = relation.get("to")
+        target_kind = _ref_kind(target)
+        if target_kind == "Component":
+            endpoint = _operation_or_endpoint(relation, target)
+            transport = _transport_for(target, entities.get(target), relation)
+            added += int(_add_communication_relation(
+                relations,
+                relation_index,
+                source=source,
+                target=target,
+                endpoint=endpoint,
+                transport=transport,
+                mechanism="api-call",
+                confidence=relation.get("confidence") or "medium",
+                evidence=relation.get("evidence") or [],
+                via_edges=[_edge_sig(relation)],
+            ))
+        elif target_kind == "API":
+            api_entity = entities.get(target)
+            endpoint = _operation_or_endpoint(relation, target)
+            transport = _transport_for(target, api_entity, relation)
+            for provider_relation in api_providers.get(target, []):
+                added += int(_add_communication_relation(
+                    relations,
+                    relation_index,
+                    source=source,
+                    target=provider_relation.get("from"),
+                    endpoint=endpoint,
+                    transport=transport,
+                    mechanism="api-call",
+                    confidence=_confidence_floor(relation.get("confidence"), provider_relation.get("confidence")),
+                    evidence=(relation.get("evidence") or []) + (provider_relation.get("evidence") or []),
+                    via_edges=[_edge_sig(relation), _edge_sig(provider_relation)],
+                ))
+
+    # Component-target async dependencies emitted directly by the extractor.
+    for relation in list(relations):
+        rtype = relation.get("type")
+        source = relation.get("from")
+        target = relation.get("to")
+        if rtype == "producesMessage" and _ref_kind(target) == "Component":
+            added += int(_add_communication_relation(
+                relations,
+                relation_index,
+                source=source,
+                target=target,
+                endpoint=_operation_or_endpoint(relation, target),
+                transport=_transport_for(target, entities.get(target), relation),
+                mechanism="async-message",
+                confidence=relation.get("confidence") or "medium",
+                evidence=relation.get("evidence") or [],
+                via_edges=[_edge_sig(relation)],
+            ))
+        elif rtype == "consumesMessage" and _ref_kind(target) == "Component":
+            added += int(_add_communication_relation(
+                relations,
+                relation_index,
+                source=target,
+                target=source,
+                endpoint=_operation_or_endpoint(relation, target),
+                transport=_transport_for(target, entities.get(target), relation),
+                mechanism="async-message",
+                confidence=relation.get("confidence") or "medium",
+                evidence=relation.get("evidence") or [],
+                via_edges=[_edge_sig(relation)],
+            ))
+
+    # Broker/topic/queue/event-stream style rendezvous resources.
+    for endpoint in sorted(set(producers_by_endpoint) & set(consumers_by_endpoint)):
+        for producer in producers_by_endpoint[endpoint]:
+            producer_resource = entities.get(producer.get("to"))
+            for consumer in consumers_by_endpoint[endpoint]:
+                transport = _transport_for(producer.get("to"), producer_resource, producer)
+                if transport == "unknown":
+                    transport = _transport_for(consumer.get("to"), entities.get(consumer.get("to")), consumer)
+                added += int(_add_communication_relation(
+                    relations,
+                    relation_index,
+                    source=producer.get("from"),
+                    target=consumer.get("from"),
+                    endpoint=endpoint,
+                    transport=transport,
+                    mechanism="async-message",
+                    confidence=_confidence_floor(producer.get("confidence"), consumer.get("confidence")),
+                    evidence=(producer.get("evidence") or []) + (consumer.get("evidence") or []),
+                    via_edges=[_edge_sig(producer), _edge_sig(consumer)],
+                ))
+
+    # Shared handoff resources: DB outbox/inbox tables, object prefixes, files,
+    # caches, etc. These are lower confidence because read/write does not always
+    # mean intentional service communication.
+    for resource_ref in sorted(set(writers_by_resource) & set(readers_by_resource)):
+        resource = entities.get(resource_ref)
+        endpoint = _resource_endpoint(resource_ref, resource)
+        for writer in writers_by_resource[resource_ref]:
+            for reader in readers_by_resource[resource_ref]:
+                added += int(_add_communication_relation(
+                    relations,
+                    relation_index,
+                    source=writer.get("from"),
+                    target=reader.get("from"),
+                    endpoint=endpoint,
+                    transport=_transport_for(resource_ref, resource, writer),
+                    mechanism="shared-resource",
+                    confidence="low",
+                    evidence=(writer.get("evidence") or []) + (reader.get("evidence") or []),
+                    via_edges=[_edge_sig(writer), _edge_sig(reader)],
+                ))
+
+    # Return only newly-created flow pairs, not endpoint merges into existing
+    # communication edges.
+    return len({
+        key for key, rel in relation_index.items()
+        if rel.get("type") == COMMUNICATION_RELATION and key not in existing_communication_keys
+    })
+
+
+def refresh_summary_counts(payload: dict[str, Any]) -> None:
+    counts: dict[str, int] = {}
+    for entity in payload.get("entities") or []:
+        kind = entity.get("kind")
+        if kind:
+            counts[kind] = counts.get(kind, 0) + 1
+    edge_counts: dict[str, int] = {}
+    for relation in payload.get("relations") or []:
+        rtype = relation.get("type")
+        if rtype:
+            edge_counts[rtype] = edge_counts.get(rtype, 0) + 1
+    payload.setdefault("summary", {})["node_kinds"] = counts
+    payload.setdefault("summary", {})["relation_types"] = edge_counts
+    payload.setdefault("summary", {})["entities"] = sum(counts.values())
+    payload.setdefault("summary", {})["relations"] = sum(edge_counts.values())
 
 
 def load_catalog_dir(catalog_dir: Path) -> Iterable[dict[str, Any]]:
@@ -1036,7 +1352,7 @@ def build(
 
     for seed in load_seeds(seeds_dir):
         if "frontends" in seed or "native_apps" in seed:
-            add_seed_ecomm(catalog, seed)
+            add_seed_platform(catalog, seed)
         elif "resolved" in seed:
             add_seed_service_map(catalog, seed, cloned_ids)
 
@@ -1087,6 +1403,10 @@ def build(
         if decisions:
             triage_counts = apply_triage_decisions(payload, decisions)
             payload["summary"]["triage_applied"] = triage_counts
+
+    derived_communication_flows = derive_communication_flows(payload)
+    payload["summary"]["derived_communication_flows"] = derived_communication_flows
+    refresh_summary_counts(payload)
 
     write_catalog(output_path, payload)
     return payload["summary"]
