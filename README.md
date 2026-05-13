@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/servicescout-logo-readme.png" alt="ServiceScout" width="720" />
+
 # ServiceScout
 
 **Org-wide code context for AI coding agents. One MCP server, every repo.**
