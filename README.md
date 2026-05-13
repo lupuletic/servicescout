@@ -1,9 +1,12 @@
-<div align="center">
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/servicescout-logo-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="./assets/servicescout-logo-light.png">
+    <img alt="ServiceScout" src="./assets/servicescout-logo-light.png" width="720">
+  </picture>
+</p>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/servicescout-logo-readme-dark.png">
-  <img src="docs/assets/servicescout-logo-readme.png" alt="ServiceScout" width="720" />
-</picture>
+<div align="center">
 
 # ServiceScout
 
