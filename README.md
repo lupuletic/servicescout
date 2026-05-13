@@ -1,6 +1,9 @@
 <div align="center">
 
-<img src="docs/assets/servicescout-logo-readme.png" alt="ServiceScout" width="720" />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/servicescout-logo-readme-dark.png">
+  <img src="docs/assets/servicescout-logo-readme.png" alt="ServiceScout" width="720" />
+</picture>
 
 # ServiceScout
 

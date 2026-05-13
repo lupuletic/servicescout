@@ -572,6 +572,14 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         # Static files (JS/CSS/etc.) under /assets.
         app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
 
+        @app.get("/app-logo.png", response_model=None)
+        @app.get("/favicon.png", response_model=None)
+        @app.get("/favicon.svg", response_model=None)
+        @app.get("/icons.svg", response_model=None)
+        def frontend_root_asset(request: Request):
+            asset_path = FRONTEND_DIST / request.url.path.lstrip("/")
+            return FileResponse(str(asset_path))
+
         @app.get("/", response_model=None)
         @app.get("/{path:path}", response_model=None)
         def spa(request: Request, path: str = ""):
