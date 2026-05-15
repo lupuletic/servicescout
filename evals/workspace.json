@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "name": "sock-shop",
+  "description": "Weaveworks sock-shop microservices demo. Polyglot (Go/Java/Node), HTTP + RabbitMQ async. Multi-repo by design — fits ServiceScout's target shape.",
+  "source": "https://microservices-demo.github.io/",
+  "repos": [
+    {"id": "microservices-demo/front-end",    "url": "https://github.com/microservices-demo/front-end.git",    "role": "Node.js UI; HTTP client of catalogue/carts/orders/user"},
+    {"id": "microservices-demo/catalogue",    "url": "https://github.com/microservices-demo/catalogue.git",   "role": "Go; product catalog; MySQL backend"},
+    {"id": "microservices-demo/carts",        "url": "https://github.com/microservices-demo/carts.git",       "role": "Java Spring Boot; shopping cart; MongoDB"},
+    {"id": "microservices-demo/orders",       "url": "https://github.com/microservices-demo/orders.git",      "role": "Java Spring Boot; order processing; MongoDB; calls payment + shipping; publishes to RabbitMQ"},
+    {"id": "microservices-demo/payment",      "url": "https://github.com/microservices-demo/payment.git",     "role": "Go; mock payment authorization"},
+    {"id": "microservices-demo/shipping",     "url": "https://github.com/microservices-demo/shipping.git",    "role": "Java Spring Boot; consumes from RabbitMQ shipping-task queue"},
+    {"id": "microservices-demo/queue-master", "url": "https://github.com/microservices-demo/queue-master.git","role": "Java Spring Boot; observes RabbitMQ queue depth"},
+    {"id": "microservices-demo/user",         "url": "https://github.com/microservices-demo/user.git",        "role": "Go; user accounts + authentication; MongoDB"},
+    {"id": "microservices-demo/load-test",    "url": "https://github.com/microservices-demo/load-test.git",   "role": "Python; smoke-test harness exercising the public flows"}
+  ]
+}

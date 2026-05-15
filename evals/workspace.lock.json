@@ -1,0 +1,14 @@
+{
+  "repos": {
+    "microservices-demo/carts": "f4e80051668c6a83359c41b03a27baefa590adc8",
+    "microservices-demo/catalogue": "925e08ee17c28b94b87160e1ae5e03da7f61cf84",
+    "microservices-demo/front-end": "52dee656f4423be041619bbb090205f912e00113",
+    "microservices-demo/load-test": "6ac732df7fac0860a8673da72f5527959fe7b606",
+    "microservices-demo/orders": "546a10c92d1ff9998c21f3849f5b95a0f14430a0",
+    "microservices-demo/payment": "384e33447dda5334187517dda09566c9a17fd6af",
+    "microservices-demo/queue-master": "7dc33721c765e5af415c9d244d84637ff2d510cd",
+    "microservices-demo/shipping": "9c0fbfa31895dd029d44d3434de93f64cd71f87b",
+    "microservices-demo/user": "e1a79e77860734cacc3f64cabff1487e22a442a4"
+  },
+  "version": 1
+}

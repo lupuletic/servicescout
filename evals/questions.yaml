@@ -1,0 +1,234 @@
+# Eval question set for the sock-shop workspace.
+#
+# Each question has two expectation blocks:
+#
+#   catalog: graded automatically against the ServiceScout catalog only.
+#            Free per run, deterministic, finishes in milliseconds.
+#
+#   agent:   graded against an agent's natural-language answer (baseline
+#            vs ServiceScout-augmented). Costs LLM tokens per run; opt in
+#            with `python evals/runner.py --agent`.
+#
+# Categories (15 questions):
+#   - routing       (5)   Single-target "where is X" questions.
+#   - sync-multihop (5)   HTTP request flow across 2-3 services.
+#   - async-multihop (3)  RabbitMQ-driven flows (the ServiceScout differentiator).
+#   - blast-radius  (2)   "What breaks if X goes down" reasoning.
+#
+# Ground truth derived from https://microservices-demo.github.io/docs/ and
+# the actual repo contents at the pinned SHAs in workspace.lock.json.
+
+version: 1
+
+questions:
+
+  # ---------------------- routing ----------------------
+
+  - id: routing-01
+    category: routing
+    question: "Which service handles user authentication and account management?"
+    catalog:
+      search_top_k: 5
+      search_must_include_any_of: ["Component:user"]
+    agent:
+      expected_repos: ["microservices-demo/user"]
+      expected_keywords_any_of: ["user service", "user-db", "authentication", "login", "Go"]
+      canonical_answer: "The 'user' service (Go) handles authentication and account management, backed by a MongoDB instance (user-db)."
+
+  - id: routing-02
+    category: routing
+    question: "Where is the product catalogue stored, and what database does it use?"
+    catalog:
+      search_top_k: 5
+      search_must_include_any_of: ["Component:catalogue", "Resource:catalogue-db"]
+    agent:
+      expected_repos: ["microservices-demo/catalogue"]
+      expected_keywords_any_of: ["catalogue", "MySQL", "Go"]
+      canonical_answer: "The 'catalogue' service (Go) holds product data and persists to MySQL (catalogue-db)."
+
+  - id: routing-03
+    category: routing
+    question: "Which service handles payment authorization?"
+    catalog:
+      search_top_k: 5
+      search_must_include_any_of: ["Component:payment"]
+    agent:
+      expected_repos: ["microservices-demo/payment"]
+      expected_keywords_any_of: ["payment", "Go", "authorize", "mock"]
+      canonical_answer: "The 'payment' service (Go) authorises payments. It is a mock implementation in the demo."
+
+  - id: routing-04
+    category: routing
+    question: "What technology backs the shopping cart's persistence layer?"
+    catalog:
+      search_top_k: 5
+      search_must_include_any_of: ["Component:carts", "Resource:carts-db"]
+    agent:
+      expected_repos: ["microservices-demo/carts"]
+      expected_keywords_any_of: ["MongoDB", "carts-db", "Java", "Spring Boot"]
+      canonical_answer: "The 'carts' service (Java Spring Boot) persists shopping carts in MongoDB (carts-db)."
+
+  - id: routing-05
+    category: routing
+    question: "What language is the front-end web application written in?"
+    catalog:
+      search_top_k: 5
+      search_must_include_any_of: ["Component:front-end"]
+    agent:
+      expected_repos: ["microservices-demo/front-end"]
+      expected_keywords_any_of: ["Node.js", "JavaScript", "Express"]
+      canonical_answer: "The 'front-end' is a Node.js application (Express) serving the UI."
+
+  # ---------------------- sync multi-hop ----------------------
+
+  - id: sync-01
+    category: sync-multihop
+    question: "When a user views a product detail page, which services does the request touch?"
+    catalog:
+      search_top_k: 5
+      search_must_include_any_of: ["Component:front-end", "Component:catalogue"]
+      trace:
+        start: "Component:front-end"
+        must_visit_any_of: ["Component:catalogue", "Resource:catalogue-db"]
+        max_hops: 4
+    agent:
+      expected_repos: ["microservices-demo/front-end", "microservices-demo/catalogue"]
+      expected_keywords_any_of: ["catalogue", "MySQL", "HTTP"]
+      canonical_answer: "front-end calls catalogue over HTTP; catalogue reads from MySQL (catalogue-db)."
+
+  - id: sync-02
+    category: sync-multihop
+    question: "When a user logs in, which services and databases are involved?"
+    catalog:
+      search_top_k: 6
+      search_must_include_any_of: ["Component:user", "Resource:user-db"]
+      trace:
+        start: "Component:front-end"
+        must_visit_any_of: ["Component:user", "Resource:user-db"]
+        max_hops: 4
+    agent:
+      expected_repos: ["microservices-demo/front-end", "microservices-demo/user"]
+      expected_keywords_any_of: ["user", "MongoDB", "user-db"]
+      canonical_answer: "front-end calls user service over HTTP; user reads from MongoDB (user-db)."
+
+  - id: sync-03
+    category: sync-multihop
+    question: "Trace the path of an 'add to cart' action from the UI to persistence."
+    catalog:
+      search_top_k: 6
+      search_must_include_any_of: ["Component:carts"]
+      trace:
+        start: "Component:front-end"
+        must_visit_any_of: ["Component:carts", "Resource:carts-db"]
+        max_hops: 4
+    agent:
+      expected_repos: ["microservices-demo/front-end", "microservices-demo/carts"]
+      expected_keywords_any_of: ["carts", "MongoDB", "HTTP"]
+      canonical_answer: "front-end calls carts over HTTP; carts persists to MongoDB (carts-db)."
+
+  - id: sync-04
+    category: sync-multihop
+    question: "What services are invoked when a user submits an order at checkout?"
+    catalog:
+      search_top_k: 8
+      search_must_include_any_of: ["Component:orders", "Component:payment", "Component:shipping"]
+      trace:
+        start: "Component:front-end"
+        must_visit_any_of: ["Component:orders", "Component:payment"]
+        max_hops: 5
+    agent:
+      expected_repos: ["microservices-demo/front-end", "microservices-demo/orders", "microservices-demo/payment", "microservices-demo/shipping"]
+      expected_keywords_any_of: ["orders", "payment", "shipping"]
+      canonical_answer: "front-end calls orders; orders calls payment (auth), then publishes a shipping task to RabbitMQ which shipping consumes."
+
+  - id: sync-05
+    category: sync-multihop
+    question: "Which services and resources does the orders service directly depend on?"
+    catalog:
+      search_top_k: 6
+      search_must_include_any_of: ["Component:orders"]
+      neighbors:
+        of: "Component:orders"
+        direction: "out"
+        must_include_targets_any_of: ["Component:payment", "Component:shipping", "Resource:orders-db", "Resource:rabbitmq"]
+    agent:
+      expected_repos: ["microservices-demo/orders"]
+      expected_keywords_any_of: ["payment", "shipping", "MongoDB", "RabbitMQ", "orders-db"]
+      canonical_answer: "orders depends on payment (HTTP), shipping (via RabbitMQ), MongoDB (orders-db), and RabbitMQ as a publisher."
+
+  # ---------------------- async multi-hop (ServiceScout's differentiator) ----------------------
+
+  - id: async-01
+    category: async-multihop
+    question: "After an order is placed, what happens asynchronously?"
+    catalog:
+      search_top_k: 8
+      search_must_include_any_of: ["Component:shipping", "Component:queue-master", "Resource:rabbitmq"]
+      trace:
+        start: "Component:orders"
+        must_visit_any_of: ["Component:shipping", "Component:queue-master"]
+        max_hops: 6
+        include_async: true
+    agent:
+      expected_repos: ["microservices-demo/orders", "microservices-demo/shipping", "microservices-demo/queue-master"]
+      expected_keywords_any_of: ["RabbitMQ", "shipping-task", "consumer", "queue"]
+      canonical_answer: "orders publishes a shipping task to RabbitMQ; shipping consumes and processes it; queue-master observes queue depth."
+
+  - id: async-02
+    category: async-multihop
+    question: "Which services consume messages from RabbitMQ in this system?"
+    catalog:
+      search_top_k: 5
+      search_must_include_any_of: ["Resource:rabbitmq"]
+      neighbors:
+        of: "Resource:rabbitmq"
+        direction: "in"
+        edge_types: ["consumesMessage"]
+        must_include_sources_any_of: ["Component:shipping", "Component:queue-master"]
+    agent:
+      expected_repos: ["microservices-demo/shipping", "microservices-demo/queue-master"]
+      expected_keywords_any_of: ["shipping", "queue-master", "RabbitMQ"]
+      canonical_answer: "shipping (processes shipping tasks) and queue-master (observability) consume from RabbitMQ."
+
+  - id: async-03
+    category: async-multihop
+    question: "Which service publishes the shipping-task message, and which consumes it?"
+    catalog:
+      search_top_k: 5
+      search_must_include_any_of: ["Component:orders", "Component:shipping"]
+    agent:
+      expected_repos: ["microservices-demo/orders", "microservices-demo/shipping"]
+      expected_keywords_any_of: ["orders publishes", "shipping consumes", "RabbitMQ"]
+      canonical_answer: "orders publishes shipping-task messages to RabbitMQ; shipping consumes them."
+
+  # ---------------------- blast radius ----------------------
+
+  - id: blast-01
+    category: blast-radius
+    question: "If MongoDB becomes unavailable, which services break or degrade?"
+    catalog:
+      search_top_k: 8
+      search_must_include_any_of: ["Resource:carts-db", "Resource:orders-db", "Resource:user-db"]
+      neighbors:
+        of: "Resource:carts-db"
+        direction: "in"
+        must_include_sources_any_of: ["Component:carts"]
+    agent:
+      expected_repos: ["microservices-demo/carts", "microservices-demo/orders", "microservices-demo/user"]
+      expected_keywords_any_of: ["carts", "orders", "user", "MongoDB"]
+      canonical_answer: "carts, orders, and user all back onto MongoDB instances (carts-db / orders-db / user-db) and would fail. catalogue (MySQL) and payment (stateless) survive."
+
+  - id: blast-02
+    category: blast-radius
+    question: "If RabbitMQ goes down, what fails or degrades?"
+    catalog:
+      search_top_k: 6
+      search_must_include_any_of: ["Resource:rabbitmq", "Component:shipping", "Component:queue-master"]
+      neighbors:
+        of: "Resource:rabbitmq"
+        direction: "both"
+        must_include_neighbors_any_of: ["Component:orders", "Component:shipping", "Component:queue-master"]
+    agent:
+      expected_repos: ["microservices-demo/orders", "microservices-demo/shipping", "microservices-demo/queue-master"]
+      expected_keywords_any_of: ["RabbitMQ", "publish", "consume", "shipping", "queue-master"]
+      canonical_answer: "orders cannot publish shipping tasks; shipping has nothing to consume; queue-master loses its observability target. The synchronous flows (browse, login, add-to-cart, payment auth) keep working."

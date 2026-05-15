@@ -1,0 +1,25 @@
+# Cloned eval workspace — pulled by setup.sh, not committed
+workspace/
+
+# The project-level .gitignore hides workspace.json (user-specific config).
+# Our eval workspace.json is the committed spec for sock-shop — un-hide it.
+!workspace.json
+
+# Per-eval-run artefacts (catalog snapshot, results, agent traces)
+data/
+runs/
+cache/
+
+# Local overrides
+*.local.*
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Note: evals/assets/ IS committed — those are the published baseline plots
+# embedded in the README. New runs land in evals/runs/<ts>/; promote with
+# `cp evals/runs/<ts>/*.png evals/assets/` when ready to ship.

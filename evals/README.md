@@ -1,0 +1,204 @@
+# ServiceScout evals
+
+A small, opinionated eval harness for measuring whether ServiceScout actually
+improves what AI agents (and curious humans) can learn about a multi-service
+codebase they don't have on their laptop.
+
+The workspace is [Weaveworks sock-shop](https://microservices-demo.github.io/)
+— 9 polyglot microservices with HTTP and RabbitMQ async messaging. Real
+multi-repo, real cross-language, real async. Exactly the shape that
+exercises the parts of ServiceScout most analogues skip.
+
+## Iteration 1 — baseline results
+
+First-run benchmark with no tuning. 9 sock-shop repos, catalog built via
+`codex / gpt-5.4-mini / effort=medium`, evaluated with the same model for
+both the agent and the LLM judge.
+
+| Metric | Cold-start baseline | With ServiceScout | Δ |
+|---|---:|---:|---:|
+| **Catalog pass rate** | — | **11/15 (73%)** | — |
+| **Agent repo recall** | 38.9% | **92.2%** | **+53.3 pp** |
+| **Keyword hit rate**  | 60.0% | 93.3% | +33.3 pp |
+| **Judge correctness** (1-5) | 1.27 | **3.33** | **+2.07** |
+| **Judge specificity** (1-5) | 1.07 | **3.40** | **+2.33** |
+| **Judge completeness** (1-5) | 1.00 | **3.00** | **+2.00** |
+| **Hallucination risk** (5=safe) | 3.60 | 3.60 | 0.00 |
+
+Headline finding: the treatment becomes *specific* without becoming *wrong*
+— hallucination risk doesn't move, but every other axis jumps 2+ points.
+
+![agent repo recall](assets/agent_repo_recall.png)
+![judge scores](assets/agent_judge_scores.png)
+![catalog pass rate](assets/catalog_pass_rate.png)
+![catalog metric heatmap](assets/catalog_metric_heatmap.png)
+
+### What the 4 catalog-tier failures tell us
+
+The four catalog-tier misses surface a real, fixable extraction issue
+(not a retrieval bug) that maps cleanly to the epic backlog:
+
+1. `async-02` / `blast-02` — questions assumed `Resource:rabbitmq`; the
+   LLM extracted RabbitMQ as `Component:RabbitMQ` / `Provider:RabbitMQ`.
+   Inconsistent infra-component kind classification — addressed by epic
+   item #1 (AST cross-check) + extractor-prompt tightening.
+2. `async-01` — async-multihop. Trace recall is 1.0 (the chain exists in
+   the graph); search recall is 0.0 because the top-K is dominated by API
+   entities instead of Components. Confidence-weighted RRF (epic item #6)
+   + kind-priority re-balancing would lift this.
+3. `sync-05` — half-recall on orders' direct dependencies. Verbose names
+   (`MongoDB-orders-database`) vs hypothesised short names (`orders-db`)
+   — extractor-prompt canonicalisation or alias reconciliation gap.
+
+Each subsequent iteration's plots land in `evals/assets/` and the numbers
+above get updated. Promote a new baseline with:
+
+```bash
+cp evals/runs/<latest>/*.png evals/assets/
+cp evals/runs/run_<ts>.json   evals/baselines/catalog_baseline.json
+```
+
+## Two tiers, two cadences
+
+| Tier | Cost | Speed | When to run |
+|---|---|---|---|
+| **Catalog** (`runner.py`) | $0 / run | seconds | Every change. Iterate freely. |
+| **Agent** (`runner.py --agent`) | ~$0.50-$2 / run with cache; ~$10 fresh | minutes | Release-candidate runs, weekly regression sweeps |
+
+The catalog tier grades the **graph itself** — does
+`servicescout_search("where is payment")` return the right component?
+Does `servicescout_trace` walk the expected async chain?
+
+The agent tier grades the **user-facing value** — given a question that a
+developer (or PM) at a 200-repo org might ask, does an agent armed only
+with ServiceScout outputs answer better than the same agent with no
+context at all? This is the *cold-start* comparison: it intentionally
+denies the baseline agent any filesystem access, because that's the real
+gap in a large enterprise — most engineers don't have the right repos
+cloned.
+
+## Quickstart
+
+```bash
+# 1. clone the 9 sock-shop repos at pinned SHAs
+./evals/setup.sh
+
+# 2. build a catalog for the cloned workspace
+#    (uses ServiceScout's normal extractor pipeline — costs LLM tokens once)
+#    Target evals/data/catalog.json so the eval catalog is isolated from
+#    your real catalog at data/catalog.json.
+WORKSPACE_ROOT=$(pwd)/evals/workspace \
+CATALOG_OUT=$(pwd)/evals/data/catalog.json \
+  python crawler.py --workspace evals/workspace.json   # adjust to your CLI flags
+
+# 3. catalog tier (free, fast — run on every change)
+python evals/runner.py
+
+# 4. agent tier (paid; uses ANTHROPIC_API_KEY)
+python evals/runner.py --agent
+
+# 5. render the report
+python evals/report.py
+```
+
+## Layout
+
+```
+evals/
+├── workspace.json          # the 9-repo workspace spec  (COMMITTED)
+├── workspace.lock.json     # pinned SHAs written by setup.sh  (COMMITTED after first run)
+├── questions.yaml          # 15 hand-curated questions w/ ground truth  (COMMITTED)
+├── judge_prompt.txt        # rubric for the LLM judge  (COMMITTED)
+├── setup.sh                # clones repos + pins SHAs
+├── runner.py               # top-level entry
+├── catalog_eval.py         # tier 1 — drives the same Backend interface MCP uses
+├── agent_eval.py           # tier 2 — cold-start agent comparison + caching
+├── score.py                # shared scoring helpers
+├── report.py               # markdown report + baseline diff
+├── workspace/              # cloned repos                    (GIT-IGNORED)
+├── data/                   # eval-specific catalog snapshot  (GIT-IGNORED)
+├── runs/                   # per-run results + markdown      (GIT-IGNORED)
+├── cache/                  # agent response cache            (GIT-IGNORED)
+└── baselines/              # promoted golden runs            (COMMITTED)
+    └── catalog_baseline.json
+```
+
+## The iteration loop
+
+The whole point is to make "did this change help?" a 5-second question.
+
+1. Promote your current clean run as the baseline:
+   ```bash
+   cp evals/runs/run_<ts>.json evals/baselines/catalog_baseline.json
+   git add evals/baselines/catalog_baseline.json
+   git commit -m "evals: promote baseline"
+   ```
+2. Make a change (extractor prompt, reconcile logic, retrieval scoring, etc.).
+3. Re-extract only what changed (will be cheap once item #2 of the epic ships).
+4. `python evals/runner.py`
+5. `python evals/report.py` — see the diff vs baseline in `runs/run_*__vs_baseline.md`.
+6. If green, promote the new baseline. If regressed, investigate.
+
+## What the metrics mean
+
+### Catalog tier
+
+For each question we run up to three checks:
+
+- **search_recall** — top-K results from `backend.search()` must include any
+  expected entity ref. Tests routing.
+- **neighbors_recall** — the actual graph neighbours of a given entity must
+  include the expected ones. Tests edge correctness (especially async).
+- **trace_recall** — the multi-hop plan from `backend.trace()` must visit any
+  expected intermediate node. Tests journey planning + async-chain expansion.
+
+A question **passes** when every applicable metric is 1.0. Partial credit is
+recorded in the `metrics` dict for trend tracking.
+
+### Agent tier
+
+For each question we run two trials with the same model:
+
+- **baseline** — no context, no tools, no repos. Pure training-time knowledge.
+  Simulates "engineer parachuted into a new org without the repos cloned."
+- **treatment** — same prompt + a context blob assembled from
+  `servicescout_search` + `servicescout_trace`. Simulates "agent has the
+  MCP server wired in and called the obvious tools."
+
+Each answer is scored on:
+
+- **repo_recall** — fraction of `expected_repos` mentioned in the answer.
+- **keyword_hit** — whether any `expected_keywords_any_of` token appears.
+- **judge** — an LLM judge (optional, `--no-judge` to skip) returning
+  `correctness`, `specificity`, `completeness`, `hallucination_risk` on a
+  1-5 scale using the rubric at `judge_prompt.txt`.
+
+Responses are cached by `(question_id, trial, model, prompt_hash)` —
+re-running with no changes costs zero tokens.
+
+## Why sock-shop specifically
+
+- **Multi-repo by design.** Each service is its own Git repo, just like a
+  real microservices org. Most demos are monorepos.
+- **Async chain.** `orders → RabbitMQ → shipping + queue-master` is the
+  canonical pattern ServiceScout's `producesMessage → consumesMessage`
+  traversal is built for. Nothing else in the public OSS demos has it
+  this clearly.
+- **Polyglot.** Go + Java/Spring + Node.js + Python. Tests that
+  extraction and confidence calibration aren't language-specific.
+- **Frozen.** The repos haven't materially evolved in years. Ground truth
+  is stable; SHA pinning keeps it that way.
+
+## Limits this scaffold accepts
+
+- The agent tier currently uses **direct Anthropic API calls** with a
+  pre-computed context blob, not real MCP-tool invocation by a subprocess
+  agent. This is intentionally simpler — it tests the *value of the
+  context* rather than the *quality of tool invocation by the agent*.
+  Swapping in `claude --print` (with the MCP server registered) is the
+  natural next step once it's worth the extra harness complexity.
+- The judge is a single Claude call with a temperature-default rubric.
+  Drift across model versions is real. Pin a judge model in CI and
+  treat the rubric as code.
+- 15 questions is a small N. Treat absolute numbers as illustrative;
+  trust *deltas* over absolute scores.
