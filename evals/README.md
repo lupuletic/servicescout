@@ -58,12 +58,28 @@ cp evals/runs/<latest>/*.png evals/assets/
 cp evals/runs/run_<ts>.json   evals/baselines/catalog_baseline.json
 ```
 
-## Two tiers, two cadences
+## Three iteration speeds
 
-| Tier | Cost | Speed | When to run |
-|---|---|---|---|
-| **Catalog** (`runner.py`) | $0 / run | seconds | Every change. Iterate freely. |
-| **Agent** (`runner.py --agent`) | ~$0.50-$2 / run with cache; ~$10 fresh | minutes | Release-candidate runs, weekly regression sweeps |
+You almost never want to re-extract all 9 repos. Pick the right speed for the
+change you just made:
+
+| Speed | Command | Cost | Time | When to use |
+|---|---|---|---|---|
+| **Re-eval only** | `python evals/runner.py` | $0 | seconds | Prompt-only change in retrieval / scoring / RRF — extractor untouched. |
+| **Targeted re-extract** | `./evals/build_eval_catalog.sh --only X,Y,Z` then re-eval | ~$0.50-$2 per repo | ~3 min per repo | Extractor prompt change that affects a *known cluster* (e.g. all messaging repos). |
+| **Full sweep** | `./evals/build_eval_catalog.sh` (all 9) + `runner.py --agent` | ~$5-15 | ~30 min + ~5 min agent | Release-candidate validation; ~weekly. Promote the result to baseline. |
+
+The catalog-tier eval is genuinely free at runtime — it drives the in-memory
+`Backend` over a pre-built `catalog.json` with zero LLM calls. The agent-tier
+caches by `sha256(prompt)`, so cached baseline answers stay valid across
+extraction changes (baseline prompts never see the catalog); only treatment
+answers re-roll when the catalog changes.
+
+**Cross-repo edge gotcha:** when targeted re-extraction touches a messaging
+cluster (producers + consumers + the broker), re-extract the *whole cluster*
+together. Otherwise you'll get half-complete chains in the merged catalog —
+e.g. a `producesMessage` from a re-extracted publisher with no matching
+`consumesMessage` from the consumer that wasn't re-extracted.
 
 The catalog tier grades the **graph itself** — does
 `servicescout_search("where is payment")` return the right component?
