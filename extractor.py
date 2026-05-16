@@ -209,7 +209,10 @@ OUTPUT GUIDANCE BY ENTITY:
     * Queue/topic/stream/event-bus destinations belong in `resources[]`, with
       technology set to the concrete transport (Kafka, RabbitMQ, ActiveMQ,
       AWS SQS/SNS/EventBridge, Google Pub/Sub, Azure Service Bus/Event Grid,
-      Kinesis, NATS, Redis Streams, etc.).
+      Kinesis, NATS, Redis Streams, etc.). The broker product itself (e.g.
+      "RabbitMQ", "Kafka") is the *transport*, not an entity — never list
+      it in `providers[]` and never emit a `dependsOn` edge targeting the
+      broker. The specific queue/topic/stream IS the entity.
     * For direct queues, set type=queue and access=publish, consume, or
       publish-consume as appropriate.
     * For pub/sub, event streams, and virtual-topic/subscription patterns, set
@@ -224,19 +227,37 @@ OUTPUT GUIDANCE BY ENTITY:
       subscription, queue, callback URL, bucket/prefix, or integration table.
   Cap at 30. Group near-identical per-tenant destinations into one resource and explain in notes.
 
-* dependencies[]: things this repo CALLS or CONSUMES from OUTSIDE its own resources list.
+* dependencies[]: edges this repo creates to OTHER entities. Cap at 40.
   Use `kind`:
     - dependsOn (general repo-to-repo / service-to-service / repo-to-provider)
     - consumesApi (calls a typed API surface of another service)
-    - producesMessage / consumesMessage (when the target is another component/service rather
-      than a broker resource that is already in this repo's resources list)
+    - producesMessage — this repo WRITES messages TO a queue/topic/stream.
+      `target` is the queue/topic Resource name; `target_kind=resource`.
+      Classify by ROLE, not by which client class is imported. A producer
+      invokes a send/publish operation from inside a request handler, a
+      scheduled task, an event handler, a CLI command, or a one-off
+      startup step. Confirm by finding the actual call site for the
+      send/publish/emit/put operation in this repo's code paths —
+      regardless of language or framework.
+    - consumesMessage — this repo READS messages FROM a queue/topic/stream.
+      `target` is the queue/topic Resource name; `target_kind=resource`.
+      A consumer registers a handler that runs whenever a message arrives,
+      OR runs an indefinite polling loop, OR exposes a subscription
+      callback. Any of: framework-managed listener bindings, an
+      explicit subscribe/consume/receive call in main(), or a worker
+      that blocks on a queue read. A module that merely instantiates a
+      broker client without invoking its send/publish operations is NOT
+      a producer — disambiguate by inspecting actual call sites in the
+      runtime path.
+      If a repo does BOTH (e.g. a worker that consumes queue A and
+      publishes to queue B), emit both edges with distinct targets.
     - readsResource / writesResource (only when the target is an externally-owned shared
       resource, not this repo's own DB)
   Pick the clearest `target` label; put hostnames, config keys, generated client class names
   into `aliases[]`. Set `target_kind` so the build pipeline can route it
   (`component`, `api`, `resource`, `provider`, `external`, `unknown`). When the target is a
   third-party SaaS / cloud / payment / identity provider, set `target_kind=provider` and make
-  sure the same provider also appears in the `providers[]` array. Cap at 40.
+  sure the same provider also appears in the `providers[]` array.
 
 * providers[]: third-party services this repo depends on — distinct from `resources[]` (which
   are owned dependencies like the repo's own DB). Examples: payment processors (Stripe, Adyen,
