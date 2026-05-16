@@ -8,7 +8,7 @@ import re
 from typing import Iterable
 
 
-CATEGORIES = ["routing", "sync-multihop", "async-multihop", "blast-radius"]
+CATEGORIES = ["routing", "sync-multihop", "async-multihop", "blast-radius", "structural"]
 JUDGE_AXES = ["correctness", "specificity", "completeness", "hallucination_risk"]
 
 
