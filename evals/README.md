@@ -9,6 +9,28 @@ The workspace is [Weaveworks sock-shop](https://microservices-demo.github.io/)
 multi-repo, real cross-language, real async. Exactly the shape that
 exercises the parts of ServiceScout most analogues skip.
 
+## Iteration 3 — added structural-quality questions
+
+Three new catalog-tier questions in a new `structural` category that
+assert internal invariants the catalog should always satisfy. Added
+after iter 2 and iter 2.1 both shipped structural bugs that no
+user-facing question caught.
+
+| Question | Asserts | Iter 3 result |
+|---|---|---:|
+| `structural-01` | Message brokers NOT in `providers[]` (broker is transport, not entity) | **PASS** — iter 2.1's structural win confirmed |
+| `structural-02` | `Resource:shipping-task` has `consumesMessage` in-edge from `Component:shipping` | **FAIL** — shipping wrongly marked as producer |
+| `structural-03` | `Resource:shipping-task` has `producesMessage` in-edge from `Component:orders` | **FAIL** — orders' publish edge missing entirely |
+
+These add no LLM cost (catalog-only) and turn two previously-invisible
+bugs into measurable signals. **Catalog tier moved from 11/15 → 12/18**:
++1 pass from the new structural-01 win, and the same 11 existing
+questions still pass.
+
+Iter 4 can now attempt to fix `shipping` direction and `orders` missing
+publish with a quantitative signal that the eval suite will register
+the improvement.
+
 ## Iteration 1 — baseline results
 
 First-run benchmark with no tuning. 9 sock-shop repos, catalog built via

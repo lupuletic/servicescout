@@ -232,3 +232,42 @@ questions:
       expected_repos: ["microservices-demo/orders", "microservices-demo/shipping", "microservices-demo/queue-master"]
       expected_keywords_any_of: ["RabbitMQ", "publish", "consume", "shipping", "queue-master"]
       canonical_answer: "orders cannot publish shipping tasks; shipping has nothing to consume; queue-master loses its observability target. The synchronous flows (browse, login, add-to-cart, payment auth) keep working."
+
+  # ---------------------- structural (internal quality assertions) ----------------------
+  #
+  # These don't map to user questions — they're internal invariants the catalog
+  # should always satisfy. They closed real eval gaps after iter 2 and iter 2.1
+  # both shipped subtle structural bugs that no user-facing question caught:
+  # iter 2 had shipping marked as publisher (wrong direction); iter 1/2 had
+  # RabbitMQ duplicated as Provider; orders has never emitted its publish edge.
+  # No `agent:` block — these are catalog-only.
+
+  - id: structural-01
+    category: structural
+    question: "Are message brokers correctly modeled as transport (not as Provider entities)?"
+    catalog:
+      must_not_exist_refs:
+        - "Provider:RabbitMQ"
+        - "Provider:Kafka"
+        - "Provider:NATS"
+        - "Provider:ActiveMQ"
+
+  - id: structural-02
+    category: structural
+    question: "Does the catalog correctly identify shipping as a consumer of shipping-task?"
+    catalog:
+      neighbors:
+        of: "Resource:shipping-task"
+        direction: "in"
+        edge_types: ["consumesMessage"]
+        must_include_sources_any_of: ["Component:shipping"]
+
+  - id: structural-03
+    category: structural
+    question: "Does the catalog capture orders publishing to shipping-task?"
+    catalog:
+      neighbors:
+        of: "Resource:shipping-task"
+        direction: "in"
+        edge_types: ["producesMessage"]
+        must_include_sources_any_of: ["Component:orders"]

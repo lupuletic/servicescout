@@ -57,6 +57,13 @@ def evaluate_question(backend: Any, question: dict) -> dict:
         if expected:
             metrics["neighbors_recall"] = recall_set(found, expected)
 
+    # --- must_not_exist (negative structural assertions) ---
+    if "must_not_exist_refs" in catalog_exp:
+        forbidden = catalog_exp["must_not_exist_refs"]
+        present = [ref for ref in forbidden if backend.describe(ref) is not None]
+        details["forbidden_refs_present"] = present
+        metrics["no_forbidden_refs"] = 1.0 if not present else 0.0
+
     # --- trace ---
     if "trace" in catalog_exp:
         spec = catalog_exp["trace"]
