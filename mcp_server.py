@@ -81,19 +81,23 @@ def build_server(
     )
 
     @mcp.tool()
-    def servicescout_search(query: str, limit: int = 8) -> dict[str, Any]:
+    def servicescout_search(query: str, limit: int = 8, min_confidence: str | None = None) -> dict[str, Any]:
         """Find the most relevant entities for a free-text prompt. Recommended entrypoint.
 
         Hybrid retrieval: Reciprocal Rank Fusion (k=60) over dense embedding similarity
-        and BM25-style lexical scoring. Returns the top-N Components / APIs / Resources
-        / Providers with score, tagline, source repos, and any matched domain_attribute
-        or glossary entries that fired on the query terms.
+        and BM25-style lexical scoring, with the fused score weighted by the entity's
+        catalog confidence (high=1.0, medium=0.7, low=0.4, review=0.1, unspecified=0.5).
+        Returns the top-N Components / APIs / Resources / Providers with score, tagline,
+        source repos, confidence, and any matched domain_attribute or glossary entries.
+
+        min_confidence: optional 'high' | 'medium' | 'low' | 'review' — drop entities below
+        this confidence threshold entirely. Default: include everything (down-weighted).
 
         To walk dependencies from a hit, call servicescout_neighbors or servicescout_trace.
         To get evidence for an edge, call servicescout_evidence.
         """
         qv = embed_query(query, project=project, location=location, model=embed_model, dim=embed_dim)
-        top = backend.search(query, query_vector=qv, limit=limit)
+        top = backend.search(query, query_vector=qv, limit=limit, min_confidence=min_confidence)
         return {
             "query": query,
             "limit": limit,
@@ -128,6 +132,7 @@ def build_server(
         direction: str = "out",
         depth: int = 1,
         edge_types: list[str] | None = None,
+        min_confidence: str | None = None,
     ) -> dict[str, Any]:
         """One-step (or multi-step) graph traversal in any direction.
 
@@ -150,7 +155,7 @@ def build_server(
         if direction not in {"out", "in", "both"}:
             return {"error": "invalid_direction", "valid": ["out", "in", "both"]}
         ref = f"{found['kind']}:{found['metadata']['name']}"
-        paths = backend.neighbors(ref, direction=direction, depth=max(depth, 1), edge_types=edge_types)
+        paths = backend.neighbors(ref, direction=direction, depth=max(depth, 1), edge_types=edge_types, min_confidence=min_confidence)
         return {
             "start": ref,
             "direction": direction,
@@ -167,6 +172,7 @@ def build_server(
         edge_types: list[str] | None = None,
         include_async: bool = True,
         fanout_per_node: int = 5,
+        min_confidence: str | None = None,
     ) -> dict[str, Any]:
         """Plan a multi-hop business-journey traversal across the KG. CANDIDATE hops only.
 
@@ -214,6 +220,7 @@ def build_server(
             edge_types=types,
             include_async=include_async,
             fanout_per_node=fanout_per_node,
+            min_confidence=min_confidence,
         )
         start_ent = backend.describe(start_ref)
         start_annotations = (start_ent.get("metadata", {}).get("annotations") if start_ent else {}) or {}

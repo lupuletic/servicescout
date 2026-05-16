@@ -36,9 +36,26 @@ SEARCHABLE_KINDS = {"Component", "API", "Resource", "Provider"}
 
 _KIND_PRIORITY = {"Component": 0, "Provider": 1, "Resource": 2, "API": 3, "System": 4, "Domain": 5, "Group": 6}
 
+# Confidence weighting and ordering. Used by search/neighbors/trace to
+# down-weight (or filter out) low-confidence entities and edges. None means
+# "unspecified" — treated as somewhere between low and medium.
+CONFIDENCE_WEIGHT = {"high": 1.0, "medium": 0.7, "low": 0.4, "review": 0.1, None: 0.5}
+_CONFIDENCE_ORDER = {"review": 0, "low": 1, None: 1, "medium": 2, "high": 3}
+
 
 def _kind_rank(entity: dict[str, Any]) -> int:
     return _KIND_PRIORITY.get(entity.get("kind", ""), 9)
+
+
+def _confidence_at_least(c: str | None, threshold: str | None) -> bool:
+    """True iff confidence c meets or exceeds threshold. None threshold → always True."""
+    if not threshold:
+        return True
+    return _CONFIDENCE_ORDER.get(c, 1) >= _CONFIDENCE_ORDER.get(threshold, 1)
+
+
+def _confidence_weight(c: str | None) -> float:
+    return CONFIDENCE_WEIGHT.get(c, CONFIDENCE_WEIGHT[None])
 
 
 # --------------------------------------------------------------------------- #
@@ -72,8 +89,11 @@ class Backend(abc.ABC):
         *,
         query_vector: list[float] | None,
         limit: int,
+        min_confidence: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Hybrid retrieval. RRF over dense + lexical rankings."""
+        """Hybrid retrieval. RRF over dense + lexical rankings, fused score
+        multiplied by entity confidence weight; entities below min_confidence
+        are dropped."""
 
     @abc.abstractmethod
     def neighbors(
@@ -83,8 +103,10 @@ class Backend(abc.ABC):
         direction: str,
         depth: int,
         edge_types: list[str] | None,
+        min_confidence: str | None = None,
     ) -> list[dict[str, Any]]:
-        """One-step (or multi-step) graph traversal in/out/both."""
+        """One-step (or multi-step) graph traversal in/out/both. Edges below
+        min_confidence are skipped."""
 
     @abc.abstractmethod
     def trace(
@@ -96,8 +118,10 @@ class Backend(abc.ABC):
         edge_types: list[str],
         include_async: bool,
         fanout_per_node: int,
+        min_confidence: str | None = None,
     ) -> dict[str, Any]:
-        """Multi-hop journey planner with optional async messaging chains."""
+        """Multi-hop journey planner with optional async messaging chains.
+        Hops along edges below min_confidence are pruned."""
 
     @abc.abstractmethod
     def evidence(self, src_ref: str, tgt_ref: str | None) -> list[dict[str, Any]]:
@@ -224,6 +248,7 @@ class JSONBackend(Backend):
         *,
         query_vector: list[float] | None,
         limit: int,
+        min_confidence: str | None = None,
     ) -> list[dict[str, Any]]:
         self._maybe_reload()
         if not self._candidates:
@@ -246,8 +271,17 @@ class JSONBackend(Backend):
         if not rankings:
             return []
         fused = _rrf(rankings)
+        # Confidence-aware: multiply each fused score by entity confidence
+        # weight (high=1.0, medium=0.7, low=0.4, review=0.1, unspecified=0.5).
+        # Drop entities below min_confidence entirely.
+        weighted: dict[int, float] = {}
+        for idx, score in fused.items():
+            ent_conf = self._candidates[idx].get("confidence")
+            if not _confidence_at_least(ent_conf, min_confidence):
+                continue
+            weighted[idx] = score * _confidence_weight(ent_conf)
         scored = [(s, vec_scores.get(i, 0.0), lex_scores.get(i, 0.0), self._candidates[i])
-                  for i, s in sorted(fused.items(), key=lambda kv: -kv[1])]
+                  for i, s in sorted(weighted.items(), key=lambda kv: -kv[1])]
         out = []
         for rrf_score, vec, lex, entity in scored[:limit]:
             out.append(_hit_record(entity, rrf_score, vec, lex, terms))
@@ -262,6 +296,7 @@ class JSONBackend(Backend):
         direction: str,
         depth: int,
         edge_types: list[str] | None,
+        min_confidence: str | None = None,
     ) -> list[dict[str, Any]]:
         self._maybe_reload()
         visited: set[str] = set()
@@ -277,11 +312,15 @@ class JSONBackend(Backend):
                     for rel in self._by_source.get(cur, []):
                         if edge_types and rel["type"] not in edge_types:
                             continue
+                        if not _confidence_at_least(rel.get("confidence"), min_confidence):
+                            continue
                         paths.append(_edge_record(rel["from"], rel["to"], "out", rel))
                         next_frontier.append(rel["to"])
                 if direction in {"in", "both"}:
                     for rel in self._by_target.get(cur, []):
                         if edge_types and rel["type"] not in edge_types:
+                            continue
+                        if not _confidence_at_least(rel.get("confidence"), min_confidence):
                             continue
                         paths.append(_edge_record(rel["from"], rel["to"], "in", rel))
                         next_frontier.append(rel["from"])
@@ -299,6 +338,7 @@ class JSONBackend(Backend):
         edge_types: list[str],
         include_async: bool,
         fanout_per_node: int,
+        min_confidence: str | None = None,
     ) -> dict[str, Any]:
         self._maybe_reload()
 
@@ -334,7 +374,11 @@ class JSONBackend(Backend):
                 if current_depth >= max_hops:
                     terminal_nodes.add(node_ref)
                     continue
-                raw = [r for r in self._by_source.get(node_ref, []) if r["type"] in edge_types]
+                raw = [
+                    r for r in self._by_source.get(node_ref, [])
+                    if r["type"] in edge_types
+                    and _confidence_at_least(r.get("confidence"), min_confidence)
+                ]
                 if not raw:
                     terminal_nodes.add(node_ref)
                     continue
@@ -372,6 +416,8 @@ class JSONBackend(Backend):
                     if include_async and relation["type"] == "producesMessage" and is_message_resource(target_ref):
                         for consumer_rel in self._by_target.get(target_ref, []):
                             if consumer_rel["type"] != "consumesMessage":
+                                continue
+                            if not _confidence_at_least(consumer_rel.get("confidence"), min_confidence):
                                 continue
                             consumer_ref = consumer_rel["from"]
                             if consumer_ref in new_path:
@@ -515,6 +561,7 @@ def _hit_record(entity: dict[str, Any], rrf_score: float, vec: float, lex: float
         "tagline": annotations.get("tagline", ""),
         "description": entity["metadata"].get("description", ""),
         "tags": entity["metadata"].get("tags", []),
+        "confidence": entity.get("confidence"),
         "score": round(rrf_score, 4),
         "vector_score": round(vec, 4),
         "lexical_score": round(lex, 4),
