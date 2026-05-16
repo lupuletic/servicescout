@@ -228,7 +228,7 @@ class KuzuBackend(Backend):
 
     # -- search ----------------------------------------------------------
 
-    def search(self, query: str, *, query_vector: list[float] | None, limit: int) -> list[dict[str, Any]]:
+    def search(self, query: str, *, query_vector: list[float] | None, limit: int, min_confidence: str | None = None) -> list[dict[str, Any]]:
         if not query:
             return []
         candidates: dict[str, dict[str, Any]] = {}
@@ -280,12 +280,18 @@ class KuzuBackend(Backend):
         ranking_indices = [[ref_to_idx[r] for r in rl if r in ref_to_idx] for rl in rank_lists]
         fused = _rrf(ranking_indices)
         idx_to_ref = {i: r for r, i in ref_to_idx.items()}
-        scored = [(s, idx_to_ref[i], candidates[idx_to_ref[i]]) for i, s in sorted(fused.items(), key=lambda kv: -kv[1])]
+        from storage import _confidence_at_least, _confidence_weight, _hit_record  # local import to avoid cycle
+        weighted: dict[int, float] = {}
+        for idx, score in fused.items():
+            ent_conf = candidates[idx_to_ref[idx]]["ent"].get("confidence")
+            if not _confidence_at_least(ent_conf, min_confidence):
+                continue
+            weighted[idx] = score * _confidence_weight(ent_conf)
+        scored = [(s, idx_to_ref[i], candidates[idx_to_ref[i]]) for i, s in sorted(weighted.items(), key=lambda kv: -kv[1])]
         terms = [t.lower() for t in re.split(r"[^A-Za-z0-9_-]+", query) if len(t) > 2]
         out = []
         for rrf_score, ref, data in scored[:limit]:
             ent = data["ent"]
-            from storage import _hit_record  # local import to avoid cycle
             out.append(_hit_record(ent, rrf_score, data["vec"], data["lex"], terms))
         return out
 
@@ -293,7 +299,8 @@ class KuzuBackend(Backend):
     # Identical algorithms to JSONBackend, just operating on the adjacency
     # built from the Kuzu DB at startup.
 
-    def neighbors(self, ref: str, *, direction: str, depth: int, edge_types: list[str] | None) -> list[dict[str, Any]]:
+    def neighbors(self, ref: str, *, direction: str, depth: int, edge_types: list[str] | None, min_confidence: str | None = None) -> list[dict[str, Any]]:
+        from storage import _confidence_at_least
         visited: set[str] = set()
         frontier = [ref]
         paths: list[dict[str, Any]] = []
@@ -307,18 +314,23 @@ class KuzuBackend(Backend):
                     for rel in self._by_source.get(cur, []):
                         if edge_types and rel["type"] not in edge_types:
                             continue
+                        if not _confidence_at_least(rel.get("confidence"), min_confidence):
+                            continue
                         paths.append(_edge_record(rel["from"], rel["to"], "out", rel))
                         next_frontier.append(rel["to"])
                 if direction in {"in", "both"}:
                     for rel in self._by_target.get(cur, []):
                         if edge_types and rel["type"] not in edge_types:
                             continue
+                        if not _confidence_at_least(rel.get("confidence"), min_confidence):
+                            continue
                         paths.append(_edge_record(rel["from"], rel["to"], "in", rel))
                         next_frontier.append(rel["from"])
             frontier = next_frontier
         return paths
 
-    def trace(self, *, start_ref: str, end_match: str | None, max_hops: int, edge_types: list[str], include_async: bool, fanout_per_node: int) -> dict[str, Any]:
+    def trace(self, *, start_ref: str, end_match: str | None, max_hops: int, edge_types: list[str], include_async: bool, fanout_per_node: int, min_confidence: str | None = None) -> dict[str, Any]:
+        from storage import _confidence_at_least
         def tagline_for(r: str) -> str:
             ent = self._entity_index.get(r)
             if not ent:
@@ -351,7 +363,11 @@ class KuzuBackend(Backend):
                 if current_depth >= max_hops:
                     terminal_nodes.add(node_ref)
                     continue
-                raw = [r for r in self._by_source.get(node_ref, []) if r["type"] in edge_types]
+                raw = [
+                    r for r in self._by_source.get(node_ref, [])
+                    if r["type"] in edge_types
+                    and _confidence_at_least(r.get("confidence"), min_confidence)
+                ]
                 if not raw:
                     terminal_nodes.add(node_ref)
                     continue
@@ -387,6 +403,8 @@ class KuzuBackend(Backend):
                     if include_async and relation["type"] == "producesMessage" and is_message_resource(target_ref):
                         for consumer_rel in self._by_target.get(target_ref, []):
                             if consumer_rel["type"] != "consumesMessage":
+                                continue
+                            if not _confidence_at_least(consumer_rel.get("confidence"), min_confidence):
                                 continue
                             consumer_ref = consumer_rel["from"]
                             if consumer_ref in new_path:
