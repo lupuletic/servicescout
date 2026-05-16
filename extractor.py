@@ -65,10 +65,14 @@ or Grep tool. Useful search terms:
   HTTP/REST:    RestTemplate, WebClient, FeignClient, HttpClient, requests, axios, fetch, httpx,
                 baseUrl, baseURL, RestClient, @FeignClient, OpenFeign
   GraphQL:      graphql, GraphQLClient, useQuery, useMutation, gql`, ApolloClient, urql
-  Messaging:    JmsTemplate, JmsListener, @JmsListener, ActiveMQ, activemq, amq, Camel,
+  Messaging:    publish, subscribe, producer, consumer, broker, queue, topic, stream,
+                exchange, routingKey, consumerGroup, deadLetter, dlq, outbox, inbox,
+                @KafkaListener, KafkaTemplate, kafka, kinesis, EventHub, EventBridge,
+                SqsClient, SnsClient, sqs, sns, PubSubTemplate, @PubSubListener,
+                google.pubsub, ServiceBus, EventGrid, RabbitTemplate, RabbitMQ, amqp,
+                JmsTemplate, JmsListener, @JmsListener, ActiveMQ, activemq, amq, Camel,
                 CamelContext, from(\"activemq:\"), from(\"jms:\"), VirtualTopic, Consumer.,
-                jmsContainerFactory, @KafkaListener, KafkaTemplate, PubSubTemplate, @PubSubListener,
-                publish, subscribe, broker
+                nats, RedisStream, XREAD, XADD, webhook
   Datastores:   datasource, jdbc, r2dbc, JdbcTemplate, JpaRepository, CrudRepository, @Entity,
                 @Table, @Document, MongoTemplate, MongoRepository, CouchbaseTemplate, RedisTemplate,
                 ElasticsearchOperations, opensearch, ElasticsearchClient, RestHighLevelClient,
@@ -199,17 +203,25 @@ OUTPUT GUIDANCE BY ENTITY:
     tables_or_collections[] (top tables/collections/buckets from entities, migrations, or
     repository classes — cap at 12), access (read/write/read-write), env_or_config_keys[],
     datasource_url (template form, e.g. `jdbc:postgresql://${{db.host}}:5432/${{db.name}}`).
-  ActiveMQ / JMS — capture the broker pattern explicitly:
-    * type=virtual-topic for `VirtualTopic.<name>` destinations the repo PRODUCES to
-      (set messaging_pattern=virtual-topic, access=publish).
-    * type=consumer-queue for `Consumer.<consumerName>.VirtualTopic.<name>` destinations the
-      repo CONSUMES from (set messaging_pattern=consumer-queue, access=consume,
-      subscribes_to=<the VirtualTopic name without the Consumer prefix>).
-    * type=queue for plain broker queues (no Consumer/VirtualTopic prefix); access=publish,
-      consume, or publish-consume as appropriate.
-    * type=topic for non-virtual topics.
-    * Always set technology="ActiveMQ" or "ActiveMQ Artemis" and capture env_or_config_keys
-      such as `*.broker.url`, `spring.activemq.broker-url`.
+  Communication endpoints — capture the shared contract/destination explicitly:
+    * HTTP/REST/GraphQL/gRPC/SOAP surfaces belong in `apis[]`; callers belong in
+      `dependencies[]` with protocol and operation_or_usage.
+    * Queue/topic/stream/event-bus destinations belong in `resources[]`, with
+      technology set to the concrete transport (Kafka, RabbitMQ, ActiveMQ,
+      AWS SQS/SNS/EventBridge, Google Pub/Sub, Azure Service Bus/Event Grid,
+      Kinesis, NATS, Redis Streams, etc.).
+    * For direct queues, set type=queue and access=publish, consume, or
+      publish-consume as appropriate.
+    * For pub/sub, event streams, and virtual-topic/subscription patterns, set
+      type=topic, stream, subscription, virtual-topic, or consumer-queue as
+      appropriate; set `subscribes_to` to the shared topic/stream when the
+      consumed destination is a subscription/consumer-specific endpoint.
+    * For webhook receivers, expose the callback route in `apis[]`; for webhook
+      senders, add a dependency with protocol=webhook and the callback/config key.
+    * For file/object-storage or database handoffs, model the shared bucket,
+      prefix, table, outbox, or inbox as a resource and set read/write access.
+    * Always capture env_or_config_keys that name the endpoint, broker, stream,
+      subscription, queue, callback URL, bucket/prefix, or integration table.
   Cap at 30. Group near-identical per-tenant destinations into one resource and explain in notes.
 
 * dependencies[]: things this repo CALLS or CONSUMES from OUTSIDE its own resources list.

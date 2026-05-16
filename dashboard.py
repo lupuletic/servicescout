@@ -7,6 +7,7 @@ Serves:
   /api/entities     Searchable entity list, filterable by kind.
   /api/entity/:ref  Full record for one entity.
   /api/graph        Node/edge JSON for the Sigma graph viewer.
+  /api/communications Derived service-to-service communication flows.
   /api/triage.json  Unresolved external components.
   /triage/decide    POST endpoint for triage actions.
 
@@ -29,7 +30,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -202,6 +203,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 "relations": summary.get("relations") or 0,
                 "repos_indexed": summary.get("repos_indexed") or 0,
                 "unresolved_external_components": summary.get("unresolved_external_components") or 0,
+                "derived_communication_flows": summary.get("derived_communication_flows") or 0,
                 "node_kinds": summary.get("node_kinds") or {},
                 "relation_types": summary.get("relation_types") or {},
             },
@@ -328,12 +330,12 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
 
     @app.get("/api/graph")
     def api_graph(
-        kind: list[str] | None = None,
+        kind: list[str] | None = Query(default=None),
         limit: int = 400,
         include_orphans: bool = False,
         center: str | None = None,
         depth: int = 1,
-        edge_type: list[str] | None = None,
+        edge_type: list[str] | None = Query(default=None),
     ) -> JSONResponse:
         """Return nodes + edges in a Sigma-friendly shape.
 
@@ -395,6 +397,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                     "target": relation["to"],
                     "type": relation["type"],
                     "confidence": relation.get("confidence"),
+                    "properties": relation.get("properties") or {},
                 })
             nodes = []
             for entity in ego_entities:
@@ -448,6 +451,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                     "target": relation["to"],
                     "type": relation["type"],
                     "confidence": relation.get("confidence"),
+                    "properties": relation.get("properties") or {},
                 })
                 connected.add(relation["from"])
                 connected.add(relation["to"])
@@ -475,6 +479,42 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             "edge_total": edge_total,
             "include_orphans": include_orphans,
         })
+
+    @app.get("/api/communications")
+    def api_communications(limit: int = 500, transport: str | None = None) -> JSONResponse:
+        catalog = load_catalog(catalog_path)
+        entities_by_ref = {
+            f"{e['kind']}:{e['metadata']['name']}": e
+            for e in (catalog.get("entities") or [])
+            if e.get("kind") and e.get("metadata", {}).get("name")
+        }
+        flows: list[dict[str, Any]] = []
+        for relation in catalog.get("relations") or []:
+            if relation.get("type") != "communicatesWith":
+                continue
+            props = relation.get("properties") or {}
+            transports = [str(t) for t in (props.get("transports") or []) if t]
+            primary_transport = props.get("transport") or (transports[0] if transports else "")
+            if transport and transport.lower() not in {t.lower() for t in transports + [primary_transport]}:
+                continue
+            source_entity = entities_by_ref.get(relation.get("from"))
+            target_entity = entities_by_ref.get(relation.get("to"))
+            flows.append({
+                "source": relation.get("from"),
+                "source_name": ((source_entity or {}).get("metadata") or {}).get("name") or relation.get("from"),
+                "target": relation.get("to"),
+                "target_name": ((target_entity or {}).get("metadata") or {}).get("name") or relation.get("to"),
+                "endpoint": props.get("endpoint") or "",
+                "endpoints": props.get("endpoints") or [],
+                "transport": primary_transport,
+                "transports": transports,
+                "mechanism": props.get("mechanism") or "",
+                "mechanisms": props.get("mechanisms") or [],
+                "confidence": relation.get("confidence"),
+                "evidence_count": len(relation.get("evidence") or []),
+            })
+        flows.sort(key=lambda f: (f["source_name"], f["target_name"], f["endpoint"]))
+        return JSONResponse({"flows": flows[:limit], "count": len(flows), "limit": limit})
 
     @app.get("/api/triage.json")
     def api_triage() -> JSONResponse:
@@ -531,6 +571,14 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
     if FRONTEND_DIST.exists() and (FRONTEND_DIST / "index.html").exists():
         # Static files (JS/CSS/etc.) under /assets.
         app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
+
+        @app.get("/app-logo.png", response_model=None)
+        @app.get("/favicon.png", response_model=None)
+        @app.get("/favicon.svg", response_model=None)
+        @app.get("/icons.svg", response_model=None)
+        def frontend_root_asset(request: Request):
+            asset_path = FRONTEND_DIST / request.url.path.lstrip("/")
+            return FileResponse(str(asset_path))
 
         @app.get("/", response_model=None)
         @app.get("/{path:path}", response_model=None)

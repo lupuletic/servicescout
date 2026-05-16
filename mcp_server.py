@@ -179,8 +179,9 @@ def build_server(
           start: free-text description ('user clicks login button') OR an entity ref ('Component:account').
           end: optional terminal — entity ref, or 'kind:Resource' to stop at any datastore/topic.
           max_hops: BFS depth cap. Default 6. Bump for very long async chains (e.g. 10-12).
-          edge_types: which edges to follow. Defaults to consumesApi/consumesMessage/producesMessage/
-                      dependsOn/readsResource/writesResource. Pass a subset to focus traversal.
+          edge_types: which edges to follow. Defaults to communicatesWith plus
+                      the lower-level API/message/resource dependency edges. Pass
+                      a subset to focus traversal.
           include_async: when a producesMessage edge lands on a topic, also follow downstream
                          consumesMessage edges (turns synchronous traces into full async-aware traces).
           fanout_per_node: cap branches per edge type per node so the trace stays tractable.

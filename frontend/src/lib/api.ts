@@ -7,6 +7,7 @@ export type StatusPayload = {
     relations?: number;
     repos_indexed?: number;
     unresolved_external_components?: number;
+    derived_communication_flows?: number;
     node_kinds?: Record<string, number>;
     relation_types?: Record<string, number>;
   };
@@ -25,7 +26,7 @@ export type StatusPayload = {
 
 export type GraphPayload = {
   nodes: Array<{ id: string; label: string; kind: string; system?: string; tagline?: string }>;
-  edges: Array<{ id: string; source: string; target: string; type: string; confidence?: string }>;
+  edges: Array<{ id: string; source: string; target: string; type: string; confidence?: string; properties?: Record<string, any> }>;
   truncated: boolean;
   node_total: number;
   edge_total: number;

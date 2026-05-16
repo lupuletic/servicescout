@@ -27,6 +27,7 @@ from typing import Any, Iterable
 
 
 DEFAULT_FLOW_EDGE_TYPES = [
+    "communicatesWith",
     "consumesApi", "consumesMessage", "producesMessage",
     "dependsOn", "readsResource", "writesResource",
 ]

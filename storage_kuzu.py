@@ -19,8 +19,9 @@ Layout in Kuzu:
     embedding FLOAT[768]
   )
 
-  REL TABLE consumesApi / consumesMessage / producesMessage / dependsOn /
-            readsResource / writesResource / providesApi / ownedBy / partOf (
+  REL TABLE communicatesWith / consumesApi / consumesMessage / producesMessage /
+            dependsOn / readsResource / writesResource / providesApi / ownedBy /
+            partOf / subcomponentOf (
     FROM Entity TO Entity,
     evidence_json STRING,
     confidence STRING,
@@ -55,6 +56,7 @@ from storage import (
 # Edge types we model as Kuzu relation tables. Must match the relation types
 # emitted by build_catalog.py.
 REL_TYPES = [
+    "communicatesWith",
     "consumesApi",
     "consumesMessage",
     "producesMessage",
@@ -64,6 +66,7 @@ REL_TYPES = [
     "providesApi",
     "ownedBy",
     "partOf",
+    "subcomponentOf",
 ]
 
 

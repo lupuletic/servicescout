@@ -17,9 +17,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       {/* Top bar */}
       <header className="col-span-2 flex items-center justify-between px-5 border-b border-border bg-bg-elevated">
         <div className="flex items-center gap-2.5">
-          <div className="h-6 w-6 rounded-md bg-accent flex items-center justify-center text-accent-fg text-xs font-bold">
-            S
-          </div>
+          <img src="/app-logo.png" alt="" className="h-7 w-7 object-contain" aria-hidden="true" />
           <span className="font-semibold tracking-tight text-fg">ServiceScout</span>
           <span className="text-fg-dim text-xs ml-1">v0 · alpha</span>
         </div>
