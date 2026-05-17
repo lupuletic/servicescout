@@ -121,7 +121,10 @@ JAVA_RULES = {
             (#match? @obj "(?i)(template|producer|broker|publisher|channel|client|emitter|bus|amqp|jms|kafka|rabbit|sns|sqs|eventbridge)$"))
         ] @hit
     """,
-    # Async consume — listener annotations + manual consume calls
+    # Async consume — annotations (modern), programmatic bindings
+    # (Spring's SimpleMessageListenerContainer / MessageListenerAdapter,
+    # which are pre-annotation but still standard in many codebases),
+    # and direct method calls.
     "consumesMessage": r"""
         [
           (annotation name: (identifier) @n
@@ -130,7 +133,13 @@ JAVA_RULES = {
             (#match? @n2 "Listener$|^RabbitHandler$"))
           (method_invocation
             name: (identifier) @m
-            (#match? @m "^(receive|consume|poll|basicConsume|onMessage|subscribe|listen)$"))
+            (#match? @m "^(receive|consume|poll|basicConsume|onMessage|subscribe|listen|handleMessage|onEvent|setMessageListener|setQueueNames|setQueueName|addQueueNames)$"))
+          (object_creation_expression
+            type: (type_identifier) @t
+            (#match? @t "^(SimpleMessageListenerContainer|DirectMessageListenerContainer|MessageListenerContainer|MessageListenerAdapter|DefaultMessageListenerContainer)$"))
+          (method_declaration
+            name: (identifier) @md
+            (#match? @md "^(handleMessage|onMessage|receive|consume)$"))
         ] @hit
     """,
     # HTTP outbound call

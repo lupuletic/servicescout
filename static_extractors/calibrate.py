@@ -172,10 +172,27 @@ def collect_problems(
     payload: dict[str, Any],
     report_a: VerifyReport,
     report_b: AstReport | None = None,
+    *,
+    include_mixed: bool = False,
 ) -> list[dict[str, Any]]:
     """Return a list of facts the LLM should re-examine. Used by the
-    correction loop. A fact is a problem if its combined verdict is
-    `disconfirmed` or `mixed`.
+    correction loop.
+
+    Default policy (conservative): a fact is a problem only if its
+    combined verdict is `disconfirmed`. Mixed verdicts are NOT corrected
+    by default because:
+
+      - `mixed` from Phase A means SOME evidence verifies — the fact is
+        likely correct, just with one paraphrased snippet.
+      - `mixed` from "Phase A confirmed + Phase B disconfirmed" usually
+        means Phase B's rule doesn't recognise a legitimate framework
+        pattern (e.g. Spring's `SimpleMessageListenerContainer` doesn't
+        match a simple `*.consume()` regex). Asking the LLM to "fix" a
+        correct fact often results in the LLM dropping it — *worse* than
+        leaving it alone.
+
+    Set `include_mixed=True` to opt back into the previous behaviour
+    (broader correction surface, lower safety).
 
     The returned dicts are LLM-prompt-ready: they name the category and
     index, the human-readable label, the reasons each evidence item
@@ -196,7 +213,11 @@ def collect_problems(
         b_check = ast_index.get(fact_check.index) if cat == "dependencies" else None
         b_verdict = b_check.verdict if b_check else None
         combined, explanation = _combined_verdict(a_verdict, b_verdict)
-        if combined not in ("disconfirmed", "mixed"):
+        if combined == "disconfirmed":
+            pass
+        elif combined == "mixed" and include_mixed:
+            pass
+        else:
             continue
         reasons: list[str] = []
         for d in fact_check.details:
