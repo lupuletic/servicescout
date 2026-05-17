@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from repo_discovery import find_repos, load_workspace_config
-from static_extractors import ast_crosscheck, calibrate, snippet_verify
+from static_extractors import ast_crosscheck, calibrate, correction, snippet_verify
 
 
 HERE = Path(__file__).parent
@@ -612,6 +612,125 @@ def claude_extract(
     return payload, run
 
 
+def codex_correct(
+    repo: dict[str, Any],
+    prompt: str,
+    model: str | None,
+    effort: str,
+    timeout_seconds: int = 600,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Single targeted correction call to Codex with the correction schema.
+
+    Smaller / shorter than `codex_extract` — no stream-log handling, tighter
+    timeout, and the supplied prompt+schema instead of the main extraction
+    prompt and catalog schema. Used by the Phase A+B correction loop.
+    """
+    codex = shutil.which("codex")
+    if not codex:
+        raise SystemExit("codex CLI was not found on PATH")
+    work_dir = DEFAULT_OUTPUT_DIR / ".scratch"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    schema_path = work_dir / f".{repo['name']}.correction.schema.json"
+    result_path = work_dir / f".{repo['name']}.correction.result.json"
+    schema_path.write_text(
+        json.dumps(correction.CORRECTION_SCHEMA, indent=2) + "\n", encoding="utf-8"
+    )
+    if result_path.exists():
+        result_path.unlink()
+    cmd = [
+        codex,
+        "exec",
+        "--ephemeral",
+        "-c",
+        f'model_reasoning_effort="{effort}"',
+        "--cd",
+        repo["absolute_path"],
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "--output-schema",
+        str(schema_path),
+        "--output-last-message",
+        str(result_path),
+    ]
+    if model:
+        cmd.extend(["--model", model])
+    cmd.append(prompt)
+    started = time.monotonic()
+    completed = subprocess.run(
+        cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout_seconds
+    )
+    payload = _read_json_if_valid(result_path)
+    if payload is None:
+        raise RuntimeError(
+            f"codex correction returned no usable JSON for {repo['id']} (rc={completed.returncode})"
+        )
+    run = {
+        "provider": "codex",
+        "model": model or "default",
+        "effort": effort,
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "returncode": completed.returncode,
+        "kind": "correction",
+    }
+    return payload, run
+
+
+def claude_correct(
+    repo: dict[str, Any],
+    prompt: str,
+    model: str,
+    effort: str,
+    max_budget_usd: str | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Single targeted correction call to Claude with the correction schema."""
+    claude = shutil.which("claude")
+    if not claude:
+        raise SystemExit("claude CLI was not found on PATH")
+    cmd = [
+        claude,
+        "-p",
+        prompt,
+        "--output-format",
+        "json",
+        "--json-schema",
+        json.dumps(correction.CORRECTION_SCHEMA, separators=(",", ":")),
+        "--permission-mode",
+        "dontAsk",
+        "--model",
+        model,
+        "--effort",
+        effort,
+        "--allowedTools",
+        "Read,Grep,Glob,Bash(rg *)",
+        "--add-dir",
+        repo["absolute_path"],
+    ]
+    if max_budget_usd:
+        cmd.extend(["--max-budget-usd", max_budget_usd])
+    started = time.monotonic()
+    completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout[:1000]
+        raise RuntimeError(detail or f"claude correction exited with {completed.returncode}")
+    raw = json.loads(completed.stdout)
+    if isinstance(raw, dict) and isinstance(raw.get("structured_output"), dict):
+        payload = raw["structured_output"]
+    elif isinstance(raw, dict) and isinstance(raw.get("result"), str):
+        payload = json.loads(raw["result"])
+    else:
+        payload = raw
+    run = {
+        "provider": "claude",
+        "model": model,
+        "effort": effort,
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "returncode": 0,
+        "kind": "correction",
+    }
+    return payload, run
+
+
 def validate_against_schema(payload: dict[str, Any]) -> list[str]:
     try:
         import jsonschema
@@ -699,6 +818,21 @@ def append_run_ledger(record: dict[str, Any]) -> Path:
     return RUNS_LEDGER
 
 
+def _correction_call(
+    repo: dict[str, Any],
+    prompt: str,
+    *,
+    provider: str,
+    model: str | None,
+    effort: str,
+    timeout_seconds: int,
+    max_budget_usd: str | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if provider == "claude":
+        return claude_correct(repo, prompt, model or "sonnet", effort, max_budget_usd)
+    return codex_correct(repo, prompt, model, effort, timeout_seconds=max(300, timeout_seconds // 2))
+
+
 def run_for_repo(
     repo: dict[str, Any],
     *,
@@ -710,6 +844,7 @@ def run_for_repo(
     stream_logs: bool,
     max_budget_usd: str | None,
     output_dir: Path,
+    correction_rounds: int = 1,
 ) -> dict[str, Any]:
     if provider == "claude":
         payload, run = claude_extract(repo, model or "sonnet", effort, max_budget_usd)
@@ -720,6 +855,7 @@ def run_for_repo(
     quarantined = confine_evidence_paths(payload, repo_root)
     errors = validate_against_schema(payload)
     cross_check = None
+    correction_runs: list[dict[str, Any]] = []
     if not errors:
         # Phase A (snippet substring) + Phase B (tree-sitter AST) cross-checks
         # on the LLM's evidence. Phase A asks "is the snippet at the cited
@@ -727,9 +863,53 @@ def run_for_repo(
         # edge claims it does?". The calibrator combines both verdicts into
         # confidence changes on `dependencies` and `resources`, and annotates
         # every fact with `_cross_check` (and `_cross_check_ast` for deps).
-        report_a = snippet_verify.verify_payload(payload, repo_root)
-        report_b = ast_crosscheck.verify_payload(payload, repo_root)
-        cross_check = calibrate.apply(payload, report_a, report_b)
+        for round_idx in range(max(0, correction_rounds)):
+            report_a = snippet_verify.verify_payload(payload, repo_root)
+            report_b = ast_crosscheck.verify_payload(payload, repo_root)
+            problems = calibrate.collect_problems(payload, report_a, report_b)
+            if not problems:
+                break
+            try:
+                prompt = correction.build_correction_prompt(
+                    repo["id"], repo["absolute_path"], problems
+                )
+                raw, c_run = _correction_call(
+                    repo,
+                    prompt,
+                    provider=provider,
+                    model=model,
+                    effort=effort,
+                    timeout_seconds=timeout_seconds,
+                    max_budget_usd=max_budget_usd,
+                )
+                directives = correction.parse_correction_response(raw)
+                apply_summary = correction.apply_corrections(payload, directives)
+                # Re-quarantine in case corrections introduced bad paths.
+                quarantined += confine_evidence_paths(payload, repo_root)
+                round_errors = validate_against_schema(payload)
+                correction_runs.append(
+                    {
+                        "round": round_idx + 1,
+                        "problems_input": len(problems),
+                        "directives_returned": len(directives),
+                        "applied": apply_summary,
+                        "run": c_run,
+                        "post_correction_validation_errors": round_errors,
+                    }
+                )
+                if round_errors:
+                    errors = round_errors
+                    break
+            except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
+                correction_runs.append(
+                    {"round": round_idx + 1, "problems_input": len(problems), "error": str(exc)}
+                )
+                break
+
+        if not errors:
+            report_a = snippet_verify.verify_payload(payload, repo_root)
+            report_b = ast_crosscheck.verify_payload(payload, repo_root)
+            cross_check = calibrate.apply(payload, report_a, report_b)
     payload["_meta"] = {
         "provider": provider,
         "model": run["model"],
@@ -740,6 +920,7 @@ def run_for_repo(
         "evidence_quarantined": quarantined,
         "validation_errors": errors,
         "cross_check": cross_check,
+        "correction_runs": correction_runs,
         "run": run,
     }
     if errors:
@@ -774,6 +955,13 @@ def main() -> int:
     parser.add_argument("--max-budget-usd", default=None)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--workspace", type=Path, default=HERE / "workspace.json")
+    parser.add_argument(
+        "--correction-rounds",
+        type=int,
+        default=1,
+        help="Phase A+B verifier correction rounds to run after extraction. "
+             "0 disables the correction loop; values >2 rarely help in practice.",
+    )
     args = parser.parse_args()
 
     root = args.root.resolve()
@@ -793,6 +981,7 @@ def main() -> int:
         stream_logs=args.stream_logs,
         max_budget_usd=args.max_budget_usd,
         output_dir=args.output_dir if args.output_dir.is_absolute() else (HERE / args.output_dir),
+        correction_rounds=args.correction_rounds,
     )
     print("EXTRACTOR_RESULT " + json.dumps(result, sort_keys=True))
     return 0
