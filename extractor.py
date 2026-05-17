@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from repo_discovery import find_repos, load_workspace_config
-from static_extractors import calibrate, snippet_verify
+from static_extractors import ast_crosscheck, calibrate, snippet_verify
 
 
 HERE = Path(__file__).parent
@@ -721,12 +721,15 @@ def run_for_repo(
     errors = validate_against_schema(payload)
     cross_check = None
     if not errors:
-        # Phase A: deterministic snippet substring cross-check against the
-        # cited file:line. Calibrates `confidence` on resources/dependencies
-        # and annotates every fact with `_cross_check` so the dashboard,
-        # reconcile audit, and downstream evals can see what grounded out.
-        report = snippet_verify.verify_payload(payload, repo_root)
-        cross_check = calibrate.apply(payload, report)
+        # Phase A (snippet substring) + Phase B (tree-sitter AST) cross-checks
+        # on the LLM's evidence. Phase A asks "is the snippet at the cited
+        # line?"; Phase B asks "does the cited line actually do what the
+        # edge claims it does?". The calibrator combines both verdicts into
+        # confidence changes on `dependencies` and `resources`, and annotates
+        # every fact with `_cross_check` (and `_cross_check_ast` for deps).
+        report_a = snippet_verify.verify_payload(payload, repo_root)
+        report_b = ast_crosscheck.verify_payload(payload, repo_root)
+        cross_check = calibrate.apply(payload, report_a, report_b)
     payload["_meta"] = {
         "provider": provider,
         "model": run["model"],
