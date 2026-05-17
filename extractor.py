@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from repo_discovery import find_repos, load_workspace_config
-from static_extractors import ast_crosscheck, calibrate, correction, snippet_verify
+from static_extractors import calibrate, code_shape, correction, snippet_verify
 
 
 HERE = Path(__file__).parent
@@ -895,7 +895,7 @@ def run_for_repo(
         # every fact with `_cross_check` (and `_cross_check_ast` for deps).
         for round_idx in range(max(0, correction_rounds)):
             report_a = snippet_verify.verify_payload(payload, repo_root)
-            report_b = ast_crosscheck.verify_payload(payload, repo_root)
+            report_b = code_shape.verify_payload(payload, repo_root)
             problems = calibrate.collect_problems(payload, report_a, report_b)
             if not problems:
                 break
@@ -938,7 +938,7 @@ def run_for_repo(
 
         if not errors:
             report_a = snippet_verify.verify_payload(payload, repo_root)
-            report_b = ast_crosscheck.verify_payload(payload, repo_root)
+            report_b = code_shape.verify_payload(payload, repo_root)
             cross_check = calibrate.apply(payload, report_a, report_b)
     payload["_meta"] = {
         "provider": provider,

@@ -1,0 +1,12 @@
+openapi: 3.0.0
+info:
+  title: Customer API
+paths:
+  /customers/{id}:
+    get:
+      operationId: getCustomer
+    put:
+      operationId: updateCustomer
+  /customers:
+    post:
+      operationId: createCustomer

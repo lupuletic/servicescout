@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from static_extractors import ast_crosscheck, calibrate, snippet_verify
+from static_extractors import code_shape as ast_crosscheck, calibrate, snippet_verify
 
 
 def _repo_root_for(payload: dict[str, Any], workspace_root: Path) -> Path | None:

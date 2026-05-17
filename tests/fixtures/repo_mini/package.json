@@ -1,0 +1,11 @@
+{
+  "name": "fixture",
+  "dependencies": {
+    "kafkajs": "^2.0.0",
+    "pg": "^8.0.0",
+    "stripe": "^14.0.0",
+    "@sentry/node": "^7.0.0",
+    "express": "^4.0.0",
+    "left-pad": "^1.0.0"
+  }
+}

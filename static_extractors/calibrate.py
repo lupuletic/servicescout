@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from static_extractors.ast_crosscheck import AstFactCheck, AstReport
+from static_extractors.code_shape import AstFactCheck, AstReport
 from static_extractors.snippet_verify import FactCheck, VerifyReport
 
 
@@ -129,10 +129,10 @@ def apply(
                 "verdict": b_check.verdict,
                 "kind": b_check.kind,
                 "evidence_total": b_check.evidence_total,
-                "confirmed": b_check.confirmed,
-                "mixed": b_check.mixed,
-                "disconfirmed": b_check.disconfirmed,
-                "unsupported": b_check.unsupported,
+                "code": getattr(b_check, "code", 0),
+                "blank": getattr(b_check, "blank", 0),
+                "comment": getattr(b_check, "comment", 0),
+                "unparseable": getattr(b_check, "unparseable", 0),
             }
 
         if cat not in CONFIDENCE_AWARE_CATEGORIES:

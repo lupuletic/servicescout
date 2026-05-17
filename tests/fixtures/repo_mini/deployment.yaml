@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-service
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: app
+          image: openjdk:11
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DB_URL
+              value: postgres://db:5432/mydb
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightly-batch
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: batch
+              image: alpine
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-ingress
+spec:
+  rules:
+    - host: example.com
+      http:
+        paths:
+          - path: /api/v1/foo
+            pathType: Prefix
