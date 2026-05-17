@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from repo_discovery import find_repos, load_workspace_config
+from static_extractors import calibrate, snippet_verify
 
 
 HERE = Path(__file__).parent
@@ -715,8 +716,17 @@ def run_for_repo(
     else:
         payload, run = codex_extract(repo, model, effort, timeout_seconds, post_result_grace, stream_logs)
     payload = normalize_payload(payload, repo)
-    quarantined = confine_evidence_paths(payload, Path(repo["absolute_path"]))
+    repo_root = Path(repo["absolute_path"])
+    quarantined = confine_evidence_paths(payload, repo_root)
     errors = validate_against_schema(payload)
+    cross_check = None
+    if not errors:
+        # Phase A: deterministic snippet substring cross-check against the
+        # cited file:line. Calibrates `confidence` on resources/dependencies
+        # and annotates every fact with `_cross_check` so the dashboard,
+        # reconcile audit, and downstream evals can see what grounded out.
+        report = snippet_verify.verify_payload(payload, repo_root)
+        cross_check = calibrate.apply(payload, report)
     payload["_meta"] = {
         "provider": provider,
         "model": run["model"],
@@ -726,6 +736,7 @@ def run_for_repo(
         "schema": "catalog-v1",
         "evidence_quarantined": quarantined,
         "validation_errors": errors,
+        "cross_check": cross_check,
         "run": run,
     }
     if errors:
