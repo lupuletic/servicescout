@@ -200,7 +200,10 @@ def collect_problems(
             continue
         reasons: list[str] = []
         for d in fact_check.details:
-            if d.status in ("missing", "invalid_path"):
+            # Surface every non-matched evidence item: missing, invalid_path,
+            # and partial (the partial case is the one that produces a Phase A
+            # "mixed" verdict without specific reasons being recorded yet).
+            if d.status in ("missing", "invalid_path", "partial"):
                 reasons.append(
                     f"snippet check at {d.path}:{d.line} → {d.status} ({d.reason or 'no match'})"
                 )
@@ -210,6 +213,12 @@ def collect_problems(
                     reasons.append(
                         f"AST check at {d.path}:{d.line} → {d.status} ({d.reason or 'pattern not found'})"
                     )
+        # Strip in-band verifier annotations so the LLM sees the bare fact
+        # rather than the cross-check verdict (which would confuse it).
+        bare_fact = {
+            k: v for k, v in items[fact_check.index].items()
+            if k not in {"_cross_check", "_cross_check_ast"}
+        }
         out.append(
             {
                 "category": cat,
@@ -220,7 +229,7 @@ def collect_problems(
                 "phase_a_verdict": a_verdict,
                 "phase_b_verdict": b_verdict,
                 "reasons": reasons,
-                "current_fact": items[fact_check.index],
+                "current_fact": bare_fact,
             }
         )
     return out

@@ -422,6 +422,26 @@ def _read_json_if_valid(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    """Greedy-scan for the last top-level JSON object in `text`. Used as a
+    fallback when a harness writes its structured output to stdout rather
+    than the file specified by --output-last-message.
+    """
+    if not text:
+        return None
+    end = len(text)
+    while True:
+        idx = text.rfind("{", 0, end)
+        if idx == -1:
+            return None
+        try:
+            obj = json.loads(text[idx:])
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError:
+            end = idx
+            continue
+
+
 def _summarize_codex_line(line: str) -> dict[str, Any] | None:
     line = line.strip()
     if not line:
@@ -637,6 +657,12 @@ def codex_correct(
     )
     if result_path.exists():
         result_path.unlink()
+    # NOTE: deliberately no --output-schema for the correction call.
+    # Codex's strict-JSON-schema mode rejects `additionalProperties: true`
+    # anywhere in the tree, but the correction `fact` field has to be
+    # an open shape because it spans every catalog category. The prompt
+    # constrains the response shape and `correction.parse_correction_response`
+    # validates+sanitises it post-hoc.
     cmd = [
         codex,
         "exec",
@@ -648,8 +674,6 @@ def codex_correct(
         "--sandbox",
         "read-only",
         "--skip-git-repo-check",
-        "--output-schema",
-        str(schema_path),
         "--output-last-message",
         str(result_path),
     ]
@@ -662,8 +686,14 @@ def codex_correct(
     )
     payload = _read_json_if_valid(result_path)
     if payload is None:
+        # Fall back: codex may have written the JSON to stdout instead of
+        # the result file. Try to parse the stdout's last JSON object.
+        payload = _extract_json_object(completed.stdout)
+    if payload is None:
+        stderr_tail = (completed.stderr or "")[-500:]
         raise RuntimeError(
-            f"codex correction returned no usable JSON for {repo['id']} (rc={completed.returncode})"
+            f"codex correction returned no usable JSON for {repo['id']} "
+            f"(rc={completed.returncode}); stderr tail: {stderr_tail}"
         )
     run = {
         "provider": "codex",
