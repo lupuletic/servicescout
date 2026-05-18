@@ -85,6 +85,35 @@ services:
       - ${HOME}/.codex:/home/cg/.codex:ro
       - ${HOME}/.claude:/home/cg/.claude:ro
 
+  # Continuous-crawl scheduler (Epic #9 Tier 1 #2, Issue #1). Runs 24/7
+  # alongside mcp + dashboard. Default tick: every 6 hours. Each tick
+  # git-fetches every repo under WORKSPACE_ROOT, detects repos whose
+  # remote HEAD differs from the last extraction's SHA, and triggers
+  # crawler.py on that subset with a per-tick budget cap. Run logs
+  # land in data/crawl_runs/ for the dashboard's Activity page.
+  scheduler:
+    <<: *servicescout
+    profiles: ["scheduler"]
+    command: >
+      python scheduler.py
+      --workspace-root /workspace
+      --interval-minutes ${CRAWL_INTERVAL_MINUTES:-360}
+      --budget-usd ${CRAWL_TICK_BUDGET_USD:-20}
+      --provider ${LLM_PROVIDER:-codex}
+      --model ${LLM_MODEL:-gpt-5.4-mini}
+      --effort ${LLM_EFFORT:-medium}
+      --crawler-arg --reconcile
+      --crawler-arg --embed
+      --crawler-arg --build-kuzu
+    volumes:
+      - ${WORKSPACE_ROOT:?Set WORKSPACE_ROOT in .env}:/workspace
+      - ./data:/data
+      - ${HOME}/.config/gh:/home/cg/.config/gh:ro
+      - ${HOME}/.config/gcloud:/home/cg/.config/gcloud:ro
+      - ${HOME}/.codex:/home/cg/.codex:ro
+      - ${HOME}/.claude:/home/cg/.claude:ro
+    restart: unless-stopped
+
   reconcile:
     <<: *servicescout
     profiles: ["maintenance"]

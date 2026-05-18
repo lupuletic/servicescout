@@ -542,6 +542,109 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         out.sort(key=lambda r: (-r["inbound"], r["name"].lower()))
         return JSONResponse({"count": len(out), "components": out})
 
+    @app.get("/api/crawl/runs")
+    def crawl_runs(limit: int = Query(default=50, ge=1, le=500)) -> JSONResponse:
+        """List recent scheduler runs (Issue #1 / Epic #9 Tier 1 #2).
+
+        Each entry is the summary of a scheduler tick: trigger, start /
+        finish timestamps, status, repos_changed count, and the run_id
+        that points at the full event log (see /api/crawl/runs/<id>).
+        """
+        run_log_dir = (catalog_path.parent / "crawl_runs").resolve()
+        if not run_log_dir.is_dir():
+            return JSONResponse({"runs": [], "total": 0})
+        entries: list[dict[str, Any]] = []
+        for path in sorted(run_log_dir.glob("*.json"), reverse=True):
+            try:
+                doc = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            entries.append({
+                "run_id": doc.get("run_id") or path.stem,
+                "trigger": doc.get("trigger") or "cron",
+                "started_at": doc.get("started_at"),
+                "finished_at": doc.get("finished_at"),
+                "status": doc.get("status"),
+                "repos_checked": doc.get("repos_checked"),
+                "repos_changed_count": len(doc.get("repos_changed") or []),
+                "budget_usd": doc.get("budget_usd"),
+                "crawler_returncode": doc.get("crawler_returncode"),
+            })
+            if len(entries) >= limit:
+                break
+        return JSONResponse({"runs": entries, "total": len(entries)})
+
+    @app.get("/api/crawl/runs/{run_id}")
+    def crawl_run_detail(run_id: str) -> JSONResponse:
+        """Full event stream for one scheduler tick.
+
+        Returns the raw run-log document including the full repos_changed
+        list, per-event timeline, crawler stdout/stderr tails, and final
+        status. Used by the dashboard's Activity drawer.
+        """
+        # Normalise to prevent path traversal.
+        safe = "".join(c for c in run_id if c.isalnum() or c in "-_")
+        if not safe:
+            return JSONResponse({"error": "invalid_run_id"}, status_code=400)
+        path = (catalog_path.parent / "crawl_runs" / f"{safe}.json").resolve()
+        runs_dir = (catalog_path.parent / "crawl_runs").resolve()
+        try:
+            path.relative_to(runs_dir)
+        except ValueError:
+            return JSONResponse({"error": "invalid_run_id"}, status_code=400)
+        if not path.is_file():
+            return JSONResponse({"error": "not_found", "run_id": safe}, status_code=404)
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return JSONResponse({"error": "corrupt"}, status_code=500)
+        return JSONResponse(doc)
+
+    @app.get("/api/crawl/status")
+    def crawl_status() -> JSONResponse:
+        """Current scheduler state.
+
+        Returns whether a tick is currently running (lock file present
+        and PID alive), the most recent run summary, and the interval
+        / budget configured.
+        """
+        lock_path = (catalog_path.parent / "crawl_lock").resolve()
+        lock_info: dict[str, Any] = {"held": False}
+        if lock_path.is_file():
+            try:
+                parts = lock_path.read_text(encoding="utf-8").strip().split()
+                if len(parts) >= 3:
+                    lock_info = {
+                        "held": True,
+                        "pid": int(parts[0]),
+                        "host": parts[1],
+                        "acquired_at": parts[2],
+                    }
+            except (OSError, ValueError):
+                pass
+        run_log_dir = (catalog_path.parent / "crawl_runs").resolve()
+        last_run = None
+        if run_log_dir.is_dir():
+            paths = sorted(run_log_dir.glob("*.json"), reverse=True)
+            if paths:
+                try:
+                    doc = json.loads(paths[0].read_text(encoding="utf-8"))
+                    last_run = {
+                        "run_id": doc.get("run_id"),
+                        "status": doc.get("status"),
+                        "started_at": doc.get("started_at"),
+                        "finished_at": doc.get("finished_at"),
+                        "repos_changed_count": len(doc.get("repos_changed") or []),
+                    }
+                except (OSError, json.JSONDecodeError):
+                    pass
+        return JSONResponse({
+            "lock": lock_info,
+            "last_run": last_run,
+            "interval_minutes": int(os.environ.get("CRAWL_INTERVAL_MINUTES") or 360),
+            "budget_usd": float(os.environ.get("CRAWL_TICK_BUDGET_USD") or 20.0),
+        })
+
     @app.post("/triage/decide")
     def decide(
         entity: str = Form(...), action: str = Form(...),

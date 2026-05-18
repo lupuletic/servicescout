@@ -22,7 +22,13 @@ from pathlib import Path
 from typing import Any
 
 from repo_discovery import find_repos, load_workspace_config
-from static_extractors import calibrate, code_shape, correction, snippet_verify
+from static_extractors import (
+    backstage_reconcile,
+    calibrate,
+    code_shape,
+    correction,
+    snippet_verify,
+)
 
 
 HERE = Path(__file__).parent
@@ -364,7 +370,7 @@ CONFIGURABLE CONSTRUCTS — extracting the right parameter:
   Component aliases, or dependency targets.
 
   If the resource name is an externalised configuration placeholder
-  (e.g. `${app.queue.name}`, `%{queue}`, `{{ .Values.queue }}`), emit
+  (e.g. `${{app.queue.name}}`, `%{{queue}}`, `{{{{ .Values.queue }}}}`), emit
   the placeholder verbatim as the resource name AND mark confidence
   medium or review — the actual value resolves at runtime.
 
@@ -1019,6 +1025,12 @@ def run_for_repo(
             report_a = snippet_verify.verify_payload(payload, repo_root)
             report_b = code_shape.verify_payload(payload, repo_root)
             cross_check = calibrate.apply(payload, report_a, report_b)
+            # Bi-directional Backstage reconcile (Epic #9 Tier 4 #8):
+            # if the repo has a hand-maintained catalog-info.yaml, treat
+            # it as another evidence stream. Components where the LLM
+            # disagrees with the YAML get demoted to confidence=review.
+            # No-op when no Backstage YAML is present in the repo.
+            backstage_summary = backstage_reconcile.reconcile_payload(payload, repo_root)
     payload["_meta"] = {
         "provider": provider,
         "model": run["model"],
@@ -1030,6 +1042,7 @@ def run_for_repo(
         "validation_errors": errors,
         "cross_check": cross_check,
         "correction_runs": correction_runs,
+        "backstage_reconcile": locals().get("backstage_summary"),
         "run": run,
     }
     if errors:
