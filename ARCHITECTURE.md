@@ -461,4 +461,45 @@ Append decisions here as they happen so future contributors can see why.
   primary value shifts toward supply-chain questions, or (b) the
   agent eval suite shows a quality gap that only resolved-symbol
   data can close.
+- **2026-05-18.** Full sock-shop eval run with the pipeline (LLM
+  extraction + Phase A snippet + Phase B universal code-shape +
+  correction loop + mini-extractors). All 9 repos extracted with
+  codex/gpt-5.4-mini/effort=medium and correction-rounds=1.
+
+  Result: **14/18 catalog-tier pass rate**, vs the README's iter-3
+  baseline of 12/18. Per category:
+    routing         5/5     (was 5/5)
+    sync-multihop   4/5     (was 4/5)
+    async-multihop  2/3     (was 1/3)
+    blast-radius    0/2     (was 0/2)
+    structural      3/3     (3 new corrected questions, all PASS)
+
+  The +2 questions came from async-multihop (queue-master correctly
+  modelled as consumer, shipping as producer — the iter-3 broken
+  edge direction the README flagged is now correct in the catalog)
+  and from the structural-question corrections that match the actual
+  sock-shop architecture.
+
+  The 4 remaining failures all share a shape: `search_recall` is
+  high (the right entities surface from query) but `neighbors_recall`
+  is partial — the catalog is missing some edges between entities
+  that the eval expects. This is a coverage gap in the LLM's
+  per-repo extraction (not a verifier or framework issue) — fixable
+  by either re-extracting with the new framework-agnostic prompt
+  (which now has tighter alias hygiene and configurable-construct
+  precision) or by an AST-emitter for the specific edge kinds we're
+  missing.
+
+  Note: these extractions used the OLD prompt — the new framework-
+  agnostic prompt with alias-hygiene and evidence-discipline guidance
+  was committed AFTER these LLM calls started, so its effect is yet
+  to be measured. Re-extracting all 9 with the new prompt would test
+  whether prompt improvements close more of the remaining gap; cost
+  ~$3-6.
+
+  Note: build_kuzu requires `--no-vector` (skip HNSW) but NOT
+  `--no-fts` for the search-recall scores to work — FTS5 lexical
+  search is what the catalog-tier eval depends on, and disabling it
+  silently dropped every search-based question to 0.0 the first time
+  the eval was run.
 
