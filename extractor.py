@@ -286,8 +286,87 @@ EVIDENCE RULES:
   - Every component, api, resource, and dependency MUST have ≥1 evidence item.
   - path must be relative to the repo root (not absolute, no `..`).
   - line is an integer ≥1.
-  - snippet is a SHORT extract (≤200 chars).
+  - snippet is a SHORT extract (≤200 chars). It MUST be a verbatim
+    substring of the cited file at the cited line (whitespace
+    normalisation is fine). Do NOT paraphrase, summarise, or compose
+    snippets from multiple lines: a deterministic post-extractor verifier
+    will open the file and check this exact substring is present, and
+    facts that fail this check get demoted to confidence=review.
+  - If a snippet you want to cite spans multiple lines, emit ONE evidence
+    item per line (each with its own line number and the verbatim text
+    of that line). A multi-line method signature → 2-3 evidence items,
+    not one paraphrased blob.
   - If you cannot prove a fact with evidence, omit it or mark confidence=review.
+
+ALIAS HYGIENE — what aliases ARE and what they are NOT:
+
+  Aliases live on `dependencies[].aliases` and `providers[].aliases`. They
+  collapse variant names for the SAME entity that an agent or human might
+  type into a search box and expect to land here. Typical aliases:
+  hostnames, config keys, marketing names, generated client identifiers,
+  short or qualified spellings of the canonical name.
+
+  Aliases are NOT:
+    - operation names of an API (those belong in apis[].operations[])
+    - endpoint paths, URL templates, route patterns (also apis[].operations[])
+    - method verbs, response codes, header names, MIME types
+    - per-payload event names that are not also service names
+    - lockfile entries, CI job names, build-tool target names
+    - generic UI / DOM / framework event names
+
+  Test: "if someone searched for this string, should they land on THIS
+  entity?" If yes → alias. If no → it belongs somewhere else
+  (operations[], glossary[], notes, or it should be dropped).
+
+ENTITY DISAMBIGUATION:
+
+  The five entity kinds are distinct categories. Pick the most specific
+  one each fact fits. If you find yourself emitting the same name in two
+  categories, that is a sign one of them is wrong.
+
+    Component   — a deployable / runnable unit OWNED by this repo.
+                  One Component per deployable artefact (a service, a
+                  worker, a cron job, a frontend, a CLI, a function).
+    API         — a surface that a Component EXPOSES, expressed as a
+                  named contract. `apis[].exposed_by` is the Component
+                  name; `apis[].operations[]` holds the methods or
+                  routes that contract carries.
+    Resource    — a stateful or messaging endpoint a Component USES or
+                  OWNS. Databases, queues, topics, streams, buckets,
+                  caches, search indices, config stores. The transport
+                  technology (Kafka, RabbitMQ, Postgres, S3) goes in
+                  the `technology` field — it is NEVER its own entity.
+    Provider    — a third-party SaaS the Component depends on at
+                  runtime. Examples by category live in the providers[]
+                  guidance below.
+    Dependency  — an edge from THIS Component to one of the entities
+                  above, carrying kind / protocol / evidence.
+
+CONFIGURABLE CONSTRUCTS — extracting the right parameter:
+
+  Many frameworks declare a queue / topic / route / DB / cron via a
+  configurable construct that takes multiple named parameters:
+
+    - an annotation / decorator with kwargs
+    - a fluent builder chain (.queue("X").factory("Y").concurrency(5))
+    - a struct / config block with named fields
+    - a function call with named arguments
+
+  When such a construct names a resource, only the parameter whose KEY
+  identifies the resource (commonly named: `destination`, `destinations`,
+  `queue`, `queues`, `topic`, `topics`, `subject`, `channel`, `address`,
+  `path`, `route`, `name`, or unambiguously the construct's positional
+  primary argument) carries the resource name.
+
+  Other parameters of the same construct (container factory, concurrency,
+  consumer group, retry policy, message converter, content type) are
+  CONFIGURATION, not resources. Do not emit them as Resource entities,
+  Component aliases, or dependency targets.
+
+  If the resource name is an externalised configuration placeholder
+  (e.g. `${app.queue.name}`, `%{queue}`, `{{ .Values.queue }}`), emit
+  the placeholder verbatim as the resource name AND mark confidence
+  medium or review — the actual value resolves at runtime.
 
 OUT OF SCOPE:
   - Lock files, package registries, generated symbols, screenshots, translation files.

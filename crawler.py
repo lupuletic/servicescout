@@ -324,6 +324,69 @@ def write_state(path: Path, state: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def load_state(path: Path) -> dict[str, Any] | None:
+    """Read crawler_state.json. Returns None if file is missing or
+    corrupt — caller decides how to react.
+    """
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+# The fields of the crawler invocation that, if changed between runs,
+# make resume-from-state unsafe. Examples: switching workspaces, changing
+# the LLM model (output schema may differ), narrowing the repo allowlist.
+# Changes to schedule-related fields like batch_size or max_age_hours are
+# fine and not validated.
+_RESUME_CRITICAL_FIELDS = ("root", "workspace_path", "provider", "model", "repos_filter")
+
+
+def state_matches_inputs(state: dict[str, Any], inputs: dict[str, Any]) -> tuple[bool, str]:
+    """Validate that a prior state file is compatible with the current
+    invocation. Returns (compatible, reason).
+
+    `repos_filter` matches as a SET (order-insensitive). All other fields
+    are compared by string equality of their JSON repr.
+    """
+    if not isinstance(state, dict):
+        return False, "state file is not a JSON object"
+    if "inputs" not in state:
+        return False, "state file is missing the `inputs` section (state was written by an older crawler version)"
+    saved = state.get("inputs")
+    if not isinstance(saved, dict):
+        return False, "state file `inputs` section is malformed (expected JSON object)"
+    for field in _RESUME_CRITICAL_FIELDS:
+        prev = saved.get(field)
+        curr = inputs.get(field)
+        if field == "repos_filter":
+            if (sorted(prev) if isinstance(prev, list) else prev) != (sorted(curr) if isinstance(curr, list) else curr):
+                return False, f"{field} changed: {prev!r} → {curr!r}"
+        elif prev != curr:
+            return False, f"{field} changed: {prev!r} → {curr!r}"
+    return True, ""
+
+
+def state_completed_repos(state: dict[str, Any]) -> set[str]:
+    """Return the set of repo names that were successfully extracted in
+    a prior run (according to the state file). Used by --resume to skip
+    work that has already happened. Failures are NOT included — they
+    get retried by default.
+    """
+    out: set[str] = set()
+    for batch in (state.get("batches") or []):
+        for r in (batch.get("results") or []):
+            if not isinstance(r, dict):
+                continue
+            if (r.get("status") or "").lower() in {"ok", "success", "completed"}:
+                name = r.get("name") or r.get("id")
+                if name:
+                    out.add(name)
+    return out
+
+
 def crawl(
     *,
     root: Path,
@@ -349,6 +412,7 @@ def crawl(
     max_discovery_rounds: int,
     reconcile_after_build: bool,
     reconcile_llm: bool,
+    resume: bool = False,
 ) -> dict[str, Any]:
     workspace = load_workspace_config(workspace_path)
     repos = find_repos(root, workspace.get("orgs") or [], workspace.get("excluded_repos") or [])
@@ -362,14 +426,50 @@ def crawl(
         org_repo_index = build_org_repo_index(workspace.get("orgs") or [])
         emit({"event": "discovery_index_done", "repos_indexed": len(org_repo_index)})
 
+    inputs = {
+        "root": str(root),
+        "workspace_path": str(workspace_path),
+        "provider": provider,
+        "model": model,
+        "repos_filter": list(repos_filter) if repos_filter else None,
+    }
+
+    resumed_from: dict[str, Any] | None = None
+    if resume:
+        prior = load_state(state_path)
+        if prior is None:
+            raise SystemExit(
+                f"--resume specified but no usable state file at {state_path}. "
+                "Run without --resume to start fresh."
+            )
+        ok, reason = state_matches_inputs(prior, inputs)
+        if not ok:
+            raise SystemExit(
+                f"--resume rejected: state file at {state_path} is incompatible. {reason}. "
+                "Either reconcile the inputs or delete the state file to start fresh."
+            )
+        completed = state_completed_repos(prior)
+        skipped_for_resume = [r for r in repos if r["name"] in completed]
+        repos = [r for r in repos if r["name"] not in completed]
+        resumed_from = {
+            "started_at": prior.get("started_at"),
+            "batches_done": len(prior.get("batches") or []),
+            "skipped_completed": [r["name"] for r in skipped_for_resume],
+            "remaining": len(repos),
+        }
+        emit({"event": "resume_decision", **resumed_from})
+
     state: dict[str, Any] = {
         "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "root": str(root),
         "workspace_repos": len(repos),
         "batches": [],
         "discovery_rounds": [],
+        # Persist the inputs so a future --resume can validate compatibility.
+        "inputs": inputs,
+        "resumed_from": resumed_from,
     }
-    emit({"event": "crawl_start", "workspace_repos": len(repos), "discover": discover})
+    emit({"event": "crawl_start", "workspace_repos": len(repos), "discover": discover, "resume": resume})
 
     discovery_rounds = 0
 
@@ -503,6 +603,15 @@ def main() -> int:
     parser.add_argument("--max-discovery-rounds", type=int, default=10, help="Maximum rounds of discover→clone→extract before stopping. Each round indexes the configured orgs, finds unresolved Components that match an uncloned repo, clones them, then re-enters extraction.")
     parser.add_argument("--reconcile", action="store_true", help="Run reconcile.py after each build_catalog (collapse external duplicates).")
     parser.add_argument("--reconcile-llm", action="store_true", help="Use --llm-assist on reconcile.py (LLM-judgment merges for ambiguous duplicates).")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from a prior run: read the state file at --state and skip repos that were "
+             "successfully extracted there (failed ones are retried). Validates that the saved "
+             "inputs (root / workspace / provider / model / repos filter) match the current "
+             "invocation; aborts with a clear message if not. Without --resume the crawler "
+             "starts fresh and writes a new state file.",
+    )
     args = parser.parse_args()
     crawl(
         root=args.root.resolve(),
@@ -528,6 +637,7 @@ def main() -> int:
         max_discovery_rounds=args.max_discovery_rounds,
         reconcile_after_build=args.reconcile,
         reconcile_llm=args.reconcile_llm,
+        resume=args.resume,
     )
     return 0
 
