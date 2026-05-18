@@ -428,4 +428,37 @@ Append decisions here as they happen so future contributors can see why.
   `@RabbitListener` reply method. Fix queued: context-aware queries
   that exclude calls inside `@*Listener` annotated classes; until then,
   the correction loop's `keep` action is the safety valve.
+- **2026-05-17.** Strip the per-language tree-sitter rules from Phase B
+  and the AST extractor in favour of a language-agnostic universal
+  approach. Replace Phase B verifier with `code_shape.py` (text-only:
+  is the cited line code vs blank vs comment vs unparseable). Add
+  language-agnostic mini-extractors (Dockerfile / k8s / Helm / build
+  manifests / OpenAPI / .proto / .graphql) for the structural facts
+  that *can* be derived deterministically from interchange formats.
+  Result on THG 195 repos: Phase B universal-confirmed 846 / 892
+  (was 392 per-language), 0 unsupported (was 120). Mini-extractors
+  yield 525 components / 215 providers / 91 resources / 40 APIs
+  language-agnostically across 126 repos with manifests.
+- **2026-05-18.** SCIP empirically evaluated as candidate Phase C.
+  Installed scip-java + scip-typescript + scip-python, indexed sock-shop.
+  3/5 attempted repos indexed (60%): carts failed on Maven dep
+  resolution, front-end has no tsconfig.json. SCIP delivered strong
+  signal where it worked — 17–25 external Maven coords per repo with
+  exact versions, 108–131 broker symbol uses on the messaging-heavy
+  Java repos, 30 HTTP symbol uses on orders, 10 DB uses confirming
+  MongoDB. But: SCIP knows symbol IDENTITY, not string-literal
+  arguments — it can't supply the queue/topic NAME or the edge
+  KIND/DIRECTION, which is what the catalog actually needs for
+  topology-routing questions. The LLM remains required for those.
+  **Decision: defer SCIP integration.** The mini-extractors already
+  cover ~80% of SCIP's provider/resource signal at 0% of its
+  operational cost. SCIP's killer feature (exact resolved versions,
+  cross-repo dependency-graph queries) suits a future
+  Dependency/SBOM dashboard product, not the routing-agent catalog
+  this project is. Empirical findings + the 230-LoC SCIP loader
+  prototype preserved here so a future implementer has a fast start
+  if the opt-in is later wanted. Re-evaluate when (a) the catalog's
+  primary value shifts toward supply-chain questions, or (b) the
+  agent eval suite shows a quality gap that only resolved-symbol
+  data can close.
 
