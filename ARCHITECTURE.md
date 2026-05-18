@@ -538,3 +538,16 @@ Append decisions here as they happen so future contributors can see why.
   Cost of the experiment: ~$5-8 in LLM tokens. Wall time: ~50 min
   serial (one repo took 1800s; others 200-700s).
 
+  Update after orders re-extraction completed at --timeout-seconds
+  1800: all 9 sock-shop repos now extracted with the new prompt and
+  reconciled — **14/18 catalog tier**, identical to the baseline. The
+  4 failing questions retain the same `search_recall=1.0,
+  neighbors_recall<1.0` shape on blast-radius / async-multihop /
+  sync-multihop. This confirms the eval gap is NOT a prompt-quality
+  issue — the catalog is missing specific cross-repo edges the eval
+  expects, not the entities themselves. Closing the gap is best done
+  by either (a) cross-repo edge synthesis at build_catalog time when
+  one repo declares `target=B` and B exists as a Component, or (b) a
+  `reconcile.py --llm-assist` pass that proposes missing edges using
+  the full catalog as cross-repo context.
+
