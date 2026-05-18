@@ -502,4 +502,39 @@ Append decisions here as they happen so future contributors can see why.
   search is what the catalog-tier eval depends on, and disabling it
   silently dropped every search-based question to 0.0 the first time
   the eval was run.
+- **2026-05-18.** Framework-agnostic prompt re-extraction experiment.
+  Re-extracted all 9 sock-shop repos with the new prompt (alias
+  hygiene + evidence discipline + entity disambiguation +
+  configurable-construct precision). 8 of 9 finished cleanly; orders
+  initially timed out at 900s, succeeded at 1800s.
+
+  Raw result (no reconcile pass): **11/18 catalog tier** — a
+  regression vs the 14/18 baseline.
+
+  Cause: the more strictly-defined alias hygiene made the LLM emit
+  MORE Components instead of folding marketing / class names into
+  `aliases[]`. front-end's class names `Cart-Service` and
+  `OrderManager` got emitted as `Component:Cart-Service` and
+  `Component:OrderManager`, distinct from `Component:carts` /
+  `Component:orders` — so eval traversal looking for the canonical
+  names failed.
+
+  Reconcile pass result: **14/18 catalog tier** — parity with the
+  baseline. `reconcile.py` correctly identified `Component:Cart-Service
+  → Component:carts` and `Component:OrderManager → Component:orders`
+  as unambiguous merges (no LLM-assist needed) and merged them. 4
+  edges rerouted.
+
+  Decision: the new prompt is no worse than the old prompt provided
+  `reconcile.py` runs in the catalog-build pipeline (it does by
+  default in the production crawler flow). The prompt's structural
+  improvements (evidence-discipline = verbatim-substring snippets,
+  zero `_cross_check_ast` mixed verdicts) are unambiguously good for
+  Phase A's verifier even though they don't move the eval. The
+  failure shape is unchanged from the baseline: search recall high,
+  neighbors recall partial on 4 questions — an LLM extraction
+  coverage gap for specific edges, not a verifier or prompt issue.
+
+  Cost of the experiment: ~$5-8 in LLM tokens. Wall time: ~50 min
+  serial (one repo took 1800s; others 200-700s).
 
