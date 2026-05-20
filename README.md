@@ -23,7 +23,7 @@ and answers with file:line citations from real code.
 **1. Run the server (Docker, HTTP streamable on `:8765`):**
 
 ```bash
-git clone https://github.com/servicescout/servicescout.git
+git clone https://github.com/lupuletic/servicescout.git
 cd servicescout
 cp .env.example .env  # fill in WORKSPACE_ROOT, GOOGLE_CLOUD_PROJECT
 docker compose up -d mcp dashboard
@@ -40,7 +40,15 @@ Workspace state is selected by env vars:
 Keeping `SERVICESCOUT_DATA_DIR` different per workspace is what prevents an
 eval crawl from overwriting your real catalog.
 
-**2. Crawl your GitHub orgs to build the catalog:**
+> **First time here? Try the public eval before your own repos.** ServiceScout
+> ships a pinned, isolated **sock-shop** workspace — its own source root, data
+> dir, and ports — so you can exercise the dashboard and MCP tools against a
+> known open-source microservices demo without ever pointing it at private
+> code. See [Switch between workspaces and public evals](#switch-between-workspaces-and-public-evals)
+> below. Extraction still calls your configured LLM provider (keep `BUDGET_USD`
+> small), but everything it indexes is public.
+
+**2. Crawl your own GitHub orgs to build the catalog:**
 
 ```bash
 cp workspace.json.example workspace.json && $EDITOR workspace.json   # add your orgs
@@ -66,8 +74,8 @@ Remote install is available, but inspect the script first if this is a
 new machine or a shared environment:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/servicescout/servicescout/main/install.sh | less
-curl -fsSL https://raw.githubusercontent.com/servicescout/servicescout/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/lupuletic/servicescout/main/install.sh | less
+curl -fsSL https://raw.githubusercontent.com/lupuletic/servicescout/main/install.sh \
   | bash -s -- --agent both --url http://127.0.0.1:8765/mcp --yes
 ```
 
@@ -110,7 +118,7 @@ For a new VM or workstation where you want the full product behind one HTTP
 port, use the bundled nginx edge profile:
 
 ```bash
-git clone https://github.com/servicescout/servicescout.git
+git clone https://github.com/lupuletic/servicescout.git
 cd servicescout
 cp .env.example .env
 $EDITOR .env                 # set WORKSPACE_ROOT, credentials, SERVICESCOUT_HTTP_BIND
@@ -351,6 +359,19 @@ k=60) and exposes eight tools for agents to navigate the result.
 | `SERVICESCOUT_HTTP_BIND` | optional | `127.0.0.1:8080` | nginx edge bind address for remote Compose deployments. |
 | `CRAWL_INTERVAL_MINUTES` | optional | `360` | Continuous scheduler interval. |
 | `CRAWL_TICK_BUDGET_USD` | optional | `20` | Hard cost cap per scheduler tick. |
+
+**Credentials it needs** (mounted read-only into the container — see
+`docker-compose.yml`):
+
+- **GitHub** — `gh` CLI auth at `~/.config/gh`, used to discover and clone
+  repos. Required for crawling.
+- **Extractor** — *either* an authenticated `codex` / `claude` CLI login *or*
+  an API key (`CODEX_API_KEY` / `OPENAI_API_KEY` for codex, `ANTHROPIC_API_KEY`
+  for claude). The crawler preflights this and exits early with a clear message
+  if neither is present, so you find out before any repo is cloned.
+- **Embeddings** *(optional)* — Google Cloud ADC at `~/.config/gcloud` plus
+  `GOOGLE_CLOUD_PROJECT`. Leave the project empty to skip embeddings and use
+  lexical-only search.
 
 See `.env.example` for the full list. The first-run wizard
 (`python -m servicescout.init_wizard`) walks you through everything interactively.

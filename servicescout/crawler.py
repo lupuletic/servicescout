@@ -628,6 +628,11 @@ def main() -> int:
              "starts fresh and writes a new state file.",
     )
     args = parser.parse_args()
+    # Fail fast on missing extractor auth, before discovery/cloning, so a
+    # missing CLI login or API key gives a clear message instead of an opaque
+    # per-repo extraction failure later.
+    from servicescout.harnesses import ensure_provider_authenticated
+    ensure_provider_authenticated(args.provider)
     crawl(
         root=args.root.resolve(),
         catalog_dir=args.catalog_dir,

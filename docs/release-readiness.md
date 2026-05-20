@@ -67,7 +67,7 @@ Minimum release gates:
 The desired new-machine flow should be:
 
 ```bash
-git clone https://github.com/servicescout/servicescout.git
+git clone https://github.com/lupuletic/servicescout.git
 cd servicescout
 cp .env.example .env
 cp workspace.json.example workspace.json

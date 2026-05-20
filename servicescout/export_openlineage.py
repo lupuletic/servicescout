@@ -60,7 +60,7 @@ HERE = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG = HERE / "data" / "catalog.json"
 DEFAULT_OUTPUT_DIR = HERE / "data" / "openlineage"
 
-OL_PRODUCER = "https://github.com/servicescout/servicescout"
+OL_PRODUCER = "https://github.com/lupuletic/servicescout"
 OL_SCHEMA_URL = (
     "https://openlineage.io/spec/2-0-2/OpenLineage.json"
     "#/$defs/RunEvent"

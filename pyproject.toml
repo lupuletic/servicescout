@@ -16,9 +16,9 @@ keywords = ["mcp", "code-intelligence", "software-catalog", "backstage", "micros
 dynamic = ["dependencies"]
 
 [project.urls]
-Homepage = "https://github.com/servicescout/servicescout"
-Repository = "https://github.com/servicescout/servicescout"
-Issues = "https://github.com/servicescout/servicescout/issues"
+Homepage = "https://github.com/lupuletic/servicescout"
+Repository = "https://github.com/lupuletic/servicescout"
+Issues = "https://github.com/lupuletic/servicescout/issues"
 
 [project.scripts]
 servicescout-dashboard = "servicescout.dashboard:main"

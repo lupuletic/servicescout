@@ -6,10 +6,10 @@
 # ServiceScout MCP server with your coding agent (Claude Code, Codex, or both).
 #
 # Interactive (asks which agent + MCP URL):
-#   curl -fsSL https://raw.githubusercontent.com/servicescout/servicescout/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/lupuletic/servicescout/main/install.sh | bash
 #
 # Headless (pass flags via `bash -s --`):
-#   curl -fsSL https://raw.githubusercontent.com/servicescout/servicescout/main/install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/lupuletic/servicescout/main/install.sh \
 #     | bash -s -- --agent claude --url http://127.0.0.1:8765/mcp --yes
 #
 # Flags:
@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-REPO_RAW="${SERVICESCOUT_RAW:-https://raw.githubusercontent.com/servicescout/servicescout/main}"
+REPO_RAW="${SERVICESCOUT_RAW:-https://raw.githubusercontent.com/lupuletic/servicescout/main}"
 TARGET="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
 SKILLS=("servicescout" "journey")
 

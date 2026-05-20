@@ -27,7 +27,7 @@ x-servicescout-env: &servicescout-env
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
 
 x-servicescout: &servicescout
-  image: servicescout/servicescout:${SERVICESCOUT_VERSION:-latest}
+  image: lupuletic/servicescout:${SERVICESCOUT_VERSION:-latest}
   build:
     context: .
     dockerfile: Dockerfile

@@ -54,7 +54,7 @@ jobs:
         run: npm run test:e2e
 
       - name: Build Docker image
-        run: docker build --pull -t servicescout/servicescout:ci .
+        run: docker build --pull -t lupuletic/servicescout:ci .
 
       - name: Prepare Compose smoke fixture
         run: |
