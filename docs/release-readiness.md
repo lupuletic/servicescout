@@ -2,10 +2,10 @@
 
 ## Current recommendation
 
-ServiceScout is ready for a public `v0.1.0` alpha release after the responsive
-dashboard polish lands. It should not be called `v1.0` yet: the extraction
-pipeline is useful and eval-backed, but broader enterprise accuracy, auth, and
-packaging hardening still need more mileage.
+ServiceScout is suitable for a public `v0.1.0` alpha release once the gates
+below pass on the release commit. It should not be called `v1.0` yet: the
+extraction pipeline is useful and eval-backed, but broader enterprise accuracy,
+packaging, and deployment hardening still need more mileage.
 
 ## Repo hierarchy scan
 
@@ -27,17 +27,18 @@ Recommended cleanup before `v0.1.0`:
 - Remove local `.DS_Store`, cache, log, and old runtime directories before
   creating the release archive.
 - Keep `certs/` empty in git except `.gitkeep`; real CA bundles stay local.
-- Decide whether `.mcp.json` should stay as a convenience sample or move to
-  docs. It currently points to localhost only and contains no secret.
-- Replace personal repository/image namespace references with the final public
+- Keep the MCP client sample under `docs/examples/mcp.json`; do not ship a
+  root `.mcp.json` that silently changes a user's local tool config.
+- Replace any placeholder repository/image namespace with the final public
   owner before publishing.
 
 Recommended cleanup before `v1.0`:
 
-- Move Python modules into a package such as `servicescout/`.
 - Keep root-level files to project metadata, Compose, Docker, Makefile, README,
   and thin CLI wrappers.
-- Split public user docs from internal eval/audit notes.
+- Move historical eval/audit notes behind a clear `docs/evals/` boundary.
+- Add an authenticated deployment story or document the external-auth pattern
+  as the only supported remote mode.
 
 ## First release shape
 
@@ -47,6 +48,8 @@ Target tags:
 - Container image: `ghcr.io/<owner>/servicescout:v0.1.0`
 - Optional Docker Hub mirror: `<owner>/servicescout:v0.1.0`
 - Avoid relying on `latest` in setup docs except for quick local experiments.
+  The bundled Codex/Claude CLI package versions are a separate concern: they
+  default to current releases, with build args available for pinned rebuilds.
 
 Minimum release gates:
 
@@ -64,7 +67,7 @@ Minimum release gates:
 The desired new-machine flow should be:
 
 ```bash
-git clone https://github.com/<owner>/servicescout.git
+git clone https://github.com/servicescout/servicescout.git
 cd servicescout
 cp .env.example .env
 cp workspace.json.example workspace.json
@@ -86,6 +89,10 @@ Security posture for the first release:
 - Bind to localhost by default.
 - For remote use, run behind VPN/firewall or an existing authenticated reverse
   proxy.
-- MCP exposes read-only catalog tools; crawl/re-index controls stay in the
-  dashboard/API.
-- Built-in auth can be added after the internal/VPN deployment model is proven.
+- MCP exposes catalog tools without app-level auth and must stay behind the
+  same local or external-auth boundary as the dashboard.
+- Crawl/re-index controls can use mounted repo, cloud, and LLM credentials.
+  Treat the dashboard/API as privileged.
+- Extraction and embedding can send source-derived snippets to configured
+  model providers. See `SECURITY.md` before publishing or running on private
+  workspaces.

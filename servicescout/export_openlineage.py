@@ -1,4 +1,4 @@
-"""OpenLineage export (Epic #9 Tier 4 #10).
+"""OpenLineage export.
 
 Render the catalog's reads/writes-Resource edges as OpenLineage events.
 OpenLineage is the de-facto open standard for data-lineage tracking
@@ -60,7 +60,7 @@ HERE = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG = HERE / "data" / "catalog.json"
 DEFAULT_OUTPUT_DIR = HERE / "data" / "openlineage"
 
-OL_PRODUCER = "https://github.com/lupuletic/servicescout"
+OL_PRODUCER = "https://github.com/servicescout/servicescout"
 OL_SCHEMA_URL = (
     "https://openlineage.io/spec/2-0-2/OpenLineage.json"
     "#/$defs/RunEvent"

@@ -1,4 +1,4 @@
-"""Tests for the OpenLineage exporter (Epic #9 Tier 4 #10)."""
+"""Tests for the OpenLineage exporter."""
 
 import json
 import tempfile

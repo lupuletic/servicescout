@@ -9,11 +9,11 @@
 # Required mounts (from your host):
 #   ~/.config/gh        → gh CLI auth for repo discovery + cloning
 #   ~/.config/gcloud    → ADC for Vertex AI embeddings
-#   ~/.codex            → optional, codex CLI auth (or set OPENAI_API_KEY)
-#   ~/.claude           → optional, claude CLI auth (or set ANTHROPIC_API_KEY)
+#   ~/.codex            → optional, codex CLI auth for local/dev runs
+#   ~/.claude           → optional, claude CLI auth for local/dev runs
 #
 # Required env (in .env, see .env.example):
-#   WORKSPACE_ROOT, GOOGLE_CLOUD_PROJECT, plus LLM provider key.
+#   WORKSPACE_ROOT, GOOGLE_CLOUD_PROJECT, plus a working extractor auth path.
 # Optional workspace selection:
 #   SERVICESCOUT_DATA_DIR, SERVICESCOUT_WORKSPACE_CONFIG.
 
@@ -38,6 +38,8 @@ x-servicescout: &servicescout
       PIP_NO_INDEX: ${PIP_NO_INDEX:-}
       PIP_FIND_LINKS: ${PIP_FIND_LINKS:-/tmp/wheels}
       NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-}
+      CODEX_CLI_VERSION: ${CODEX_CLI_VERSION:-latest}
+      CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-latest}
   environment: *servicescout-env
 
 services:
@@ -130,12 +132,9 @@ services:
       - ${HOME}/.codex:/home/cg/.codex:ro
       - ${HOME}/.claude:/home/cg/.claude:ro
 
-  # Continuous-crawl scheduler (Epic #9 Tier 1 #2, Issue #1). Runs 24/7
-  # alongside mcp + dashboard. Default tick: every 6 hours. Each tick
-  # git-fetches every repo under WORKSPACE_ROOT, detects repos whose
-  # remote HEAD differs from the last extraction's SHA, and triggers
-  # the crawler on that subset with a per-tick budget cap. Run logs
-  # land in data/crawl_runs/ for the dashboard's Activity page.
+  # Continuous-crawl scheduler. Default tick: every 6 hours. Each tick
+  # fetches repos, detects remote HEAD changes, and triggers the crawler
+  # on changed repos with a per-tick budget cap.
   scheduler:
     <<: *servicescout
     profiles: ["scheduler"]

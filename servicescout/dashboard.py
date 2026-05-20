@@ -1050,7 +1050,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
 
     @app.get("/api/crawl/runs")
     def crawl_runs(limit: int = Query(default=50, ge=1, le=500)) -> JSONResponse:
-        """List recent scheduler runs (Issue #1 / Epic #9 Tier 1 #2).
+        """List recent scheduler runs.
 
         Each entry is the summary of a scheduler tick: trigger, start /
         finish timestamps, status, repos_changed count, and the run_id

@@ -46,7 +46,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <span className="text-fg-dim text-xs ml-1">v0 · alpha</span>
         </div>
         <a
-          href="https://github.com/lupuletic/servicescout"
+          href="https://github.com/servicescout/servicescout"
           target="_blank"
           rel="noreferrer"
           className="flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg transition-colors"

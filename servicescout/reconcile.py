@@ -343,7 +343,7 @@ def llm_propose_merges(catalog: dict[str, Any], provider: str = "codex", model: 
         "describe the same service. When unsure, omit the merge entry — do not guess.\n\n"
         "Strong signals (use these to MERGE):\n"
         "- A hostname alias on the external matches the real component's name or its hostnames.\n"
-        "- A client class name (e.g. HorizonProvider) matches a real service (horizon-graphql-api).\n"
+        "- A client class name (e.g. PaymentsClient) matches a real service (payments-api).\n"
         "- A config key alias contains the real service's short name.\n"
         "- The descriptions describe the same domain/purpose.\n"
         "- The taglines describe the same product surface or domain.\n\n"

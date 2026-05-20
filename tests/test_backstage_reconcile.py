@@ -1,4 +1,4 @@
-"""Tests for the bi-directional Backstage YAML reconcile (Epic #9 Tier 4 #8)."""
+"""Tests for the bi-directional Backstage YAML reconcile."""
 
 import tempfile
 import unittest

@@ -14,8 +14,8 @@ benchmarks are green.
   - approved `PIP_INDEX_URL` / `NPM_CONFIG_REGISTRY`, or
   - a populated `vendor/wheels/` plus `PIP_NO_INDEX=1`.
 - Confirm at least one extractor auth path:
-  - mounted Codex/Claude CLI auth, or
-  - provider API key in the env file.
+  - mounted Codex/Claude CLI auth for a local/dev machine, or
+  - a provider-specific API-key/proxy harness once the remote mode is added.
 
 ## Setup
 
@@ -40,6 +40,21 @@ CRAWL_TICK_BUDGET_USD=10
 
 Create `workspace.private.json` with the selected org/repo discovery scope and
 any exclusions. Keep private paths and org names out of committed files.
+
+Before crawling from Docker, verify that the selected extractor can authenticate
+inside the container:
+
+```bash
+docker compose --env-file .env.private run --rm --entrypoint sh crawler -lc 'codex login status'
+docker compose --env-file .env.private run --rm --entrypoint sh crawler -lc 'claude auth status'
+```
+
+Run the command for the provider configured in `LLM_PROVIDER`.
+
+If this is a headless VM, do not assume a developer's local CLI session exists
+or should be copied there. Use the issue-tracked direct API/Agent SDK harness
+when that mode lands, or bootstrap the provider CLI with a dedicated server-side
+credential and document the rotation path.
 
 ## Security Posture
 

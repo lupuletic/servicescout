@@ -1,4 +1,4 @@
-"""Bi-directional Backstage reconcile (Epic #9 Tier 4 #8).
+"""Bi-directional Backstage reconcile.
 
 When a repo already has a hand-maintained `catalog-info.yaml` (the
 Backstage convention), treat it as another evidence stream alongside

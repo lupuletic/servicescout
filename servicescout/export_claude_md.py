@@ -1,4 +1,4 @@
-"""Per-system CLAUDE.md / AGENTS.md emitter (Epic #9 Tier 2 #5).
+"""Per-system CLAUDE.md / AGENTS.md emitter.
 
 For each `system` in the catalog, emit a markdown brief that an AI
 coding agent can drop into a multi-repo workspace as `CLAUDE.md`

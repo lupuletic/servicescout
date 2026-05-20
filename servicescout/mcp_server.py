@@ -27,7 +27,6 @@ from pathlib import Path
 from typing import Any
 
 from servicescout.storage import Backend, DEFAULT_FLOW_EDGE_TYPES, make_backend
-from servicescout import auth as auth_module
 
 
 HERE = Path(__file__).resolve().parents[1]
@@ -415,27 +414,7 @@ def main() -> int:
     parser.add_argument("--location", default=os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1")
     parser.add_argument("--embed-model", default="gemini-embedding-001")
     parser.add_argument("--embed-dim", type=int, default=768)
-    parser.add_argument("--auth-issuer", default=os.getenv("MCP_AUTH_ISSUER") or None,
-                        help="OIDC issuer URL. When set, every MCP tool call requires a "
-                             "valid bearer token; responses are filtered to entities the "
-                             "caller's teams own. Default: no auth (127.0.0.1 sidecar mode).")
-    parser.add_argument("--auth-audience", default=os.getenv("MCP_AUTH_AUDIENCE") or "",
-                        help="Required JWT audience claim. Only meaningful with --auth-issuer.")
-    parser.add_argument("--auth-teams-claim", default=os.getenv("MCP_AUTH_TEAMS_CLAIM") or "groups",
-                        help="JWT claim name containing the caller's team / group identifiers. "
-                             "Default: `groups`.")
     args = parser.parse_args()
-
-    auth_config = auth_module.AuthConfig.from_env()
-    if args.auth_issuer:
-        auth_config.enabled = True
-        auth_config.issuer = args.auth_issuer
-    if args.auth_audience:
-        auth_config.audience = args.auth_audience
-    if args.auth_teams_claim:
-        auth_config.teams_claim = args.auth_teams_claim
-    if auth_config.enabled:
-        print(f"servicescout: auth enabled, issuer={auth_config.issuer}", file=sys.stderr)
 
     backend = make_backend(args.backend, args.catalog, kuzu_path=args.kuzu_db)
     print(f"servicescout: backend={backend.name}", file=sys.stderr)

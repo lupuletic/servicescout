@@ -23,7 +23,7 @@ and answers with file:line citations from real code.
 **1. Run the server (Docker, HTTP streamable on `:8765`):**
 
 ```bash
-git clone https://github.com/lupuletic/servicescout.git
+git clone https://github.com/servicescout/servicescout.git
 cd servicescout
 cp .env.example .env  # fill in WORKSPACE_ROOT, GOOGLE_CLOUD_PROJECT
 docker compose up -d mcp dashboard
@@ -51,10 +51,10 @@ The crawler is auto-convergent: it clones repos referenced by the catalog,
 re-runs extraction, and stops when no new repos are discovered. Budget cap
 in `.env` (`BUDGET_USD=100` by default) is a hard stop.
 
-**3. Wire it up to your coding agent (one line):**
+**3. Wire it up to your coding agent:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lupuletic/servicescout/main/install.sh | bash
+./install.sh
 ```
 
 Interactive — asks which agent (Claude Code / Codex / both) and the MCP
@@ -62,10 +62,12 @@ URL (default `http://127.0.0.1:8765/mcp`). Installs the `servicescout` and
 `journey` skills into `~/.claude/skills/` **and** registers the MCP server
 with your chosen agent(s).
 
-Headless / scripted:
+Remote install is available, but inspect the script first if this is a
+new machine or a shared environment:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lupuletic/servicescout/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/servicescout/servicescout/main/install.sh | less
+curl -fsSL https://raw.githubusercontent.com/servicescout/servicescout/main/install.sh \
   | bash -s -- --agent both --url http://127.0.0.1:8765/mcp --yes
 ```
 
@@ -108,7 +110,7 @@ For a new VM or workstation where you want the full product behind one HTTP
 port, use the bundled nginx edge profile:
 
 ```bash
-git clone https://github.com/lupuletic/servicescout.git
+git clone https://github.com/servicescout/servicescout.git
 cd servicescout
 cp .env.example .env
 $EDITOR .env                 # set WORKSPACE_ROOT, credentials, SERVICESCOUT_HTTP_BIND
@@ -136,6 +138,22 @@ Then open `http://<host>:<port>/` for the UI or point agents at
 `http://<host>:<port>/mcp`. Put TLS/auth in front with your normal load
 balancer or reverse proxy; the bundled nginx is intentionally a small internal
 edge, not an identity provider.
+
+Extraction currently shells out to the Codex or Claude Code CLI inside the
+crawler/scheduler container. On a developer machine, Compose mounts
+`~/.codex` and `~/.claude` so an existing CLI login can work in Docker. On a
+headless VM, validate the selected CLI auth path before running a crawl:
+
+```bash
+docker compose run --rm --entrypoint sh crawler -lc 'codex login status'
+docker compose run --rm --entrypoint sh crawler -lc 'claude auth status'
+```
+
+Run the command for the provider you configured in `LLM_PROVIDER`.
+
+For remote VM deployments, prefer a dedicated API key, service account, or
+credential proxy once the direct API/Agent SDK harness lands. Until then,
+treat CLI auth inside the container as a release gate for crawling.
 
 ### Switch between workspaces and public evals
 
@@ -327,7 +345,7 @@ k=60) and exposes eight tools for agents to navigate the result.
 | `WORKSPACE_ROOT` | yes | — | Path where the crawler clones repos. |
 | `LLM_PROVIDER` | yes | `codex` | Extractor harness: `codex` or `claude`. |
 | `LLM_MODEL` | yes | `gpt-5.4-mini` | Model name passed to the harness. |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | one of | — | Credential for the harness. Skip if your CLI is already logged in. |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | provider-dependent | — | Passed through for provider tooling and future direct API harnesses. Today, still verify the selected CLI is authenticated inside the crawler container. |
 | `GOOGLE_CLOUD_PROJECT` | optional | — | GCP project for Vertex AI embeddings. Empty disables embeddings (lexical-only fallback). |
 | `BUDGET_USD` | optional | `100` | Hard cost cap per crawl. |
 | `SERVICESCOUT_HTTP_BIND` | optional | `127.0.0.1:8080` | nginx edge bind address for remote Compose deployments. |
@@ -338,6 +356,24 @@ See `.env.example` for the full list. The first-run wizard
 (`python -m servicescout.init_wizard`) walks you through everything interactively.
 For the first controlled indexing run on a private estate, follow
 [`docs/controlled-indexing-runbook.md`](docs/controlled-indexing-runbook.md).
+
+## Security model
+
+ServiceScout is a local-first operator tool. It is not a hosted identity
+provider and it does not ship application-level auth in this alpha.
+
+- Default Compose binds the dashboard, MCP server, and nginx edge to
+  `127.0.0.1`.
+- The MCP server exposes read-only catalog tools.
+- The dashboard can start crawler and scheduler work. Those jobs can use the
+  mounted GitHub, cloud, Codex, Claude, and LLM API credentials.
+- Extraction sends source-derived prompts and snippets to the configured
+  extractor provider (`codex` or `claude`). Embeddings send catalog text to the
+  configured embedding provider when `GOOGLE_CLOUD_PROJECT` is set.
+- Do not expose the dashboard or `/mcp` directly to the public internet. Use a
+  VPN, firewall, SSH tunnel, or authenticated reverse proxy for shared access.
+
+See [`SECURITY.md`](SECURITY.md) before connecting it to private repositories.
 
 ### Corporate TLS / package mirrors
 
@@ -369,9 +405,9 @@ The runtime stack can still be started from a pre-built image with
 
 ## Status
 
-Alpha. The pipeline works end-to-end and has been validated on a real
-~200-repo workspace producing a Backstage-shaped catalog served to coding
-agents. Expect rough edges in the operator path:
+Alpha. The pipeline works end-to-end, has public eval coverage, and has been
+used against a large private workspace. Expect rough edges in the operator
+path:
 
 - `python -m servicescout.crawler --resume` can continue a compatible interrupted run by reading
   `crawler_state.json` and skipping repos already completed successfully.
@@ -395,7 +431,8 @@ Issues and PRs welcome.
   pluggable provider interface.
 - **Extraction harnesses.** Today: `codex` and `claude` CLIs. Planned:
   Cursor agent mode, Cline, Continue, and direct OpenAI / Anthropic API
-  invocation for environments without the CLIs.
+  invocation for headless Docker/VM environments without mounted CLI login
+  state.
 - **Source-control hosts.** Today: GitHub. Planned: GitLab, Bitbucket,
   GitHub Enterprise.
 - **Runtime correlation.** OpenTelemetry / Datadog / service-mesh

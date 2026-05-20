@@ -1,4 +1,4 @@
-"""Tests for the new MCP tools (Tier 2 #4):
+"""Tests for the MCP tools:
   - servicescout_glossary(term)
   - servicescout_owners(entity)
 

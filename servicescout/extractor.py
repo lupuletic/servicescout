@@ -1051,10 +1051,9 @@ def run_for_repo(
             report_a = snippet_verify.verify_payload(payload, repo_root)
             report_b = code_shape.verify_payload(payload, repo_root)
             cross_check = calibrate.apply(payload, report_a, report_b)
-            # Bi-directional Backstage reconcile (Epic #9 Tier 4 #8):
-            # if the repo has a hand-maintained catalog-info.yaml, treat
-            # it as another evidence stream. Components where the LLM
-            # disagrees with the YAML get demoted to confidence=review.
+            # If the repo has a hand-maintained catalog-info.yaml, treat it
+            # as another evidence stream. Components where the LLM disagrees
+            # with the YAML get demoted to confidence=review.
             # No-op when no Backstage YAML is present in the repo.
             backstage_summary = backstage_reconcile.reconcile_payload(payload, repo_root)
     payload["_meta"] = {
