@@ -5,6 +5,17 @@ import { type CrawlRunDetail, type CrawlRunsPayload, type CrawlStatusPayload } f
 import { Button, Card, CardTitle, CardValue, PageHeader, StatusBadge } from "@/components/ui";
 import { cn } from "@/lib/cn";
 
+const SCHEDULER_COMMANDS: Array<{ test: RegExp; command: string }> = [
+  {
+    test: /online-boutique/,
+    command: "docker compose --env-file .env.online-boutique.example --profile scheduler up -d scheduler",
+  },
+  {
+    test: /socks?-shop|evals\/workspace/,
+    command: "docker compose --env-file .env.socks-shop.example --profile scheduler up -d scheduler",
+  },
+];
+
 function StatusGlyph({ status, className }: { status?: string; className?: string }) {
   if (status === "ok" || status === "no_changes") return <CheckCircle2 size={14} className={className} />;
   if (status === "crawler_failed" || status === "exception") return <XCircle size={14} className={className} />;
@@ -32,6 +43,19 @@ function duration(start?: string, finish?: string) {
 function fmtMoney(value?: number | null) {
   if (value == null) return "-";
   return `$${value.toFixed(value >= 10 ? 0 : 2)}`;
+}
+
+function formatInterval(minutes?: number) {
+  if (!minutes) return "-";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = minutes / 60;
+  return Number.isInteger(hours) ? `${minutes}m (${hours}h)` : `${minutes}m`;
+}
+
+function schedulerCommand(workspaceConfig?: string, workspaceRoot?: string) {
+  const target = `${workspaceConfig || ""} ${workspaceRoot || ""}`;
+  const matched = SCHEDULER_COMMANDS.find((entry) => entry.test.test(target));
+  return matched?.command || "docker compose --profile scheduler up -d scheduler";
 }
 
 export function ActivityPage() {
@@ -72,12 +96,19 @@ export function ActivityPage() {
   );
   const recentRunsLabel = runs?.source === "extractions" ? "extraction runs" : "listed in Activity";
   const changedLabel = runs?.source === "extractions" ? "repos extracted" : "recent window";
+  const schedulerRunning = Boolean(status?.scheduler?.running);
+  const interval = formatInterval(status?.interval_minutes);
+  const pageDescription = status?.lock?.held
+    ? "A crawl or re-index is running"
+    : schedulerRunning
+      ? `Automated crawl every ${interval}`
+      : "Manual trigger only";
 
   return (
     <div className="h-full grid grid-rows-[auto_1fr]">
       <PageHeader
         title="Activity"
-        description={status?.lock?.held ? "Scheduler tick running" : `Every ${status?.interval_minutes ?? "-"} minutes`}
+        description={pageDescription}
         actions={
           <>
             <Button variant="outline" onClick={() => void mutate(() => true)}>
@@ -95,9 +126,9 @@ export function ActivityPage() {
           <div className="grid grid-cols-4 gap-3">
             <Card>
               <CardTitle>Scheduler</CardTitle>
-              <CardValue>{status?.scheduler?.running ? "On" : "Manual"}</CardValue>
+              <CardValue>{schedulerRunning ? "On" : "Manual"}</CardValue>
               <div className="text-xs text-fg-dim mt-1">
-                {status?.scheduler?.running ? `PID ${status.scheduler.pid} · ${status.scheduler.uptime || "running"}` : "No daemon detected"}
+                {schedulerRunning ? `PID ${status?.scheduler?.pid} · ${status?.scheduler?.uptime || "running"}` : "No daemon detected"}
               </div>
             </Card>
             <Card>
@@ -115,16 +146,26 @@ export function ActivityPage() {
             <Card>
               <CardTitle>Tick Budget</CardTitle>
               <CardValue>${status?.budget_usd?.toFixed(0) ?? "-"}</CardValue>
-              <div className="text-xs text-fg-dim mt-1">{totalChanged} {changedLabel}</div>
+              <div className="text-xs text-fg-dim mt-1">per automated/manual run</div>
             </Card>
           </div>
 
           <section className="rounded-lg border border-border bg-bg-elevated overflow-hidden">
-            <div className="grid grid-cols-[160px_minmax(0,1fr)] border-b border-border">
+            <div className="grid grid-cols-[190px_180px_minmax(0,1fr)] border-b border-border">
               <div className="border-r border-border px-4 py-3">
                 <div className="text-xs uppercase tracking-wider text-fg-dim">Run Mode</div>
                 <div className="mt-1 text-sm text-fg">
-                  {status?.scheduler?.running ? `Continuous · every ${status.interval_minutes}m` : "Manual trigger only"}
+                  {schedulerRunning ? "Automated scheduler" : "Manual trigger only"}
+                </div>
+                <div className="mt-0.5 text-xs text-fg-dim">
+                  {schedulerRunning ? "Daemon is active" : "Use Trigger now or start scheduler"}
+                </div>
+              </div>
+              <div className="border-r border-border px-4 py-3">
+                <div className="text-xs uppercase tracking-wider text-fg-dim">Configured Interval</div>
+                <div className="mt-1 text-sm text-fg">{interval}</div>
+                <div className="mt-0.5 text-xs text-fg-dim">
+                  {schedulerRunning ? "Next ticks use this cadence" : "Only applies after automation starts"}
                 </div>
               </div>
               <div className="px-4 py-3">
@@ -133,6 +174,17 @@ export function ActivityPage() {
                 <div className="mt-0.5 truncate font-mono text-xs text-fg-dim">{status?.workspace_config || "-"}</div>
               </div>
             </div>
+            {!schedulerRunning && (
+              <div className="border-b border-border px-4 py-3">
+                <div className="text-xs uppercase tracking-wider text-fg-dim">Enable Automation</div>
+                <div className="mt-1 text-sm text-fg-muted">
+                  Start the scheduler service outside the browser. It will write runs to this Activity view and use the interval above.
+                </div>
+                <pre className="mt-2 overflow-auto rounded border border-border bg-bg px-3 py-2 text-xs text-fg-muted">
+                  {schedulerCommand(status?.workspace_config, status?.workspace_root)}
+                </pre>
+              </div>
+            )}
             <div className="px-4 py-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -156,6 +208,10 @@ export function ActivityPage() {
               )}
             </div>
           </section>
+
+          <div className="text-xs text-fg-dim">
+            Recent run table: {totalChanged} {changedLabel}. Select a row to inspect events, cost, changed repos, and re-index actions.
+          </div>
 
           <section className="rounded-lg border border-border bg-bg-elevated overflow-hidden">
             <div className="grid grid-cols-[140px_minmax(220px,1fr)_100px_80px_90px_85px] gap-3 px-4 py-2 text-xs uppercase tracking-wider text-fg-dim border-b border-border">

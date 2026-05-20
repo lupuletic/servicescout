@@ -200,6 +200,10 @@ test("explorer and catalog expose confidence as an operator filter", async ({ pa
 test("activity can inspect a scheduler tick and trigger a crawl", async ({ page }) => {
   await page.goto("/activity");
   await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
+  await expect(page.getByText("Manual trigger only").first()).toBeVisible();
+  await expect(page.getByText("Configured Interval")).toBeVisible();
+  await expect(page.getByText("Only applies after automation starts")).toBeVisible();
+  await expect(page.getByText("docker compose --profile scheduler up -d scheduler")).toBeVisible();
   const runButton = page.getByRole("button").filter({ hasText: "20260519T100000Z-abc123" });
   await expect(runButton).toBeVisible();
 
