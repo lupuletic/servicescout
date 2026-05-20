@@ -22,6 +22,7 @@ from typing import Any
 
 from servicescout.repo_discovery import find_repos, load_workspace_config
 from servicescout.build_catalog import build as build_catalog, canonical_key, host_to_key
+from servicescout.harnesses import ensure_provider_authenticated
 
 
 HERE = Path(__file__).resolve().parents[1]
@@ -631,7 +632,6 @@ def main() -> int:
     # Fail fast on missing extractor auth, before discovery/cloning, so a
     # missing CLI login or API key gives a clear message instead of an opaque
     # per-repo extraction failure later.
-    from servicescout.harnesses import ensure_provider_authenticated
     ensure_provider_authenticated(args.provider)
     crawl(
         root=args.root.resolve(),

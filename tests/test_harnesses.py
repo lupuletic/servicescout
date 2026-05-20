@@ -94,6 +94,16 @@ class ProviderAuthStatusTests(unittest.TestCase):
                 ok, _ = provider_auth_status("claude", env={})
                 self.assertTrue(ok)
 
+    def test_claude_unparseable_status_fails_open(self) -> None:
+        with mock.patch("servicescout.harnesses.shutil.which", return_value="/usr/bin/claude"), \
+             mock.patch(
+                 "servicescout.harnesses.subprocess.run",
+                 return_value=SimpleNamespace(stdout="not json at all", stderr=""),
+             ):
+            ok, detail = provider_auth_status("claude", env={})
+        self.assertTrue(ok)  # don't block when we can't parse the probe
+        self.assertIn("continuing", detail)
+
     def test_missing_cli_is_unauthenticated(self) -> None:
         with mock.patch("servicescout.harnesses.shutil.which", return_value=None):
             ok, detail = provider_auth_status("codex", env={})

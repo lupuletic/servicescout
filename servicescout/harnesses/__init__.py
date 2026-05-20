@@ -121,18 +121,20 @@ def provider_auth_status(
     except Exception as exc:  # never block a crawl on a flaky probe
         return True, f"{provider}: could not verify auth ({exc}); continuing"
 
-    combined = f"{proc.stdout}\n{proc.stderr}"
     if provider == "claude":
         # `claude auth status` prints JSON, e.g. {"loggedIn": false, ...}.
+        # If it ever prints something we can't parse, fail open rather than
+        # guess from substrings — same policy as a flaky probe above.
         try:
             logged_in = bool(json.loads(proc.stdout).get("loggedIn"))
-        except Exception:
-            logged_in = '"loggedin":true' in combined.lower().replace(" ", "")
-        return (logged_in, "claude: logged in") if logged_in else (
+        except (json.JSONDecodeError, AttributeError):
+            return True, "claude: could not parse auth status; continuing"
+        return (True, "claude: logged in") if logged_in else (
             False,
             "claude CLI is not logged in",
         )
     # codex: `codex login status` prints "Not logged in" when unauthenticated.
+    combined = f"{proc.stdout}\n{proc.stderr}"
     if "not logged in" in combined.lower():
         return False, "codex CLI is not logged in"
     return True, "codex: logged in"
