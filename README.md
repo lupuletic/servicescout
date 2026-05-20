@@ -2,19 +2,6 @@
   <img alt="ServiceScout" src="./assets/servicescout-logo.png" width="820">
 </p>
 
-<div align="center">
-
-# ServiceScout
-
-**Org-wide code context for AI coding agents. One MCP server, every repo.**
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Made for MCP](https://img.shields.io/badge/MCP-compatible-7c3aed)](https://modelcontextprotocol.io)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue)](https://www.python.org)
-[![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](#status)
-
-</div>
-
 In a multi-repo enterprise, AI coding agents struggle the moment a question
 crosses one repo. They grep the open repo, guess names, or fabricate
 connections. ServiceScout fixes that by giving them an evidence-backed graph
