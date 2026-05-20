@@ -1,20 +1,9 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import { AlertCircle, CheckCircle2, Clock3, GitBranch, Loader2, Play, RefreshCw, RotateCw, XCircle } from "lucide-react";
+import { AlertCircle, CheckCircle2, Clock3, GitBranch, Loader2, Pause, Play, RefreshCw, RotateCw, Settings2, XCircle } from "lucide-react";
 import { type CrawlRunDetail, type CrawlRunsPayload, type CrawlStatusPayload } from "@/lib/api";
-import { Button, Card, CardTitle, CardValue, PageHeader, StatusBadge } from "@/components/ui";
+import { Button, Card, CardTitle, CardValue, Input, PageHeader, StatusBadge } from "@/components/ui";
 import { cn } from "@/lib/cn";
-
-const SCHEDULER_COMMANDS: Array<{ test: RegExp; command: string }> = [
-  {
-    test: /online-boutique/,
-    command: "docker compose --env-file .env.online-boutique.example --profile scheduler up -d scheduler",
-  },
-  {
-    test: /socks?-shop|evals\/workspace/,
-    command: "docker compose --env-file .env.socks-shop.example --profile scheduler up -d scheduler",
-  },
-];
 
 function StatusGlyph({ status, className }: { status?: string; className?: string }) {
   if (status === "ok" || status === "no_changes") return <CheckCircle2 size={14} className={className} />;
@@ -52,20 +41,25 @@ function formatInterval(minutes?: number) {
   return Number.isInteger(hours) ? `${minutes}m (${hours}h)` : `${minutes}m`;
 }
 
-function schedulerCommand(workspaceConfig?: string, workspaceRoot?: string) {
-  const target = `${workspaceConfig || ""} ${workspaceRoot || ""}`;
-  const matched = SCHEDULER_COMMANDS.find((entry) => entry.test.test(target));
-  return matched?.command || "docker compose --profile scheduler up -d scheduler";
-}
-
 export function ActivityPage() {
   const { data: status } = useSWR<CrawlStatusPayload>("/api/crawl/status", { refreshInterval: 3000 });
   const { data: runs, isLoading } = useSWR<CrawlRunsPayload>("/api/crawl/runs", { refreshInterval: 5000 });
   const { mutate } = useSWRConfig();
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
   const [triggering, setTriggering] = useState(false);
+  const [automationAction, setAutomationAction] = useState<"start" | "stop" | null>(null);
+  const [intervalInput, setIntervalInput] = useState("360");
+  const [budgetInput, setBudgetInput] = useState("20");
   const selected = selectedRun || runs?.runs?.[0]?.run_id || null;
   const { data: detail } = useSWR<CrawlRunDetail>(selected ? `/api/crawl/runs/${selected}` : null);
+  const schedulerInterval = status?.scheduler?.interval_minutes ?? status?.interval_minutes;
+  const schedulerBudget = status?.scheduler?.budget_usd ?? status?.budget_usd;
+
+  useEffect(() => {
+    if (automationAction) return;
+    if (schedulerInterval != null) setIntervalInput(String(schedulerInterval));
+    if (schedulerBudget != null) setBudgetInput(String(schedulerBudget));
+  }, [automationAction, schedulerBudget, schedulerInterval]);
 
   const triggerNow = async () => {
     setTriggering(true);
@@ -90,6 +84,37 @@ export function ActivityPage() {
     await Promise.all([mutate("/api/crawl/status"), mutate("/api/crawl/runs")]);
   };
 
+  const startAutomation = async () => {
+    setAutomationAction("start");
+    try {
+      const body = new FormData();
+      body.append("interval_minutes", intervalInput);
+      body.append("budget_usd", budgetInput);
+      const response = await fetch("/api/crawl/scheduler/start", { method: "POST", body });
+      if (!response.ok && response.status !== 202) {
+        const payload = await response.json().catch(() => ({}));
+        alert(payload.detail || payload.error ? `Automation failed: ${payload.detail || payload.error}` : `Automation failed: ${response.status}`);
+      }
+      await Promise.all([mutate("/api/crawl/status"), mutate("/api/crawl/runs")]);
+    } finally {
+      setAutomationAction(null);
+    }
+  };
+
+  const stopAutomation = async () => {
+    setAutomationAction("stop");
+    try {
+      const response = await fetch("/api/crawl/scheduler/stop", { method: "POST" });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        alert(payload.error ? `Pause failed: ${payload.error}` : `Pause failed: ${response.status}`);
+      }
+      await Promise.all([mutate("/api/crawl/status"), mutate("/api/crawl/runs")]);
+    } finally {
+      setAutomationAction(null);
+    }
+  };
+
   const totalChanged = useMemo(
     () => (runs?.runs || []).reduce((sum, run) => sum + (run.repos_changed_count || 0), 0),
     [runs],
@@ -97,7 +122,11 @@ export function ActivityPage() {
   const recentRunsLabel = runs?.source === "extractions" ? "extraction runs" : "listed in Activity";
   const changedLabel = runs?.source === "extractions" ? "repos extracted" : "recent window";
   const schedulerRunning = Boolean(status?.scheduler?.running);
-  const interval = formatInterval(status?.interval_minutes);
+  const schedulerSource = status?.scheduler?.source || (schedulerRunning ? "external" : "stopped");
+  const schedulerManaged = schedulerSource === "dashboard";
+  const interval = formatInterval(schedulerInterval);
+  const logPath = status?.scheduler?.log_path || status?.active_log_path;
+  const logTail = status?.scheduler?.log_tail?.length ? status.scheduler.log_tail : (status?.active_log_tail || []);
   const pageDescription = status?.lock?.held
     ? "A crawl or re-index is running"
     : schedulerRunning
@@ -128,7 +157,7 @@ export function ActivityPage() {
               <CardTitle>Scheduler</CardTitle>
               <CardValue>{schedulerRunning ? "On" : "Manual"}</CardValue>
               <div className="text-xs text-fg-dim mt-1">
-                {schedulerRunning ? `PID ${status?.scheduler?.pid} · ${status?.scheduler?.uptime || "running"}` : "No daemon detected"}
+                {schedulerRunning ? `${schedulerManaged ? "managed" : "external"} · PID ${status?.scheduler?.pid} · ${status?.scheduler?.uptime || "running"}` : "Ready for manual trigger"}
               </div>
             </Card>
             <Card>
@@ -145,8 +174,8 @@ export function ActivityPage() {
             </Card>
             <Card>
               <CardTitle>Tick Budget</CardTitle>
-              <CardValue>${status?.budget_usd?.toFixed(0) ?? "-"}</CardValue>
-              <div className="text-xs text-fg-dim mt-1">per automated/manual run</div>
+              <CardValue>${schedulerBudget?.toFixed(0) ?? "-"}</CardValue>
+              <div className="text-xs text-fg-dim mt-1">per scheduled/manual run</div>
             </Card>
           </div>
 
@@ -155,10 +184,10 @@ export function ActivityPage() {
               <div className="border-r border-border px-4 py-3">
                 <div className="text-xs uppercase tracking-wider text-fg-dim">Run Mode</div>
                 <div className="mt-1 text-sm text-fg">
-                  {schedulerRunning ? "Automated scheduler" : "Manual trigger only"}
+                  {schedulerRunning ? (schedulerManaged ? "Managed automation" : "External scheduler") : "Manual trigger only"}
                 </div>
                 <div className="mt-0.5 text-xs text-fg-dim">
-                  {schedulerRunning ? "Daemon is active" : "Use Trigger now or start scheduler"}
+                  {schedulerRunning ? "Runs continue until paused" : "Use Trigger now or enable automation"}
                 </div>
               </div>
               <div className="border-r border-border px-4 py-3">
@@ -174,22 +203,68 @@ export function ActivityPage() {
                 <div className="mt-0.5 truncate font-mono text-xs text-fg-dim">{status?.workspace_config || "-"}</div>
               </div>
             </div>
-            {!schedulerRunning && (
-              <div className="border-b border-border px-4 py-3">
-                <div className="text-xs uppercase tracking-wider text-fg-dim">Enable Automation</div>
-                <div className="mt-1 text-sm text-fg-muted">
-                  Start the scheduler service outside the browser. It will write runs to this Activity view and use the interval above.
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 border-b border-border px-4 py-3">
+              <div>
+                <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-fg-dim">
+                  <Settings2 size={13} /> Automation
                 </div>
-                <pre className="mt-2 overflow-auto rounded border border-border bg-bg px-3 py-2 text-xs text-fg-muted">
-                  {schedulerCommand(status?.workspace_config, status?.workspace_root)}
-                </pre>
+                <div className="mt-1 text-sm text-fg-muted">
+                  {schedulerRunning
+                    ? schedulerManaged
+                      ? `Enabled every ${interval}. Update values to restart the scheduler with a new cadence.`
+                      : "A scheduler is running outside the dashboard. Stop that process before switching to managed control."
+                    : "Enable scheduled crawls here, or keep using manual trigger for one-off runs."}
+                </div>
               </div>
-            )}
+              <div className="flex flex-wrap items-end justify-end gap-2">
+                <label className="block w-[120px]">
+                  <span className="mb-1 block text-xs text-fg-dim">Interval (min)</span>
+                  <Input
+                    id="scheduler-interval"
+                    type="number"
+                    min={1}
+                    max={10080}
+                    value={intervalInput}
+                    disabled={schedulerSource === "external" || automationAction !== null}
+                    onChange={(event) => setIntervalInput(event.target.value)}
+                  />
+                </label>
+                <label className="block w-[120px]">
+                  <span className="mb-1 block text-xs text-fg-dim">Budget ($)</span>
+                  <Input
+                    id="scheduler-budget"
+                    type="number"
+                    min={0.01}
+                    step={0.01}
+                    value={budgetInput}
+                    disabled={schedulerSource === "external" || automationAction !== null}
+                    onChange={(event) => setBudgetInput(event.target.value)}
+                  />
+                </label>
+                <Button
+                  onClick={startAutomation}
+                  disabled={schedulerSource === "external" || automationAction !== null}
+                  className="h-9"
+                >
+                  {automationAction === "start" ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+                  {schedulerRunning ? "Update" : "Enable"}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={stopAutomation}
+                  disabled={!schedulerManaged || automationAction !== null}
+                  className="h-9"
+                >
+                  {automationAction === "stop" ? <Loader2 size={14} className="animate-spin" /> : <Pause size={14} />}
+                  Pause
+                </Button>
+              </div>
+            </div>
             <div className="px-4 py-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="text-xs uppercase tracking-wider text-fg-dim">Live Output</div>
-                  <div className="text-xs text-fg-dim">{status?.active_log_path || "No trigger log yet"}</div>
+                  <div className="text-xs text-fg-dim">{logPath || "No scheduler or trigger log yet"}</div>
                 </div>
                 {status?.crawler?.running && (
                   <div className="rounded border border-accent/30 bg-accent/10 px-2 py-1 text-xs text-fg">
@@ -197,9 +272,9 @@ export function ActivityPage() {
                   </div>
                 )}
               </div>
-              {(status?.active_log_tail || []).length > 0 ? (
+              {logTail.length > 0 ? (
                 <pre className="mt-3 max-h-40 overflow-auto rounded border border-border bg-bg p-3 text-xs text-fg-muted whitespace-pre-wrap">
-                  {(status?.active_log_tail || []).join("\n")}
+                  {logTail.join("\n")}
                 </pre>
               ) : (
                 <div className="mt-3 rounded border border-border bg-bg px-3 py-2 text-sm text-fg-muted">

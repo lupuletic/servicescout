@@ -151,9 +151,9 @@ services:
       --provider ${LLM_PROVIDER:-codex}
       --model ${LLM_MODEL:-gpt-5.4-mini}
       --effort ${LLM_EFFORT:-medium}
-      --crawler-arg --reconcile
-      --crawler-arg --embed
-      --crawler-arg --build-kuzu
+      --crawler-arg=--reconcile
+      --crawler-arg=--embed
+      --crawler-arg=--build-kuzu
     volumes:
       - ${WORKSPACE_ROOT:?Set WORKSPACE_ROOT in .env}:/workspace
       - ${SERVICESCOUT_DATA_DIR:-./data}:/data

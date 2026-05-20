@@ -179,11 +179,23 @@ def get_remote_head_sha(repo_root: Path) -> str | None:
         return None
 
 
-def last_extracted_sha(catalog_dir: Path, repo_name: str) -> str | None:
+def extraction_record_name(repo: dict[str, Any]) -> str:
+    repo_id = str(repo.get("id") or "")
+    repo_name = str(repo.get("name") or "")
+    if repo_id:
+        return repo_id.split("/", 1)[-1].replace("/", "__")
+    return repo_name
+
+
+def last_extracted_sha(catalog_dir: Path, repo: dict[str, Any]) -> str | None:
     """Read the _meta.commit field from the latest extraction for this
     repo, if any. Returns None if no prior extraction.
     """
-    path = catalog_dir / f"{repo_name}.json"
+    candidates = [catalog_dir / f"{extraction_record_name(repo)}.json"]
+    repo_name = str(repo.get("name") or "")
+    if repo_name:
+        candidates.append(catalog_dir / f"{repo_name}.json")
+    path = next((candidate for candidate in candidates if candidate.is_file()), candidates[0])
     if not path.is_file():
         return None
     try:
@@ -215,7 +227,7 @@ def detect_changed_repos(
         fetch_ok = fetch_remote(repo_root)
         remote_sha = get_remote_head_sha(repo_root)
         local_sha = get_local_head_sha(repo_root)
-        last_sha = last_extracted_sha(catalog_dir, repo_name)
+        last_sha = last_extracted_sha(catalog_dir, repo)
         # A repo is "changed" if:
         #   - we've never extracted it, OR
         #   - the SHA we last extracted is not the remote HEAD.
@@ -455,7 +467,7 @@ def main() -> int:
     parser.add_argument(
         "--crawler-arg", action="append", default=[],
         help="Extra arg to forward to crawler.py. May be passed multiple times. "
-             "Example: --crawler-arg --reconcile --crawler-arg --build-kuzu",
+             "Example: --crawler-arg=--reconcile --crawler-arg=--build-kuzu",
     )
     parser.add_argument(
         "--force-repos", nargs="*", default=None,

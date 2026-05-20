@@ -77,6 +77,16 @@ const checkoutEntityPayload = {
 
 const crawlStatus = {
   lock: { held: false },
+  scheduler: {
+    running: false,
+    pid: null,
+    managed: true,
+    source: "stopped",
+    interval_minutes: 360,
+    budget_usd: 20,
+    log_path: null,
+    log_tail: [],
+  },
   last_run: null,
   interval_minutes: 360,
   budget_usd: 20,
@@ -168,6 +178,26 @@ async function mockApis(page: Page) {
   await page.route("**/api/crawl/runs", async (route) => route.fulfill({ json: crawlRuns }));
   await page.route("**/api/crawl/trigger", async (route) => route.fulfill({ status: 202, json: { status: "accepted", pid: 123 } }));
   await page.route("**/api/crawl/trigger/repo**", async (route) => route.fulfill({ status: 202, json: { status: "accepted", pid: 124 } }));
+  await page.route("**/api/crawl/scheduler/start", async (route) => route.fulfill({
+    status: 202,
+    json: {
+      status: "started",
+      scheduler: {
+        running: true,
+        pid: 999,
+        managed: true,
+        source: "dashboard",
+        interval_minutes: 360,
+        budget_usd: 20,
+      },
+    },
+  }));
+  await page.route("**/api/crawl/scheduler/stop", async (route) => route.fulfill({
+    json: {
+      status: "stopped",
+      scheduler: { running: false, pid: null, managed: true, source: "stopped" },
+    },
+  }));
   await page.route("**/api/operator/summary", async (route) => route.fulfill({ json: operatorSummary }));
   await page.route("**/api/triage/facts", async (route) => route.fulfill({ json: factsPayload }));
   await page.route("**/api/triage/decisions", async (route) => route.fulfill({ json: decisionsPayload }));
@@ -203,7 +233,9 @@ test("activity can inspect a scheduler tick and trigger a crawl", async ({ page 
   await expect(page.getByText("Manual trigger only").first()).toBeVisible();
   await expect(page.getByText("Configured Interval")).toBeVisible();
   await expect(page.getByText("Only applies after automation starts")).toBeVisible();
-  await expect(page.getByText("docker compose --profile scheduler up -d scheduler")).toBeVisible();
+  await expect(page.getByText("Automation", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Interval (min)")).toHaveValue("360");
+  await expect(page.getByLabel("Budget ($)")).toHaveValue("20");
   const runButton = page.getByRole("button").filter({ hasText: "20260519T100000Z-abc123" });
   await expect(runButton).toBeVisible();
 
@@ -213,6 +245,13 @@ test("activity can inspect a scheduler tick and trigger a crawl", async ({ page 
   const triggerRequest = page.waitForRequest("**/api/crawl/trigger");
   await page.getByRole("button", { name: "Trigger now" }).click();
   await expect((await triggerRequest).method()).toBe("POST");
+
+  const automationRequest = page.waitForRequest("**/api/crawl/scheduler/start");
+  await page.getByRole("button", { name: "Enable" }).click();
+  const automation = await automationRequest;
+  expect(automation.method()).toBe("POST");
+  expect(automation.postData() || "").toContain("interval_minutes");
+  expect(automation.postData() || "").toContain("budget_usd");
 });
 
 test("entity source links support monorepo subdirectories", async ({ page }) => {
