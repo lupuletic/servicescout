@@ -150,9 +150,9 @@ export function ActivityPage() {
           </>
         }
       />
-      <div className="grid grid-cols-[minmax(0,1fr)_420px] min-h-0">
-        <div className="overflow-auto p-6 space-y-5">
-          <div className="grid grid-cols-4 gap-3">
+      <div className="grid min-h-0 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(360px,28vw)]">
+        <div className="min-w-0 overflow-auto p-4 sm:p-6 space-y-5">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
             <Card>
               <CardTitle>Scheduler</CardTitle>
               <CardValue>{schedulerRunning ? "On" : "Manual"}</CardValue>
@@ -180,8 +180,8 @@ export function ActivityPage() {
           </div>
 
           <section className="rounded-lg border border-border bg-bg-elevated overflow-hidden">
-            <div className="grid grid-cols-[190px_180px_minmax(0,1fr)] border-b border-border">
-              <div className="border-r border-border px-4 py-3">
+            <div className="grid grid-cols-1 lg:grid-cols-[190px_180px_minmax(0,1fr)] border-b border-border">
+              <div className="border-b border-border px-4 py-3 lg:border-b-0 lg:border-r">
                 <div className="text-xs uppercase tracking-wider text-fg-dim">Run Mode</div>
                 <div className="mt-1 text-sm text-fg">
                   {schedulerRunning ? (schedulerManaged ? "Managed automation" : "External scheduler") : "Manual trigger only"}
@@ -190,7 +190,7 @@ export function ActivityPage() {
                   {schedulerRunning ? "Runs continue until paused" : "Use Trigger now or enable automation"}
                 </div>
               </div>
-              <div className="border-r border-border px-4 py-3">
+              <div className="border-b border-border px-4 py-3 lg:border-b-0 lg:border-r">
                 <div className="text-xs uppercase tracking-wider text-fg-dim">Configured Interval</div>
                 <div className="mt-1 text-sm text-fg">{interval}</div>
                 <div className="mt-0.5 text-xs text-fg-dim">
@@ -203,7 +203,7 @@ export function ActivityPage() {
                 <div className="mt-0.5 truncate font-mono text-xs text-fg-dim">{status?.workspace_config || "-"}</div>
               </div>
             </div>
-            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 border-b border-border px-4 py-3">
+            <div className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_auto] gap-4 border-b border-border px-4 py-3">
               <div>
                 <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-fg-dim">
                   <Settings2 size={13} /> Automation
@@ -216,7 +216,7 @@ export function ActivityPage() {
                     : "Enable scheduled crawls here, or keep using manual trigger for one-off runs."}
                 </div>
               </div>
-              <div className="flex flex-wrap items-end justify-end gap-2">
+              <div className="flex flex-wrap items-end gap-2 2xl:justify-end">
                 <label className="block w-[120px]">
                   <span className="mb-1 block text-xs text-fg-dim">Interval (min)</span>
                   <Input
@@ -289,48 +289,52 @@ export function ActivityPage() {
           </div>
 
           <section className="rounded-lg border border-border bg-bg-elevated overflow-hidden">
-            <div className="grid grid-cols-[140px_minmax(220px,1fr)_100px_80px_90px_85px] gap-3 px-4 py-2 text-xs uppercase tracking-wider text-fg-dim border-b border-border">
-              <div>Started</div>
-              <div>Run</div>
-              <div>Status</div>
-              <div>Changed</div>
-              <div className="text-right">Cost</div>
-              <div className="text-right">Duration</div>
+            <div className="overflow-x-auto">
+              <div className="min-w-[780px]">
+                <div className="grid grid-cols-[140px_minmax(220px,1fr)_100px_80px_90px_85px] gap-3 px-4 py-2 text-xs uppercase tracking-wider text-fg-dim border-b border-border">
+                  <div>Started</div>
+                  <div>Run</div>
+                  <div>Status</div>
+                  <div>Changed</div>
+                  <div className="text-right">Cost</div>
+                  <div className="text-right">Duration</div>
+                </div>
+                {isLoading && <div className="p-6 text-fg-muted">Loading runs...</div>}
+                {!isLoading && (runs?.runs || []).length === 0 && (
+                  <div className="p-6 text-fg-muted">No activity recorded.</div>
+                )}
+                {(runs?.runs || []).map((run) => {
+                  const active = selected === run.run_id;
+                  return (
+                    <button
+                      key={run.run_id}
+                      onClick={() => setSelectedRun(run.run_id)}
+                      className={cn(
+                        "grid w-full grid-cols-[140px_minmax(220px,1fr)_100px_80px_90px_85px] gap-3 px-4 py-3 text-left text-sm border-b border-border last:border-b-0 hover:bg-bg",
+                        active && "bg-bg",
+                      )}
+                    >
+                      <div className="text-fg-muted">{formatDate(run.started_at)}</div>
+                      <div className="min-w-0">
+                        <div className="font-mono text-xs text-fg truncate">{run.run_id}</div>
+                        <div className="text-xs text-fg-dim">{run.trigger}</div>
+                      </div>
+                      <div className="flex items-center gap-1.5 text-fg-muted">
+                        <StatusGlyph status={run.status} />
+                        <StatusBadge status={run.status || "unknown"} />
+                      </div>
+                      <div className="text-fg-muted">{run.repos_changed_count}</div>
+                      <div className="text-right text-fg-muted tabular-nums">{fmtMoney(run.cost_usd)}</div>
+                      <div className="text-right text-fg-muted">{duration(run.started_at, run.finished_at)}</div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-            {isLoading && <div className="p-6 text-fg-muted">Loading runs...</div>}
-            {!isLoading && (runs?.runs || []).length === 0 && (
-              <div className="p-6 text-fg-muted">No activity recorded.</div>
-            )}
-            {(runs?.runs || []).map((run) => {
-              const active = selected === run.run_id;
-              return (
-                <button
-                  key={run.run_id}
-                  onClick={() => setSelectedRun(run.run_id)}
-                  className={cn(
-                    "grid w-full grid-cols-[140px_minmax(220px,1fr)_100px_80px_90px_85px] gap-3 px-4 py-3 text-left text-sm border-b border-border last:border-b-0 hover:bg-bg",
-                    active && "bg-bg",
-                  )}
-                >
-                  <div className="text-fg-muted">{formatDate(run.started_at)}</div>
-                  <div className="min-w-0">
-                    <div className="font-mono text-xs text-fg truncate">{run.run_id}</div>
-                    <div className="text-xs text-fg-dim">{run.trigger}</div>
-                  </div>
-                  <div className="flex items-center gap-1.5 text-fg-muted">
-                    <StatusGlyph status={run.status} />
-                    <StatusBadge status={run.status || "unknown"} />
-                  </div>
-                  <div className="text-fg-muted">{run.repos_changed_count}</div>
-                  <div className="text-right text-fg-muted tabular-nums">{fmtMoney(run.cost_usd)}</div>
-                  <div className="text-right text-fg-muted">{duration(run.started_at, run.finished_at)}</div>
-                </button>
-              );
-            })}
           </section>
         </div>
 
-        <aside className="border-l border-border bg-bg-elevated overflow-auto">
+        <aside className="min-w-0 border-t border-border bg-bg-elevated overflow-auto xl:border-l xl:border-t-0">
           {!detail && <div className="p-6 text-sm text-fg-muted">Select a run.</div>}
           {detail && <RunDetail detail={detail} onReindexRepo={triggerRepo} />}
         </aside>

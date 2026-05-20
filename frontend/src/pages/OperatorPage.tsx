@@ -69,16 +69,16 @@ export function OperatorPage() {
         title="Operator"
         description={data?.catalog.last_build_at ? `Built ${new Date(data.catalog.last_build_at).toLocaleString()}` : "Loading..."}
       />
-      <div className="overflow-auto p-6 space-y-6">
-        <div className="grid grid-cols-4 gap-3">
+      <div className="min-w-0 overflow-auto p-4 sm:p-6 space-y-6">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
           <Metric icon={Database} label="Repos" value={data?.catalog.repos_indexed ?? "-"} hint={`${data?.catalog.entities ?? "-"} entities`} />
           <Metric icon={WalletCards} label="30-day cost" value={isLoading ? "-" : fmtMoney(totalTrendCost)} hint={`${trend.reduce((sum, row) => sum + row.repos, 0)} repo runs`} />
           <Metric icon={ShieldCheck} label="Verifier signal" value={verifierRisk} hint={`${data?.verifier.validation_errors ?? "-"} validation errors`} />
           <Metric icon={TimerReset} label="Stale repos" value={buckets?.stale ?? "-"} hint={`${buckets?.aging ?? "-"} aging`} />
         </div>
 
-        <div className="grid grid-cols-[minmax(0,1fr)_360px] gap-4">
-          <Card>
+        <div className="grid grid-cols-1 gap-4 2xl:grid-cols-[minmax(0,1fr)_360px]">
+          <Card className="min-w-0">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <CardTitle>Cost Trendline</CardTitle>
@@ -91,7 +91,7 @@ export function OperatorPage() {
             <div className="mt-4">
               <Sparkline rows={trend} />
             </div>
-            <div className="mt-3 grid grid-cols-5 gap-2">
+            <div className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(78px,1fr))] gap-2">
               {trend.slice(-5).map((row) => (
                 <div key={row.day} className="rounded border border-border bg-bg p-2">
                   <div className="text-[10px] text-fg-dim">{row.day.slice(5)}</div>
@@ -101,7 +101,7 @@ export function OperatorPage() {
             </div>
           </Card>
 
-          <Card>
+          <Card className="min-w-0">
             <CardTitle>Verifier Signal</CardTitle>
             <div className="space-y-3">
               <SignalRow label="High entities" value={data?.verifier.entity_confidence.high ?? 0} tone="good" />
@@ -113,10 +113,10 @@ export function OperatorPage() {
           </Card>
         </div>
 
-        <div className="grid grid-cols-[340px_minmax(0,1fr)] gap-4">
-          <Card>
+        <div className="grid grid-cols-1 gap-4 2xl:grid-cols-[340px_minmax(0,1fr)]">
+          <Card className="min-w-0">
             <CardTitle>Staleness Heatmap</CardTitle>
-            <div className="grid grid-cols-5 gap-2">
+            <div className="grid grid-cols-[repeat(auto-fit,minmax(86px,1fr))] gap-2">
               {(["fresh", "warm", "aging", "stale", "unknown"] as const).map((bucket) => (
                 <div
                   key={bucket}
@@ -136,38 +136,40 @@ export function OperatorPage() {
             </div>
           </Card>
 
-          <Card>
+          <Card className="min-w-0">
             <div className="flex items-center justify-between">
               <CardTitle>Stale Repo Queue</CardTitle>
               <AlertTriangle size={15} className="text-fg-dim" />
             </div>
-            <div className="mt-1 overflow-hidden rounded border border-border">
-              <div className="grid grid-cols-[1fr_86px_80px_80px_92px] gap-3 bg-bg px-3 py-2 text-xs uppercase tracking-wider text-fg-dim">
-                <div>Repo</div>
-                <div>Age</div>
-                <div>Cost</div>
-                <div>Status</div>
-                <div className="text-right">Action</div>
-              </div>
-              {(data?.staleness.repos || []).slice(0, 14).map((repo) => (
-                <div key={repo.repo} className="grid grid-cols-[1fr_86px_80px_80px_92px] gap-3 border-t border-border px-3 py-2 text-sm">
-                  <div className="truncate font-mono text-xs text-fg">{repo.repo}</div>
-                  <div className="text-fg-muted">{fmtAge(repo.age_hours)}</div>
-                  <div className="text-fg-muted">{fmtMoney(repo.cost)}</div>
-                  <div className="truncate text-fg-muted">{repo.status}</div>
-                  <div className="text-right">
-                    <button
-                      type="button"
-                      onClick={() => void triggerRepo(repo.repo)}
-                      disabled={reindexing !== null}
-                      className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-fg-muted hover:text-fg disabled:opacity-50"
-                    >
-                      <RotateCw size={12} className={reindexing === repo.repo ? "animate-spin" : ""} />
-                      Re-index
-                    </button>
-                  </div>
+            <div className="mt-1 overflow-x-auto rounded border border-border">
+              <div className="min-w-[680px]">
+                <div className="grid grid-cols-[minmax(220px,1fr)_86px_80px_80px_92px] gap-3 bg-bg px-3 py-2 text-xs uppercase tracking-wider text-fg-dim">
+                  <div>Repo</div>
+                  <div>Age</div>
+                  <div>Cost</div>
+                  <div>Status</div>
+                  <div className="text-right">Action</div>
                 </div>
-              ))}
+                {(data?.staleness.repos || []).slice(0, 14).map((repo) => (
+                  <div key={repo.repo} className="grid grid-cols-[minmax(220px,1fr)_86px_80px_80px_92px] gap-3 border-t border-border px-3 py-2 text-sm">
+                    <div className="truncate font-mono text-xs text-fg">{repo.repo}</div>
+                    <div className="text-fg-muted">{fmtAge(repo.age_hours)}</div>
+                    <div className="text-fg-muted">{fmtMoney(repo.cost)}</div>
+                    <div className="truncate text-fg-muted">{repo.status}</div>
+                    <div className="text-right">
+                      <button
+                        type="button"
+                        onClick={() => void triggerRepo(repo.repo)}
+                        disabled={reindexing !== null}
+                        className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-fg-muted hover:text-fg disabled:opacity-50"
+                      >
+                        <RotateCw size={12} className={reindexing === repo.repo ? "animate-spin" : ""} />
+                        Re-index
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </Card>
         </div>
