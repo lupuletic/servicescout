@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import { AlertCircle, CheckCircle2, Clock3, GitBranch, Loader2, Play, RefreshCw, XCircle } from "lucide-react";
+import { AlertCircle, CheckCircle2, Clock3, GitBranch, Loader2, Play, RefreshCw, RotateCw, XCircle } from "lucide-react";
 import { type CrawlRunDetail, type CrawlRunsPayload, type CrawlStatusPayload } from "@/lib/api";
 import { Button, Card, CardTitle, CardValue, PageHeader, StatusBadge } from "@/components/ui";
 import { cn } from "@/lib/cn";
@@ -57,6 +57,15 @@ export function ActivityPage() {
     }
   };
 
+  const triggerRepo = async (repo: string) => {
+    const response = await fetch(`/api/crawl/trigger/repo?repo=${encodeURIComponent(repo)}`, { method: "POST" });
+    if (!response.ok && response.status !== 202) {
+      const body = await response.json().catch(() => ({}));
+      alert(body.error ? `Re-index failed: ${body.error}` : `Re-index failed: ${response.status}`);
+    }
+    await Promise.all([mutate("/api/crawl/status"), mutate("/api/crawl/runs")]);
+  };
+
   const totalChanged = useMemo(
     () => (runs?.runs || []).reduce((sum, run) => sum + (run.repos_changed_count || 0), 0),
     [runs],
@@ -86,13 +95,17 @@ export function ActivityPage() {
           <div className="grid grid-cols-4 gap-3">
             <Card>
               <CardTitle>Scheduler</CardTitle>
-              <CardValue>{status?.lock?.held ? "Running" : "Idle"}</CardValue>
-              <div className="text-xs text-fg-dim mt-1">{status?.lock?.pid ? `PID ${status.lock.pid}` : "Ready"}</div>
+              <CardValue>{status?.scheduler?.running ? "On" : "Manual"}</CardValue>
+              <div className="text-xs text-fg-dim mt-1">
+                {status?.scheduler?.running ? `PID ${status.scheduler.pid} · ${status.scheduler.uptime || "running"}` : "No daemon detected"}
+              </div>
             </Card>
             <Card>
-              <CardTitle>Tick Budget</CardTitle>
-              <CardValue>${status?.budget_usd?.toFixed(0) ?? "-"}</CardValue>
-              <div className="text-xs text-fg-dim mt-1">per run</div>
+              <CardTitle>Current Work</CardTitle>
+              <CardValue>{status?.lock?.held ? "Running" : "Idle"}</CardValue>
+              <div className="text-xs text-fg-dim mt-1">
+                {status?.lock?.pid ? `lock PID ${status.lock.pid}` : "Ready for trigger"}
+              </div>
             </Card>
             <Card>
               <CardTitle>Recent Runs</CardTitle>
@@ -100,11 +113,49 @@ export function ActivityPage() {
               <div className="text-xs text-fg-dim mt-1">{recentRunsLabel}</div>
             </Card>
             <Card>
-              <CardTitle>Changed Repos</CardTitle>
-              <CardValue>{totalChanged}</CardValue>
-              <div className="text-xs text-fg-dim mt-1">{changedLabel}</div>
+              <CardTitle>Tick Budget</CardTitle>
+              <CardValue>${status?.budget_usd?.toFixed(0) ?? "-"}</CardValue>
+              <div className="text-xs text-fg-dim mt-1">{totalChanged} {changedLabel}</div>
             </Card>
           </div>
+
+          <section className="rounded-lg border border-border bg-bg-elevated overflow-hidden">
+            <div className="grid grid-cols-[160px_minmax(0,1fr)] border-b border-border">
+              <div className="border-r border-border px-4 py-3">
+                <div className="text-xs uppercase tracking-wider text-fg-dim">Run Mode</div>
+                <div className="mt-1 text-sm text-fg">
+                  {status?.scheduler?.running ? `Continuous · every ${status.interval_minutes}m` : "Manual trigger only"}
+                </div>
+              </div>
+              <div className="px-4 py-3">
+                <div className="text-xs uppercase tracking-wider text-fg-dim">Workspace</div>
+                <div className="mt-1 truncate font-mono text-xs text-fg-muted">{status?.workspace_root || "-"}</div>
+                <div className="mt-0.5 truncate font-mono text-xs text-fg-dim">{status?.workspace_config || "-"}</div>
+              </div>
+            </div>
+            <div className="px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs uppercase tracking-wider text-fg-dim">Live Output</div>
+                  <div className="text-xs text-fg-dim">{status?.active_log_path || "No trigger log yet"}</div>
+                </div>
+                {status?.crawler?.running && (
+                  <div className="rounded border border-accent/30 bg-accent/10 px-2 py-1 text-xs text-fg">
+                    crawler PID {status.crawler.pid}
+                  </div>
+                )}
+              </div>
+              {(status?.active_log_tail || []).length > 0 ? (
+                <pre className="mt-3 max-h-40 overflow-auto rounded border border-border bg-bg p-3 text-xs text-fg-muted whitespace-pre-wrap">
+                  {(status?.active_log_tail || []).join("\n")}
+                </pre>
+              ) : (
+                <div className="mt-3 rounded border border-border bg-bg px-3 py-2 text-sm text-fg-muted">
+                  Trigger a crawl to see scheduler and crawler events here.
+                </div>
+              )}
+            </div>
+          </section>
 
           <section className="rounded-lg border border-border bg-bg-elevated overflow-hidden">
             <div className="grid grid-cols-[140px_minmax(220px,1fr)_100px_80px_90px_85px] gap-3 px-4 py-2 text-xs uppercase tracking-wider text-fg-dim border-b border-border">
@@ -150,14 +201,14 @@ export function ActivityPage() {
 
         <aside className="border-l border-border bg-bg-elevated overflow-auto">
           {!detail && <div className="p-6 text-sm text-fg-muted">Select a run.</div>}
-          {detail && <RunDetail detail={detail} />}
+          {detail && <RunDetail detail={detail} onReindexRepo={triggerRepo} />}
         </aside>
       </div>
     </div>
   );
 }
 
-function RunDetail({ detail }: { detail: CrawlRunDetail }) {
+function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReindexRepo: (repo: string) => void }) {
   return (
     <div className="p-6 space-y-5 text-sm">
       <div>
@@ -187,6 +238,13 @@ function RunDetail({ detail }: { detail: CrawlRunDetail }) {
                 <div className="flex items-center gap-2 text-fg">
                   <GitBranch size={13} className="text-fg-dim" />
                   <span className="font-mono text-xs truncate">{repo.repo}</span>
+                  <button
+                    type="button"
+                    onClick={() => onReindexRepo(repo.repo)}
+                    className="ml-auto inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px] text-fg-muted hover:text-fg"
+                  >
+                    <RotateCw size={11} /> Re-index
+                  </button>
                 </div>
                 <div className="mt-1 text-xs text-fg-dim">{repo.reason || "changed"}</div>
               </div>

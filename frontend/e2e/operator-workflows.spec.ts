@@ -58,6 +58,23 @@ const entitiesPayload = {
   ],
 };
 
+const checkoutEntityPayload = {
+  ref: "Component:checkoutservice",
+  kind: "Component",
+  name: "checkoutservice",
+  confidence: "high",
+  metadata: {
+    name: "checkoutservice",
+    description: "Checkout service",
+    annotations: {
+      tagline: "Places orders",
+      source_repos: ["GoogleCloudPlatform/microservices-demo/checkoutservice"],
+    },
+  },
+  spec: { type: "service", lifecycle: "production", owner: "platform" },
+  evidence: [{ path: "main.go", line: 42, snippet: "func main()" }],
+};
+
 const crawlStatus = {
   lock: { held: false },
   last_run: null,
@@ -145,10 +162,12 @@ async function mockApis(page: Page) {
   await page.route("**/api/graph**", async (route) => route.fulfill({ json: graphPayload }));
   await page.route("**/api/facets", async (route) => route.fulfill({ json: facetsPayload }));
   await page.route("**/api/entities**", async (route) => route.fulfill({ json: entitiesPayload }));
+  await page.route("**/api/entity/Component%3Acheckoutservice", async (route) => route.fulfill({ json: checkoutEntityPayload }));
   await page.route("**/api/crawl/status", async (route) => route.fulfill({ json: crawlStatus }));
   await page.route("**/api/crawl/runs/20260519T100000Z-abc123", async (route) => route.fulfill({ json: crawlRunDetail }));
   await page.route("**/api/crawl/runs", async (route) => route.fulfill({ json: crawlRuns }));
   await page.route("**/api/crawl/trigger", async (route) => route.fulfill({ status: 202, json: { status: "accepted", pid: 123 } }));
+  await page.route("**/api/crawl/trigger/repo**", async (route) => route.fulfill({ status: 202, json: { status: "accepted", pid: 124 } }));
   await page.route("**/api/operator/summary", async (route) => route.fulfill({ json: operatorSummary }));
   await page.route("**/api/triage/facts", async (route) => route.fulfill({ json: factsPayload }));
   await page.route("**/api/triage/decisions", async (route) => route.fulfill({ json: decisionsPayload }));
@@ -190,6 +209,21 @@ test("activity can inspect a scheduler tick and trigger a crawl", async ({ page 
   const triggerRequest = page.waitForRequest("**/api/crawl/trigger");
   await page.getByRole("button", { name: "Trigger now" }).click();
   await expect((await triggerRequest).method()).toBe("POST");
+});
+
+test("entity source links support monorepo subdirectories", async ({ page }) => {
+  await page.goto("/entity/Component%3Acheckoutservice");
+  await expect(page.getByRole("heading", { name: "checkoutservice" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "GoogleCloudPlatform/microservices-demo" }).first()).toHaveAttribute(
+    "href",
+    "https://github.com/GoogleCloudPlatform/microservices-demo",
+  );
+
+  await page.getByRole("button", { name: "Evidence" }).click();
+  await expect(page.getByRole("link", { name: "main.go:42" })).toHaveAttribute(
+    "href",
+    "https://github.com/GoogleCloudPlatform/microservices-demo/blob/main/main.go#L42",
+  );
 });
 
 test("activity shows extraction runs before scheduler history exists", async ({ page }) => {

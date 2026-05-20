@@ -1,0 +1,108 @@
+{
+  "name": "online-boutique-readme-architecture",
+  "description": "Ground truth extracted from the GoogleCloudPlatform/microservices-demo README architecture table and diagram.",
+  "source_readme": "workspace/microservices-demo/README.md",
+  "source_repo_root": "GoogleCloudPlatform/microservices-demo",
+  "expected_components": [
+    {
+      "name": "frontend",
+      "language_terms": ["go"],
+      "role_terms": ["http", "server", "website", "storefront"],
+      "accepted_types": ["website", "service"]
+    },
+    {
+      "name": "cartservice",
+      "language_terms": ["c#", "asp.net", ".net"],
+      "role_terms": ["cart", "redis"],
+      "accepted_types": ["service"]
+    },
+    {
+      "name": "productcatalogservice",
+      "language_terms": ["go"],
+      "role_terms": ["product", "catalog", "search"],
+      "accepted_types": ["service"]
+    },
+    {
+      "name": "currencyservice",
+      "language_terms": ["node.js", "node", "javascript"],
+      "role_terms": ["currency", "conversion"],
+      "accepted_types": ["service"]
+    },
+    {
+      "name": "paymentservice",
+      "language_terms": ["node.js", "node", "javascript"],
+      "role_terms": ["payment", "credit", "card"],
+      "accepted_types": ["service"]
+    },
+    {
+      "name": "shippingservice",
+      "language_terms": ["go"],
+      "role_terms": ["shipping", "cost", "quote"],
+      "accepted_types": ["service"]
+    },
+    {
+      "name": "emailservice",
+      "language_terms": ["python"],
+      "role_terms": ["email", "confirmation"],
+      "accepted_types": ["service"]
+    },
+    {
+      "name": "checkoutservice",
+      "language_terms": ["go"],
+      "role_terms": ["checkout", "order", "payment", "shipping"],
+      "accepted_types": ["service"]
+    },
+    {
+      "name": "recommendationservice",
+      "language_terms": ["python"],
+      "role_terms": ["recommendation", "product"],
+      "accepted_types": ["service"]
+    },
+    {
+      "name": "adservice",
+      "language_terms": ["java"],
+      "role_terms": ["ad", "ads"],
+      "accepted_types": ["service"]
+    },
+    {
+      "name": "loadgenerator",
+      "language_terms": ["python", "locust"],
+      "role_terms": ["load", "traffic", "frontend"],
+      "accepted_types": ["worker", "service"]
+    }
+  ],
+  "expected_flows": [
+    {"from": "loadgenerator", "to": "frontend", "readme_basis": "loadgenerator sends HTTP traffic to frontend"},
+    {"from": "frontend", "to": "adservice", "readme_basis": "frontend calls ad"},
+    {"from": "frontend", "to": "recommendationservice", "readme_basis": "frontend calls recommendation"},
+    {"from": "frontend", "to": "productcatalogservice", "readme_basis": "frontend calls productcatalog"},
+    {"from": "frontend", "to": "cartservice", "readme_basis": "frontend calls cart"},
+    {"from": "frontend", "to": "checkoutservice", "readme_basis": "frontend calls checkout"},
+    {"from": "checkoutservice", "to": "cartservice", "readme_basis": "checkout retrieves cart"},
+    {"from": "checkoutservice", "to": "productcatalogservice", "readme_basis": "checkout reads product data"},
+    {"from": "checkoutservice", "to": "currencyservice", "readme_basis": "checkout prices in requested currency"},
+    {"from": "checkoutservice", "to": "paymentservice", "readme_basis": "checkout charges cards"},
+    {"from": "checkoutservice", "to": "shippingservice", "readme_basis": "checkout books shipping"},
+    {"from": "checkoutservice", "to": "emailservice", "readme_basis": "checkout sends order confirmation email"}
+  ],
+  "expected_resources": [
+    {
+      "name": "redis-cart",
+      "kind": "Resource",
+      "used_by": "cartservice",
+      "accepted_relation_types": ["readsResource", "writesResource"],
+      "terms": ["redis", "cart"]
+    }
+  ],
+  "accepted_flow_relation_types": ["communicatesWith", "consumesApi"],
+  "allowed_extra_components": [
+    {
+      "name": "shoppingassistantservice",
+      "reason": "Optional Gemini/AlloyDB assistant component present in current microservices-demo source but not in the base README 11-service diagram."
+    },
+    {
+      "name": "Packaging-Service",
+      "reason": "Optional external packaging dependency guarded by PACKAGING_SERVICE_URL in frontend source."
+    }
+  ]
+}

@@ -11,6 +11,7 @@ from build_catalog import (
     demote_provider_duplicate_components,
     derive_broker_resources,
     entity_ref,
+    github_source_location,
     merge_static_api_operations,
     merge_suffix_duplicate_components,
     normalize_domain_label,
@@ -162,6 +163,13 @@ class CatalogReconciliationTests(unittest.TestCase):
         for ref in ("API:Orders-API", "Resource:orders-db", "Provider:Sentry"):
             annotations = entities[ref]["metadata"].get("annotations") or {}
             self.assertEqual(annotations.get("source_repos"), ["acme/orders"])
+
+    def test_github_source_location_supports_monorepo_units(self) -> None:
+        self.assertEqual(github_source_location("acme/orders"), "https://github.com/acme/orders")
+        self.assertEqual(
+            github_source_location("GoogleCloudPlatform/microservices-demo/checkoutservice"),
+            "https://github.com/GoogleCloudPlatform/microservices-demo",
+        )
 
     def test_unresolved_resource_dependency_creates_resource_placeholder(self) -> None:
         catalog = Catalog()

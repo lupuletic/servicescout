@@ -39,6 +39,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from repo_discovery import find_repos, load_workspace_config
+
 
 HERE = Path(__file__).parent
 DEFAULT_RUN_LOG_DIR = HERE / "data" / "crawl_runs"
@@ -106,6 +108,23 @@ def _pid_alive(pid: int) -> bool:
 # --------------------------------------------------------------------------- #
 # Change detection
 # --------------------------------------------------------------------------- #
+
+
+def _git_root_for_path(path: Path, workspace_root: Path) -> Path | None:
+    current = path.resolve()
+    workspace_root = workspace_root.resolve()
+    while True:
+        if (current / ".git").exists():
+            return current
+        if current == workspace_root:
+            break
+        parent = current.parent
+        if parent == current:
+            break
+        if workspace_root not in parent.parents and parent != workspace_root:
+            break
+        current = parent
+    return None
 
 
 def get_local_head_sha(repo_root: Path) -> str | None:
@@ -177,7 +196,7 @@ def last_extracted_sha(catalog_dir: Path, repo_name: str) -> str | None:
 
 
 def detect_changed_repos(
-    workspace_root: Path, catalog_dir: Path,
+    workspace_root: Path, catalog_dir: Path, repos: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Walk the workspace, git-fetch each repo, compare remote HEAD to
     the SHA in its last extraction. Returns the list of repos whose
@@ -187,13 +206,15 @@ def detect_changed_repos(
     changed: list[dict[str, Any]] = []
     if not workspace_root.is_dir():
         return changed
-    for repo_dir in sorted(workspace_root.iterdir()):
-        if not repo_dir.is_dir() or not (repo_dir / ".git").exists():
+    for repo in repos:
+        repo_name = str(repo.get("name") or "")
+        repo_path = Path(str(repo.get("absolute_path") or ""))
+        repo_root = _git_root_for_path(repo_path, workspace_root)
+        if not repo_name or repo_root is None:
             continue
-        repo_name = repo_dir.name
-        fetch_ok = fetch_remote(repo_dir)
-        remote_sha = get_remote_head_sha(repo_dir)
-        local_sha = get_local_head_sha(repo_dir)
+        fetch_ok = fetch_remote(repo_root)
+        remote_sha = get_remote_head_sha(repo_root)
+        local_sha = get_local_head_sha(repo_root)
         last_sha = last_extracted_sha(catalog_dir, repo_name)
         # A repo is "changed" if:
         #   - we've never extracted it, OR
@@ -205,12 +226,36 @@ def detect_changed_repos(
         if last_sha != reference_sha:
             changed.append({
                 "repo": repo_name,
-                "path": str(repo_dir),
+                "id": repo.get("id"),
+                "path": str(repo_path),
                 "last_extracted_sha": last_sha,
                 "remote_sha": remote_sha,
                 "local_sha": local_sha,
                 "fetch_ok": fetch_ok,
             })
+    return changed
+
+
+def forced_repo_changes(workspace_root: Path, repos: list[dict[str, Any]], force_repos: list[str]) -> list[dict[str, Any]]:
+    wanted = set(force_repos)
+    changed: list[dict[str, Any]] = []
+    for repo in repos:
+        repo_name = str(repo.get("name") or "")
+        repo_id = str(repo.get("id") or "")
+        if repo_name not in wanted and repo_id not in wanted:
+            continue
+        repo_path = Path(str(repo.get("absolute_path") or ""))
+        git_root = _git_root_for_path(repo_path, workspace_root)
+        fetch_ok = fetch_remote(git_root) if git_root else False
+        changed.append({
+            "repo": repo_name,
+            "id": repo_id,
+            "path": str(repo_path),
+            "reason": "manual_reindex",
+            "remote_sha": get_remote_head_sha(git_root) if git_root else None,
+            "local_sha": get_local_head_sha(git_root) if git_root else None,
+            "fetch_ok": fetch_ok,
+        })
     return changed
 
 
@@ -230,7 +275,9 @@ def run_tick(
     provider: str,
     model: str | None,
     effort: str,
+    trigger: str = "cron",
     extra_crawler_args: list[str] | None = None,
+    force_repos: list[str] | None = None,
 ) -> dict[str, Any]:
     """One scheduler tick. Atomic with respect to the lock file: if
     the lock is held by a previous tick, returns immediately with
@@ -240,7 +287,7 @@ def run_tick(
     started = dt.datetime.now(dt.timezone.utc).isoformat()
     log: dict[str, Any] = {
         "run_id": run_id,
-        "trigger": "cron",
+        "trigger": trigger,
         "started_at": started,
         "workspace_root": str(workspace_root),
         "budget_usd": budget_usd,
@@ -256,11 +303,19 @@ def run_tick(
 
     try:
         emit({"event": "tick_start", "run_id": run_id})
-        changed = detect_changed_repos(workspace_root, catalog_dir)
-        log["repos_checked"] = len(_workspace_repos(workspace_root))
+        workspace = load_workspace_config(workspace_path)
+        repos = find_repos(
+            workspace_root,
+            workspace.get("orgs") or [],
+            workspace.get("excluded_repos") or [],
+            workspace.get("repo_units") or [],
+        )
+        changed = forced_repo_changes(workspace_root, repos, force_repos or []) if force_repos else detect_changed_repos(workspace_root, catalog_dir, repos)
+        log["repos_checked"] = len(repos)
         log["repos_changed"] = changed
-        log["events"].append({"event": "change_detected", "count": len(changed)})
-        emit({"event": "change_detected", "run_id": run_id, "count": len(changed)})
+        event_name = "manual_reindex_selected" if force_repos else "change_detected"
+        log["events"].append({"event": event_name, "count": len(changed), "requested": force_repos or []})
+        emit({"event": event_name, "run_id": run_id, "count": len(changed), "requested": force_repos or []})
 
         if not changed:
             log["status"] = "no_changes"
@@ -402,6 +457,11 @@ def main() -> int:
         help="Extra arg to forward to crawler.py. May be passed multiple times. "
              "Example: --crawler-arg --reconcile --crawler-arg --build-kuzu",
     )
+    parser.add_argument(
+        "--force-repos", nargs="*", default=None,
+        help="Extract these repo names/ids even if change detection says they are current.",
+    )
+    parser.add_argument("--trigger", default="cron", help="Run trigger label recorded in Activity.")
     args = parser.parse_args()
 
     if args.once:
@@ -415,9 +475,14 @@ def main() -> int:
             provider=args.provider,
             model=args.model,
             effort=args.effort,
+            trigger=args.trigger,
             extra_crawler_args=args.crawler_arg or None,
+            force_repos=args.force_repos or None,
         )
         return 0 if log["status"] in {"ok", "no_changes"} else 1
+
+    if args.force_repos:
+        parser.error("--force-repos is only supported with --once")
 
     return run_daemon(
         interval_minutes=args.interval_minutes,

@@ -155,6 +155,18 @@ Online Boutique uses the same commands with `--workspace online-boutique`.
 Its workspace config includes `repo_units[]`, so the extractor runs one focused
 unit per service while still reading shared protos and root deployment manifests.
 
+Run the README architecture check after any Online Boutique extraction to
+compare the catalog against the published 11-service architecture table,
+diagram flows, Redis cache expectation, allowed optional services, and source
+repo link shape:
+
+```bash
+.venv/bin/python evals/validate_readme_architecture.py \
+  --workspace online-boutique \
+  --strict-warnings \
+  --markdown-output docs/online-boutique-readme-validation.md
+```
+
 Recent verified results:
 
 - Sock Shop: 44 entities, 76 relations, catalog eval **18/18**, audit
