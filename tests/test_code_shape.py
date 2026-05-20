@@ -9,7 +9,7 @@ points at real text content, not to re-derive the LLM's semantic claim.
 import unittest
 from pathlib import Path
 
-from static_extractors import code_shape
+from servicescout.static_extractors import code_shape
 
 
 FIXTURES = Path(__file__).parent / "fixtures"

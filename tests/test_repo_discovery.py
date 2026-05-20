@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from repo_discovery import find_repos, load_workspace_config
+from servicescout.repo_discovery import find_repos, load_workspace_config
 
 
 class RepoUnitDiscoveryTests(unittest.TestCase):

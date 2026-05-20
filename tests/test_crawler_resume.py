@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 import tempfile
 
-import crawler
+from servicescout import crawler
 
 
 class LoadStateTests(unittest.TestCase):

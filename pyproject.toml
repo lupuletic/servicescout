@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "servicescout"
+version = "0.1.0"
+description = "Org-wide code context for AI coding agents, served over MCP."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+  { name = "ServiceScout contributors" }
+]
+keywords = ["mcp", "code-intelligence", "software-catalog", "backstage", "microservices"]
+dynamic = ["dependencies"]
+
+[project.urls]
+Homepage = "https://github.com/lupuletic/servicescout"
+Repository = "https://github.com/lupuletic/servicescout"
+Issues = "https://github.com/lupuletic/servicescout/issues"
+
+[project.scripts]
+servicescout-dashboard = "servicescout.dashboard:main"
+servicescout-mcp = "servicescout.mcp_server:main"
+servicescout-crawler = "servicescout.crawler:main"
+servicescout-scheduler = "servicescout.scheduler:main"
+servicescout-build-catalog = "servicescout.build_catalog:main"
+servicescout-build-kuzu = "servicescout.build_kuzu:main"
+servicescout-extract = "servicescout.extractor:main"
+servicescout-reconcile = "servicescout.reconcile:main"
+servicescout-init = "servicescout.init_wizard:main"
+servicescout-export-claude-md = "servicescout.export_claude_md:main"
+servicescout-export-backstage = "servicescout.export_backstage:main"
+servicescout-export-openlineage = "servicescout.export_openlineage:main"
+
+[tool.setuptools.packages.find]
+include = ["servicescout*"]
+
+[tool.setuptools.package-data]
+servicescout = ["catalog_schema.json"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.lock"] }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

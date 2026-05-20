@@ -27,7 +27,7 @@ class ClaudeHarness:
         self.max_budget_usd = max_budget_usd
 
     def extract(self, repo: dict[str, Any], prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
-        import extractor
+        from servicescout import extractor
         return extractor.claude_extract(repo, self.model, self.effort, self.max_budget_usd)
 
     def correct(
@@ -36,7 +36,7 @@ class ClaudeHarness:
         prompt: str,
         timeout_seconds: int | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        import extractor
+        from servicescout import extractor
         # Claude Code currently doesn't expose a per-call timeout flag —
         # the harness contract accepts the arg for protocol parity.
         return extractor.claude_correct(repo, prompt, self.model, self.effort, self.max_budget_usd)

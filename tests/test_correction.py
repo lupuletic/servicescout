@@ -1,6 +1,6 @@
 import unittest
 
-from static_extractors import correction
+from servicescout.static_extractors import correction
 
 
 def _payload_with_deps(deps: list[dict]) -> dict:

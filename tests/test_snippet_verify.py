@@ -2,7 +2,7 @@ import json
 import unittest
 from pathlib import Path
 
-from static_extractors.snippet_verify import (
+from servicescout.static_extractors.snippet_verify import (
     clear_cache,
     verify_payload,
 )

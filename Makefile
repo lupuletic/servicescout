@@ -14,7 +14,7 @@ eval-extract:
 	PYTHON=$(PYTHON) ./evals/build_eval_catalog.sh --workspace $(WORKSPACE)
 
 eval-kuzu:
-	$(PYTHON) build_kuzu.py --catalog $(CATALOG) --db $(KUZU)
+	$(PYTHON) -m servicescout.build_kuzu --catalog $(CATALOG) --db $(KUZU)
 
 eval-run:
 	$(PYTHON) evals/runner.py --workspace $(WORKSPACE)
@@ -36,7 +36,7 @@ stack-crawl:
 
 wheelhouse:
 	mkdir -p vendor/wheels
-	$(PYTHON) -m pip download -r requirements.txt -d vendor/wheels
+	$(PYTHON) -m pip download -r requirements.lock -d vendor/wheels
 
 docker-build:
 	docker compose --env-file .env.$(WORKSPACE).example build

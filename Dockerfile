@@ -65,7 +65,7 @@ RUN if [ -n "$NPM_CONFIG_REGISTRY" ]; then npm config set registry "$NPM_CONFIG_
 
 # Python venv with project deps
 RUN python -m venv /opt/venv
-COPY requirements.txt /tmp/requirements.txt
+COPY requirements.lock /tmp/requirements.lock
 COPY vendor/wheels/ /tmp/wheels/
 RUN pip_args="" \
     && if [ -n "$PIP_NO_INDEX" ]; then pip_args="$pip_args --no-index"; fi \
@@ -73,7 +73,7 @@ RUN pip_args="" \
     && if [ -n "$PIP_INDEX_URL" ]; then pip_args="$pip_args --index-url $PIP_INDEX_URL"; fi \
     && if [ -n "$PIP_EXTRA_INDEX_URL" ]; then pip_args="$pip_args --extra-index-url $PIP_EXTRA_INDEX_URL"; fi \
     && if [ -n "$PIP_TRUSTED_HOST" ]; then pip_args="$pip_args --trusted-host $PIP_TRUSTED_HOST"; fi \
-    && /opt/venv/bin/pip install $pip_args -r /tmp/requirements.txt
+    && /opt/venv/bin/pip install $pip_args -r /tmp/requirements.lock
 
 WORKDIR /app
 COPY . /app/
@@ -101,4 +101,4 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 
 USER cg
 ENTRYPOINT ["tini", "--", "/usr/local/bin/entrypoint.sh"]
-CMD ["python", "mcp_server.py", "--catalog", "/data/catalog.json", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8765"]
+CMD ["python", "-m", "servicescout.mcp_server", "--catalog", "/data/catalog.json", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8765"]

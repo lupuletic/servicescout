@@ -56,7 +56,7 @@ services:
   mcp:
     <<: *servicescout
     command: >
-      python mcp_server.py
+      python -m servicescout.mcp_server
       --backend auto
       --catalog /data/catalog.json
       --kuzu-db /data/catalog.kuzu
@@ -81,7 +81,7 @@ services:
       CRAWL_TICK_BUDGET_USD: ${CRAWL_TICK_BUDGET_USD:-20}
       SERVICESCOUT_WORKSPACE_CONFIG: /app/workspace.runtime.json
     command: >
-      python dashboard.py
+      python -m servicescout.dashboard
       --catalog /data/catalog.json
       --extraction-log /data/extraction.jsonl
       --decisions /data/triage_decisions.jsonl
@@ -103,7 +103,7 @@ services:
     <<: *servicescout
     profiles: ["crawl"]
     command: >
-      python crawler.py
+      python -m servicescout.crawler
       --root /workspace
       --workspace /app/workspace.runtime.json
       --catalog-dir /data/catalog
@@ -134,13 +134,13 @@ services:
   # alongside mcp + dashboard. Default tick: every 6 hours. Each tick
   # git-fetches every repo under WORKSPACE_ROOT, detects repos whose
   # remote HEAD differs from the last extraction's SHA, and triggers
-  # crawler.py on that subset with a per-tick budget cap. Run logs
+  # the crawler on that subset with a per-tick budget cap. Run logs
   # land in data/crawl_runs/ for the dashboard's Activity page.
   scheduler:
     <<: *servicescout
     profiles: ["scheduler"]
     command: >
-      python scheduler.py
+      python -m servicescout.scheduler
       --workspace-root /workspace
       --catalog-dir /data/catalog
       --workspace /app/workspace.runtime.json
@@ -168,7 +168,7 @@ services:
     <<: *servicescout
     profiles: ["maintenance"]
     command: >
-      python reconcile.py
+      python -m servicescout.reconcile
       --catalog /data/catalog.json
       --llm-assist
       --llm-provider ${LLM_PROVIDER:-codex}

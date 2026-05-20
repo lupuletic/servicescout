@@ -58,10 +58,10 @@ def get_harness(name: str, **config: Any) -> Harness:
     Future: "openai-api", "anthropic-api", "vllm", "ollama".
     """
     if name == "codex":
-        from harnesses.codex import CodexHarness
+        from servicescout.harnesses.codex import CodexHarness
         return CodexHarness(**config)
     if name == "claude":
-        from harnesses.claude import ClaudeHarness
+        from servicescout.harnesses.claude import ClaudeHarness
         return ClaudeHarness(**config)
     raise SystemExit(
         f"Unknown harness: {name!r}. "

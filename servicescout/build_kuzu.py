@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG = HERE / "data" / "catalog.json"
 DEFAULT_DB = HERE / "data" / "catalog.kuzu"
 DEFAULT_DIM = 768

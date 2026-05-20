@@ -8,7 +8,7 @@ manual smoke testing — the tests here verify the contract / glue.
 import unittest
 from unittest import mock
 
-import auth
+from servicescout import auth
 
 
 class AuthConfigTests(unittest.TestCase):

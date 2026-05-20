@@ -27,7 +27,7 @@ from typing import Any
 
 import yaml
 
-from static_extractors.mini import Fact
+from servicescout.static_extractors.mini import Fact
 
 
 # --------------------------------------------------------------------------- #

@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from static_extractors.mini import Fact, api_specs, build_manifests, dockerfile, kubernetes
+from servicescout.static_extractors.mini import Fact, api_specs, build_manifests, dockerfile, kubernetes
 
 
 # Each entry: (predicate, extractor). Predicates are cheap (filename /

@@ -134,7 +134,7 @@ rm -rf evals/workspace evals/data evals/runs
 tail -f /tmp/servicescout-socks-build.log
 
 # 3. build the local graph DB used by MCP/search
-python build_kuzu.py --catalog evals/data/catalog.json --db evals/data/catalog.kuzu
+python -m servicescout.build_kuzu --catalog evals/data/catalog.json --db evals/data/catalog.kuzu
 
 # Optional: run the operator UI/MCP against the eval catalog without touching
 # ./data, because Compose is pointed at evals/data.

@@ -20,11 +20,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from repo_discovery import find_repos, load_workspace_config
-from build_catalog import build as build_catalog, canonical_key, host_to_key
+from servicescout.repo_discovery import find_repos, load_workspace_config
+from servicescout.build_catalog import build as build_catalog, canonical_key, host_to_key
 
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG_DIR = HERE / "data" / "catalog"
 DEFAULT_CATALOG = HERE / "data" / "catalog.json"
 DEFAULT_STATE = HERE / "data" / "crawler_state.json"
@@ -83,7 +83,8 @@ def run_extractor(
 ) -> dict[str, Any]:
     cmd = [
         sys.executable,
-        str(HERE / "extractor.py"),
+        "-m",
+        "servicescout.extractor",
         repo["name"],
         "--root",
         str(Path(repo["absolute_path"]).parent),
@@ -560,7 +561,7 @@ def crawl(
         emit({"event": "build_catalog_done", **summary})
 
         if reconcile_after_build:
-            reconcile_args = [sys.executable, str(HERE / "reconcile.py"), "--catalog", str(catalog_output)]
+            reconcile_args = [sys.executable, "-m", "servicescout.reconcile", "--catalog", str(catalog_output)]
             if reconcile_llm:
                 reconcile_args.append("--llm-assist")
             emit({"event": "reconcile_start", "llm_assist": reconcile_llm})
@@ -571,14 +572,14 @@ def crawl(
 
     if embed:
         emit({"event": "embed_start"})
-        embed_cmd = [sys.executable, str(HERE / "embed_catalog.py"), "--catalog", str(catalog_output)]
+        embed_cmd = [sys.executable, "-m", "servicescout.embed_catalog", "--catalog", str(catalog_output)]
         completed = subprocess.run(embed_cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         emit({"event": "embed_done", "returncode": completed.returncode, "tail": completed.stdout[-1000:]})
 
     if build_kuzu:
         emit({"event": "build_kuzu_start"})
         kuzu_cmd = [
-            sys.executable, str(HERE / "build_kuzu.py"),
+            sys.executable, "-m", "servicescout.build_kuzu",
             "--catalog", str(catalog_output),
             "--db", str(catalog_output.parent / "catalog.kuzu"),
         ]

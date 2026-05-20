@@ -6,7 +6,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-import dashboard
+from servicescout import dashboard
 
 
 def _write_catalog(root: Path) -> Path:
@@ -176,10 +176,10 @@ class DashboardApiTests(unittest.TestCase):
             client = TestClient(app)
 
             with mock.patch.dict("os.environ", {"WORKSPACE_ROOT": str(workspace)}, clear=False), \
-                 mock.patch("dashboard.scheduler_status", return_value={"running": False, "pid": None}), \
-                 mock.patch("dashboard.pid_alive", side_effect=lambda pid: pid == 1234), \
-                 mock.patch("dashboard.subprocess.run") as run, \
-                 mock.patch("dashboard.subprocess.Popen") as popen:
+                 mock.patch("servicescout.dashboard.scheduler_status", return_value={"running": False, "pid": None}), \
+                 mock.patch("servicescout.dashboard.pid_alive", side_effect=lambda pid: pid == 1234), \
+                 mock.patch("servicescout.dashboard.subprocess.run") as run, \
+                 mock.patch("servicescout.dashboard.subprocess.Popen") as popen:
                 run.return_value = mock.Mock(stdout="00:01\n", stderr="", returncode=0)
                 popen.return_value.pid = 1234
                 response = client.post(
@@ -212,8 +212,8 @@ class DashboardApiTests(unittest.TestCase):
             client = TestClient(app)
             (root / "scheduler_daemon.pid").write_text("1234", encoding="utf-8")
 
-            with mock.patch("dashboard.pid_alive", return_value=True), \
-                 mock.patch("dashboard.os.kill") as kill:
+            with mock.patch("servicescout.dashboard.pid_alive", return_value=True), \
+                 mock.patch("servicescout.dashboard.os.kill") as kill:
                 response = client.post("/api/crawl/scheduler/stop")
 
             self.assertEqual(response.status_code, 200)

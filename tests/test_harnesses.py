@@ -8,9 +8,9 @@ larger end-to-end runs documented in ARCHITECTURE.md.
 
 import unittest
 
-from harnesses import get_harness
-from harnesses.codex import CodexHarness
-from harnesses.claude import ClaudeHarness
+from servicescout.harnesses import get_harness
+from servicescout.harnesses.codex import CodexHarness
+from servicescout.harnesses.claude import ClaudeHarness
 
 
 class HarnessFactoryTests(unittest.TestCase):

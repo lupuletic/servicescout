@@ -32,11 +32,11 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
-from repo_discovery import find_repos, load_workspace_config
-from static_extractors.mini import runner as mini_runner
+from servicescout.repo_discovery import find_repos, load_workspace_config
+from servicescout.static_extractors.mini import runner as mini_runner
 
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG_DIR = HERE / "data" / "catalog"
 DEFAULT_OUTPUT = HERE / "data" / "catalog.json"
 DEFAULT_SEEDS_DIR = HERE / "seeds"

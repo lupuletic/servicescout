@@ -13,9 +13,9 @@ The large local tree is mostly generated state and dependencies:
 
 - `.venv/`, `frontend/node_modules/`, `data/`, `logs/`, `legacy/`, `__pycache__/`,
   and eval workspace/data folders are ignored runtime or development artifacts.
-- The tracked root is still busy, but mostly contains first-class entrypoints:
-  `crawler.py`, `dashboard.py`, `mcp_server.py`, `scheduler.py`, `storage.py`,
-  `build_kuzu.py`, `reconcile.py`, and export helpers.
+- Python implementation now lives under `servicescout/`; root remains focused
+  on docs, config, Compose/Docker, install scripts, evals, and frontend assets.
+  CLI entrypoints use `python -m servicescout.<module>`.
 - The eval harness is reasonably isolated under `evals/`; generated eval data
   and cloned workspaces are ignored.
 - Docs are useful but could be reorganized before a `v1.0` into

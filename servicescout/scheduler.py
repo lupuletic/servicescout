@@ -39,10 +39,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from repo_discovery import find_repos, load_workspace_config
+from servicescout.repo_discovery import find_repos, load_workspace_config
 
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parents[1]
 DEFAULT_RUN_LOG_DIR = HERE / "data" / "crawl_runs"
 DEFAULT_LOCK_PATH = HERE / "data" / "crawl_lock"
 DEFAULT_WORKSPACE = HERE / "workspace.json"
@@ -338,7 +338,7 @@ def run_tick(
 
         repo_names = [r["repo"] for r in changed]
         cmd = [
-            sys.executable, str(HERE / "crawler.py"),
+            sys.executable, "-m", "servicescout.crawler",
             "--root", str(workspace_root),
             "--catalog-dir", str(catalog_dir),
             "--catalog-output", str(catalog_dir.parent / "catalog.json"),

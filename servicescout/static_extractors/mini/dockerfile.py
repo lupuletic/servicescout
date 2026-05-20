@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from static_extractors.mini import Fact
+from servicescout.static_extractors.mini import Fact
 
 
 # Generic Dockerfile lexicon. Case-insensitive directive names; comments

@@ -1,14 +1,14 @@
 # ServiceScout Frontend
 
 Operator UI for the ServiceScout catalog. The production build is served by
-`dashboard.py` from `frontend/dist`; local development uses Vite and proxies
+`python -m servicescout.dashboard` from `frontend/dist`; local development uses Vite and proxies
 API calls to the FastAPI dashboard backend.
 
 ## Local Development
 
 ```bash
 # from repo root
-.venv/bin/python dashboard.py --catalog data/catalog.json --host 127.0.0.1 --port 8788
+.venv/bin/python -m servicescout.dashboard --catalog data/catalog.json --host 127.0.0.1 --port 8788
 npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 ```
 

@@ -21,8 +21,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from repo_discovery import find_repos, load_workspace_config
-from static_extractors import (
+from servicescout.repo_discovery import find_repos, load_workspace_config
+from servicescout.static_extractors import (
     backstage_reconcile,
     calibrate,
     code_shape,
@@ -31,8 +31,9 @@ from static_extractors import (
 )
 
 
-HERE = Path(__file__).parent
-CATALOG_SCHEMA_PATH = HERE / "catalog_schema.json"
+PACKAGE_ROOT = Path(__file__).resolve().parent
+HERE = PACKAGE_ROOT.parent
+CATALOG_SCHEMA_PATH = PACKAGE_ROOT / "catalog_schema.json"
 DEFAULT_OUTPUT_DIR = HERE / "data" / "catalog"
 DEFAULT_QUARANTINE_DIR = HERE / "data" / "catalog_quarantine"
 DEFAULT_CATALOG = HERE / "data" / "catalog.json"

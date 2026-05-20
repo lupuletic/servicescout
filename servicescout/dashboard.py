@@ -38,7 +38,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, File
 from fastapi.staticfiles import StaticFiles
 
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG = HERE / "data" / "catalog.json"
 DEFAULT_EXTRACTION_LOG = HERE / "data" / "extraction_runs.jsonl"
 DEFAULT_DECISIONS = HERE / "data" / "triage_decisions.jsonl"
@@ -107,11 +107,11 @@ def process_status(pattern: str) -> dict[str, Any]:
 
 
 def crawler_status() -> dict[str, Any]:
-    return process_status("crawler.py")
+    return process_status("servicescout.crawler")
 
 
 def scheduler_status() -> dict[str, Any]:
-    return process_status("scheduler.py")
+    return process_status("servicescout.scheduler")
 
 
 def tail_file(path: Path, limit: int = 40) -> list[str]:
@@ -558,7 +558,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         model = os.environ.get("LLM_MODEL")
         catalog_dir = _repo_record_dir(data_dir)
         cmd = [
-            sys.executable, str(HERE / "scheduler.py"),
+            sys.executable, "-m", "servicescout.scheduler",
             "--workspace-root", str(workspace_root),
             "--catalog-dir", str(catalog_dir),
             "--workspace", workspace_config,

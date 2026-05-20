@@ -12,7 +12,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from storage import Backend, DEFAULT_FLOW_EDGE_TYPES, make_backend  # noqa: E402
+from servicescout.storage import Backend, DEFAULT_FLOW_EDGE_TYPES, make_backend  # noqa: E402
 
 from score import recall_any_of, recall_set  # noqa: E402
 

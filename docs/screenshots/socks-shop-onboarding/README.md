@@ -14,6 +14,6 @@ To refresh these after a new local run:
 ```bash
 ./evals/setup.sh
 ./evals/build_eval_catalog.sh
-python build_kuzu.py --catalog evals/data/catalog.json --db evals/data/catalog.kuzu
+python -m servicescout.build_kuzu --catalog evals/data/catalog.json --db evals/data/catalog.kuzu
 docker compose --env-file .env.socks-shop.example up -d mcp dashboard
 ```

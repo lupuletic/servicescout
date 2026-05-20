@@ -638,7 +638,7 @@ def make_backend(backend: str, catalog_path: Path, kuzu_path: Path | None = None
     """
     backend = (backend or "auto").lower()
     if backend in {"auto", "kuzu"} and kuzu_path and kuzu_path.exists():
-        from storage_kuzu import KuzuBackend  # type: ignore[import-not-found]
+        from servicescout.storage_kuzu import KuzuBackend  # type: ignore[import-not-found]
         return KuzuBackend(kuzu_path)
     if backend == "kuzu":
         raise RuntimeError(

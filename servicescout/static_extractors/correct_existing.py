@@ -26,8 +26,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import extractor as ex
-from static_extractors import calibrate, code_shape as ast_crosscheck, correction, snippet_verify
+from servicescout import extractor as ex
+from servicescout.static_extractors import calibrate, code_shape as ast_crosscheck, correction, snippet_verify
 
 
 def _repo_dict_for(payload: dict[str, Any], workspace_root: Path) -> dict[str, Any] | None:

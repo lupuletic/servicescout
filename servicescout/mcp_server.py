@@ -26,11 +26,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from storage import Backend, DEFAULT_FLOW_EDGE_TYPES, make_backend
-import auth as auth_module
+from servicescout.storage import Backend, DEFAULT_FLOW_EDGE_TYPES, make_backend
+from servicescout import auth as auth_module
 
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG = HERE / "data" / "catalog.json"
 DEFAULT_KUZU = HERE / "data" / "catalog.kuzu"
 

@@ -44,7 +44,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from storage import (
+from servicescout.storage import (
     Backend,
     SEARCHABLE_KINDS,
     _edge_record,
@@ -282,7 +282,7 @@ class KuzuBackend(Backend):
         ranking_indices = [[ref_to_idx[r] for r in rl if r in ref_to_idx] for rl in rank_lists]
         fused = _rrf(ranking_indices)
         idx_to_ref = {i: r for r, i in ref_to_idx.items()}
-        from storage import _confidence_at_least, _confidence_weight, _exact_term_boost, _hit_record  # local import to avoid cycle
+        from servicescout.storage import _confidence_at_least, _confidence_weight, _exact_term_boost, _hit_record  # local import to avoid cycle
         weighted: dict[int, float] = {}
         for idx, score in fused.items():
             ent_conf = candidates[idx_to_ref[idx]]["ent"].get("confidence")
@@ -301,7 +301,7 @@ class KuzuBackend(Backend):
     # built from the Kuzu DB at startup.
 
     def neighbors(self, ref: str, *, direction: str, depth: int, edge_types: list[str] | None, min_confidence: str | None = None) -> list[dict[str, Any]]:
-        from storage import _confidence_at_least
+        from servicescout.storage import _confidence_at_least
         visited: set[str] = set()
         frontier = [ref]
         paths: list[dict[str, Any]] = []
@@ -331,7 +331,7 @@ class KuzuBackend(Backend):
         return paths
 
     def trace(self, *, start_ref: str, end_match: str | None, max_hops: int, edge_types: list[str], include_async: bool, fanout_per_node: int, min_confidence: str | None = None) -> dict[str, Any]:
-        from storage import _confidence_at_least
+        from servicescout.storage import _confidence_at_least
         def tagline_for(r: str) -> str:
             ent = self._entity_index.get(r)
             if not ent:

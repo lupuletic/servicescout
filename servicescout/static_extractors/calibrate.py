@@ -29,8 +29,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from static_extractors.code_shape import AstFactCheck, AstReport
-from static_extractors.snippet_verify import FactCheck, VerifyReport
+from servicescout.static_extractors.code_shape import AstFactCheck, AstReport
+from servicescout.static_extractors.snippet_verify import FactCheck, VerifyReport
 
 
 CONFIDENCE_PROMOTION = {

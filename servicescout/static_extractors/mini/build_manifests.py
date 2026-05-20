@@ -26,7 +26,7 @@ import re
 from pathlib import Path
 from typing import Any, Iterable
 
-from static_extractors.mini import Fact
+from servicescout.static_extractors.mini import Fact
 
 
 # Each entry: (substring_match, provider_name, category, description)

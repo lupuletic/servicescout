@@ -19,7 +19,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import scheduler
+from servicescout import scheduler
 
 
 class LockTests(unittest.TestCase):
@@ -150,7 +150,7 @@ class RunTickTests(unittest.TestCase):
             workspace, catalog = self._setup_workspace(tmp_p)
             run_log_dir = tmp_p / "run_logs"
             lock_path = tmp_p / "crawl_lock"
-            with mock.patch("scheduler.detect_changed_repos", return_value=[]):
+            with mock.patch("servicescout.scheduler.detect_changed_repos", return_value=[]):
                 log = scheduler.run_tick(
                     workspace_root=workspace,
                     catalog_dir=catalog,
@@ -177,8 +177,8 @@ class RunTickTests(unittest.TestCase):
                 {"repo": "alpha", "path": str(workspace / "alpha"),
                  "last_extracted_sha": None, "remote_sha": "aaa", "local_sha": "aaa", "fetch_ok": True},
             ]
-            with mock.patch("scheduler.detect_changed_repos", return_value=changed), \
-                 mock.patch("scheduler.subprocess.run") as run_mock:
+            with mock.patch("servicescout.scheduler.detect_changed_repos", return_value=changed), \
+                 mock.patch("servicescout.scheduler.subprocess.run") as run_mock:
                 run_mock.return_value = mock.Mock(returncode=0, stdout="", stderr="")
                 log = scheduler.run_tick(
                     workspace_root=workspace,
@@ -228,8 +228,8 @@ class RunTickTests(unittest.TestCase):
             changed = [{"repo": "alpha", "path": str(workspace / "alpha"),
                         "last_extracted_sha": None, "remote_sha": "a",
                         "local_sha": "a", "fetch_ok": True}]
-            with mock.patch("scheduler.detect_changed_repos", return_value=changed), \
-                 mock.patch("scheduler.subprocess.run") as run_mock:
+            with mock.patch("servicescout.scheduler.detect_changed_repos", return_value=changed), \
+                 mock.patch("servicescout.scheduler.subprocess.run") as run_mock:
                 run_mock.return_value = mock.Mock(returncode=2,
                                                   stdout="", stderr="boom")
                 log = scheduler.run_tick(

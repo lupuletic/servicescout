@@ -30,7 +30,7 @@ try:
 except ImportError as exc:
     raise SystemExit("pip install pyyaml to run the eval suite") from exc
 
-from storage import make_backend  # noqa: E402
+from servicescout.storage import make_backend  # noqa: E402
 
 import catalog_eval  # noqa: E402
 import agent_eval    # noqa: E402

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from static_extractors import backstage_reconcile
+from servicescout.static_extractors import backstage_reconcile
 
 
 SAMPLE_YAML = """\

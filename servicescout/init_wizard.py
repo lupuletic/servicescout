@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parents[1]
 WORKSPACE_PATH = HERE / "workspace.json"
 ENV_PATH = HERE / ".env"
 ENV_EXAMPLE_PATH = HERE / ".env.example"
@@ -263,14 +263,14 @@ def _outro(env: dict[str, str]) -> None:
     print()
     print(" Local dev (without Docker):")
     print()
-    print("   .venv/bin/python crawler.py --root", env["WORKSPACE_ROOT"], "--discover --embed --reconcile")
-    print("   .venv/bin/python dashboard.py")
-    print("   .venv/bin/python mcp_server.py --transport stdio")
+    print("   .venv/bin/python -m servicescout.crawler --root", env["WORKSPACE_ROOT"], "--discover --embed --reconcile")
+    print("   .venv/bin/python -m servicescout.dashboard")
+    print("   .venv/bin/python -m servicescout.mcp_server --transport stdio")
     print()
     print(" Connect a coding agent:")
     print()
-    print("   claude mcp add --transport stdio servicescout -- python", str(HERE / "mcp_server.py"))
-    print("   codex mcp add servicescout -- python", str(HERE / "mcp_server.py"))
+    print("   claude mcp add --transport stdio servicescout -- python -m servicescout.mcp_server")
+    print("   codex mcp add servicescout -- python -m servicescout.mcp_server")
     print()
 
 

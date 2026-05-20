@@ -1,7 +1,7 @@
 import unittest
 
-from build_catalog import derive_communication_flows
-from crawler import communication_endpoint_keys
+from servicescout.build_catalog import derive_communication_flows
+from servicescout.crawler import communication_endpoint_keys
 
 
 class CommunicationTopologyTests(unittest.TestCase):
