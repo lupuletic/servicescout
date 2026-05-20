@@ -9,6 +9,7 @@ import { type EntityRecord, type GraphPayload } from "@/lib/api";
 import { Button, ConfidenceBadge, Input, KindBadge, PageHeader } from "@/components/ui";
 import { EDGE_TYPE_META, KIND_META, edgeTypeLabel, kindColor, kindLabel } from "@/lib/catalogLabels";
 import { drawReadableNodeHover } from "@/lib/sigmaRenderers";
+import { githubRepoRootLabel, githubRepoRootUrl } from "@/lib/sourceLinks";
 
 // Sigma 3.x requires the programs to be registered explicitly. Pass these in
 // `settings` on the SigmaContainer (single source of truth — do NOT also pass
@@ -595,17 +596,22 @@ function EntityDetail({
       {sourceRepos.length > 0 && (
         <div>
           <div className="text-xs uppercase tracking-wider text-fg-dim mb-1.5">Repos</div>
-          {sourceRepos.map((r) => (
-            <a
-              key={r}
-              href={`https://github.com/${r}`}
-              target="_blank"
-              rel="noreferrer"
-              className="block text-accent hover:underline truncate"
-            >
-              {r}
-            </a>
-          ))}
+          {sourceRepos.map((r) => {
+            const href = githubRepoRootUrl(r);
+            if (!href) return <span key={r} className="block truncate">{r}</span>;
+            return (
+              <a
+                key={r}
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+                title={r}
+                className="block text-accent hover:underline truncate"
+              >
+                {githubRepoRootLabel(r)}
+              </a>
+            );
+          })}
         </div>
       )}
 

@@ -6,6 +6,7 @@ import { type EntityRecord } from "@/lib/api";
 import { ConfidenceBadge, KindBadge, PageHeader } from "@/components/ui";
 import { MiniGraph } from "@/components/MiniGraph";
 import { cn } from "@/lib/cn";
+import { githubEvidenceUrl, githubRepoRootLabel, githubRepoRootUrl, githubTreeUrl } from "@/lib/sourceLinks";
 
 type EntityFull = EntityRecord & {
   metadata: {
@@ -179,17 +180,22 @@ function OverviewTab({ entity, centerRef }: { entity: EntityFull; centerRef: str
 
       {sourceRepos.length > 0 && (
         <div className="flex items-center gap-2 text-sm">
-          {sourceRepos.map((r) => (
-            <a
-              key={r}
-              href={`https://github.com/${r}`}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 text-accent hover:underline"
-            >
-              <ExternalLink size={13} /> {r}
-            </a>
-          ))}
+          {sourceRepos.map((r) => {
+            const href = githubRepoRootUrl(r);
+            if (!href) return null;
+            return (
+              <a
+                key={r}
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+                title={r}
+                className="inline-flex items-center gap-1.5 text-accent hover:underline"
+              >
+                <ExternalLink size={13} /> {githubRepoRootLabel(r)}
+              </a>
+            );
+          })}
         </div>
       )}
     </div>
@@ -228,11 +234,23 @@ function AboutCard({ entity }: { entity: EntityFull }) {
     rows.push([
       "Source repo",
       <div className="space-y-0.5">
-        {sourceRepos.map((r) => (
-          <a key={r} href={`https://github.com/${r}`} target="_blank" rel="noreferrer" className="block text-accent hover:underline">
-            {r}
-          </a>
-        ))}
+        {sourceRepos.map((r) => {
+          const root = githubRepoRootUrl(r);
+          const tree = githubTreeUrl(r);
+          if (!root) return <span key={r}>{r}</span>;
+          return (
+            <div key={r}>
+              <a href={root} target="_blank" rel="noreferrer" className="block text-accent hover:underline">
+                {githubRepoRootLabel(r)}
+              </a>
+              {tree && tree !== root && (
+                <a href={tree} target="_blank" rel="noreferrer" className="block text-xs text-fg-dim hover:text-fg-muted hover:underline">
+                  {r.split("/").slice(2).join("/")}
+                </a>
+              )}
+            </div>
+          );
+        })}
       </div>,
     ]);
   if (environments.length > 0)
@@ -352,7 +370,7 @@ function EvidenceTab({
         </p>
         <ul className="space-y-2">
           {evidence.map((e, i) => {
-            const url = repo ? `https://github.com/${repo}/blob/main/${e.path}#L${e.line}` : null;
+            const url = githubEvidenceUrl(repo, e.path, e.line);
             return (
               <li key={i} className="rounded border border-border bg-bg p-3 text-sm">
                 {url ? (

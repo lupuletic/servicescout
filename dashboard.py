@@ -85,10 +85,10 @@ def append_jsonl(path: Path, record: dict[str, Any]) -> None:
 
 # ---------- crawler status ----------
 
-def crawler_status() -> dict[str, Any]:
+def process_status(pattern: str) -> dict[str, Any]:
     try:
         result = subprocess.run(
-            ["pgrep", "-f", "servicescout/crawler.py"],
+            ["pgrep", "-f", pattern],
             text=True, capture_output=True, check=False, timeout=3,
         )
     except (OSError, subprocess.SubprocessError):
@@ -103,6 +103,24 @@ def crawler_status() -> dict[str, Any]:
     except (OSError, subprocess.SubprocessError):
         etime = ""
     return {"running": True, "pid": pid, "uptime": etime}
+
+
+def crawler_status() -> dict[str, Any]:
+    return process_status("crawler.py")
+
+
+def scheduler_status() -> dict[str, Any]:
+    return process_status("scheduler.py")
+
+
+def tail_file(path: Path, limit: int = 40) -> list[str]:
+    if not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return text.splitlines()[-limit:]
 
 
 def latest_crawl_log() -> tuple[Path | None, list[str]]:
@@ -992,6 +1010,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         """
         lock_path = (catalog_path.parent / "crawl_lock").resolve()
         lock_info = _read_lock(lock_path)
+        trigger_log = (catalog_path.parent / "crawl_trigger.log").resolve()
         run_log_dir = (catalog_path.parent / "crawl_runs").resolve()
         last_run = None
         if run_log_dir.is_dir():
@@ -1014,9 +1033,15 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 last_run = extraction_runs[0]
         return JSONResponse({
             "lock": lock_info,
+            "scheduler": scheduler_status(),
+            "crawler": crawler_status(),
             "last_run": last_run,
             "interval_minutes": int(os.environ.get("CRAWL_INTERVAL_MINUTES") or 360),
             "budget_usd": float(os.environ.get("CRAWL_TICK_BUDGET_USD") or 20.0),
+            "workspace_root": os.environ.get("WORKSPACE_ROOT") or "",
+            "workspace_config": os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json"),
+            "active_log_path": str(trigger_log) if trigger_log.is_file() else None,
+            "active_log_tail": tail_file(trigger_log),
         })
 
     @app.post("/api/crawl/trigger")
@@ -1047,17 +1072,19 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         model = os.environ.get("LLM_MODEL")
         workspace_config = os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json")
         log_path = data_dir / "crawl_trigger.log"
+        catalog_dir = _repo_record_dir(data_dir)
         cmd = [
             sys.executable, str(HERE / "scheduler.py"),
             "--once",
             "--workspace-root", str(workspace_root),
-            "--catalog-dir", str(data_dir / "catalog"),
+            "--catalog-dir", str(catalog_dir),
             "--workspace", workspace_config,
             "--run-log-dir", str(data_dir / "crawl_runs"),
             "--lock-path", str(lock_path),
             "--budget-usd", budget,
             "--provider", provider,
             "--effort", effort,
+            "--trigger", "manual",
             "--crawler-arg", "--reconcile",
             "--crawler-arg", "--embed",
             "--crawler-arg", "--build-kuzu",
@@ -1073,6 +1100,68 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         return JSONResponse({
             "status": "accepted",
             "pid": proc.pid,
+            "log_path": str(log_path),
+            "workspace_root": str(workspace_root),
+        }, status_code=202)
+
+    @app.post("/api/crawl/trigger/repo")
+    def trigger_repo_crawl(repo: str = Query(..., min_length=1)) -> JSONResponse:
+        """Force extraction of one repo/repo-unit from the dashboard.
+
+        This uses the scheduler runner so it writes a normal Activity run log,
+        but passes --force-repos to bypass staleness detection for the selected
+        repo unit.
+        """
+        data_dir = catalog_path.parent.resolve()
+        lock_path = (data_dir / "crawl_lock").resolve()
+        lock_info = _read_lock(lock_path)
+        if lock_info.get("held") and not lock_info.get("stale_or_corrupt"):
+            return JSONResponse({"error": "crawl_busy", "lock": lock_info}, status_code=409)
+
+        workspace_root = Path(os.environ.get("WORKSPACE_ROOT") or "/workspace").resolve()
+        if not workspace_root.is_dir():
+            return JSONResponse({
+                "error": "workspace_root_missing",
+                "workspace_root": str(workspace_root),
+                "setup_hint": "Set WORKSPACE_ROOT and mount it into the dashboard container.",
+            }, status_code=400)
+
+        budget = os.environ.get("CRAWL_TICK_BUDGET_USD") or os.environ.get("BUDGET_USD") or "20"
+        provider = os.environ.get("LLM_PROVIDER") or "codex"
+        effort = os.environ.get("LLM_EFFORT") or "medium"
+        model = os.environ.get("LLM_MODEL")
+        workspace_config = os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json")
+        catalog_dir = _repo_record_dir(data_dir)
+        log_path = data_dir / "crawl_trigger.log"
+        cmd = [
+            sys.executable, str(HERE / "scheduler.py"),
+            "--once",
+            "--workspace-root", str(workspace_root),
+            "--catalog-dir", str(catalog_dir),
+            "--workspace", workspace_config,
+            "--run-log-dir", str(data_dir / "crawl_runs"),
+            "--lock-path", str(lock_path),
+            "--budget-usd", budget,
+            "--provider", provider,
+            "--effort", effort,
+            "--trigger", "manual-reindex",
+            "--force-repos", repo,
+            "--crawler-arg", "--reconcile",
+            "--crawler-arg", "--embed",
+            "--crawler-arg", "--build-kuzu",
+        ]
+        if model:
+            cmd.extend(["--model", model])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with log_path.open("ab") as fh:
+                proc = subprocess.Popen(cmd, cwd=str(HERE), stdout=fh, stderr=subprocess.STDOUT)
+        except OSError as exc:
+            return JSONResponse({"error": "trigger_failed", "detail": str(exc)}, status_code=500)
+        return JSONResponse({
+            "status": "accepted",
+            "pid": proc.pid,
+            "repo": repo,
             "log_path": str(log_path),
             "workspace_root": str(workspace_root),
         }, status_code=202)

@@ -1,6 +1,6 @@
-import useSWR from "swr";
-import { type ElementType, type ReactNode } from "react";
-import { AlertTriangle, Database, ShieldCheck, TimerReset, WalletCards } from "lucide-react";
+import useSWR, { useSWRConfig } from "swr";
+import { type ElementType, type ReactNode, useState } from "react";
+import { AlertTriangle, Database, RotateCw, ShieldCheck, TimerReset, WalletCards } from "lucide-react";
 import { type OperatorSummary } from "@/lib/api";
 import { Card, CardTitle, CardValue, PageHeader } from "@/components/ui";
 import { cn } from "@/lib/cn";
@@ -39,6 +39,8 @@ function Sparkline({ rows }: { rows: OperatorSummary["cost_trend"] }) {
 
 export function OperatorPage() {
   const { data, isLoading } = useSWR<OperatorSummary>("/api/operator/summary", { refreshInterval: 15000 });
+  const { mutate } = useSWRConfig();
+  const [reindexing, setReindexing] = useState<string | null>(null);
   const trend = data?.cost_trend ?? [];
   const totalTrendCost = trend.reduce((sum, row) => sum + row.cost, 0);
   const buckets = data?.staleness.buckets;
@@ -46,6 +48,20 @@ export function OperatorPage() {
     (data?.verifier.validation_errors || 0) +
     (data?.verifier.evidence_quarantined || 0) +
     (data?.verifier.entity_confidence.review || 0);
+
+  const triggerRepo = async (repo: string) => {
+    setReindexing(repo);
+    try {
+      const response = await fetch(`/api/crawl/trigger/repo?repo=${encodeURIComponent(repo)}`, { method: "POST" });
+      if (!response.ok && response.status !== 202) {
+        const body = await response.json().catch(() => ({}));
+        alert(body.error ? `Re-index failed: ${body.error}` : `Re-index failed: ${response.status}`);
+      }
+      await Promise.all([mutate("/api/operator/summary"), mutate("/api/crawl/status"), mutate("/api/crawl/runs")]);
+    } finally {
+      setReindexing(null);
+    }
+  };
 
   return (
     <div className="h-full grid grid-rows-[auto_1fr]">
@@ -126,18 +142,30 @@ export function OperatorPage() {
               <AlertTriangle size={15} className="text-fg-dim" />
             </div>
             <div className="mt-1 overflow-hidden rounded border border-border">
-              <div className="grid grid-cols-[1fr_100px_100px_90px] gap-3 bg-bg px-3 py-2 text-xs uppercase tracking-wider text-fg-dim">
+              <div className="grid grid-cols-[1fr_86px_80px_80px_92px] gap-3 bg-bg px-3 py-2 text-xs uppercase tracking-wider text-fg-dim">
                 <div>Repo</div>
                 <div>Age</div>
                 <div>Cost</div>
                 <div>Status</div>
+                <div className="text-right">Action</div>
               </div>
               {(data?.staleness.repos || []).slice(0, 14).map((repo) => (
-                <div key={repo.repo} className="grid grid-cols-[1fr_100px_100px_90px] gap-3 border-t border-border px-3 py-2 text-sm">
+                <div key={repo.repo} className="grid grid-cols-[1fr_86px_80px_80px_92px] gap-3 border-t border-border px-3 py-2 text-sm">
                   <div className="truncate font-mono text-xs text-fg">{repo.repo}</div>
                   <div className="text-fg-muted">{fmtAge(repo.age_hours)}</div>
                   <div className="text-fg-muted">{fmtMoney(repo.cost)}</div>
                   <div className="truncate text-fg-muted">{repo.status}</div>
+                  <div className="text-right">
+                    <button
+                      type="button"
+                      onClick={() => void triggerRepo(repo.repo)}
+                      disabled={reindexing !== null}
+                      className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-fg-muted hover:text-fg disabled:opacity-50"
+                    >
+                      <RotateCw size={12} className={reindexing === repo.repo ? "animate-spin" : ""} />
+                      Re-index
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>

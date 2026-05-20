@@ -277,7 +277,7 @@ def make_component(name: str, *, repo_id: str | None, type_: str, system: str | 
         # multiple tools, not Backstage-specific) so we keep it. Anything
         # ServiceScout-specific goes under `servicescout/*`. The Backstage
         # exporter translates our keys to `backstage.io/*` when emitting YAML.
-        github_url = f"https://github.com/{repo_id}"
+        github_url = github_source_location(repo_id)
         annotations.setdefault("github.com/source-location", github_url)
     if aliases:
         annotations["aliases"] = sorted({a for a in aliases if a})
@@ -767,6 +767,13 @@ def add_repo(catalog: Catalog, repo_payload: dict[str, Any]) -> dict[str, Any]:
 
 def short_repo_name(repo_id: str) -> str:
     return repo_id.rstrip("/").split("/")[-1] if "/" in repo_id else repo_id
+
+
+def github_source_location(repo_id: str) -> str:
+    parts = [part for part in repo_id.strip("/").split("/") if part]
+    if len(parts) < 2:
+        return ""
+    return f"https://github.com/{parts[0]}/{parts[1]}"
 
 
 def add_seed_platform(catalog: Catalog, seed: dict[str, Any]) -> None:
@@ -2016,7 +2023,7 @@ def apply_triage_decisions(catalog: dict[str, Any], decisions: list[dict[str, An
             repo = decision.get("repo") or ""
             if repo:
                 annotations["source_repos"] = [repo]
-                annotations.setdefault("github.com/source-location", f"https://github.com/{repo}")
+                annotations.setdefault("github.com/source-location", github_source_location(repo))
             annotations.pop("external", None)
             annotations["linked_via_triage"] = "true"
             counts["link"] += 1
