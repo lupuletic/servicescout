@@ -39,10 +39,21 @@ Leave `GOOGLE_CLOUD_PROJECT` empty to skip Vertex AI embeddings and use
 lexical-only search. Do not index repositories whose contents cannot be sent
 to your configured LLM or embedding provider.
 
-The current extraction harnesses run provider CLIs inside the container. Local
-developer runs can mount `~/.codex` and `~/.claude`; remote VM deployments
-should prefer a dedicated API-key or credential-proxy harness once that mode is
-implemented, rather than copying personal interactive login state onto a server.
+The extraction harnesses run provider CLIs inside the container in one of two
+auth modes:
+
+- **Local dev:** mount your logged-in `~/.codex` / `~/.claude`. A laptop-only
+  convenience, not a server model.
+- **Headless / server:** set `CODEX_API_KEY` (codex; the crawler runs
+  `codex exec --ignore-user-config`, so no personal login state is read) and/or
+  `ANTHROPIC_API_KEY` (claude), and do not mount the credential directories.
+  Prefer the dedicated `CODEX_API_KEY` over `OPENAI_API_KEY`, which can silently
+  switch codex to API-key billing. Do not copy personal interactive login state
+  onto a shared server.
+
+If you later adopt the Claude Agent SDK as an in-process harness, note that its
+subscription-plan (claude.ai login) auth is not permitted for products built on
+the SDK — use `ANTHROPIC_API_KEY` billing on a server.
 
 ## Network Exposure
 

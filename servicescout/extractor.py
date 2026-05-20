@@ -559,6 +559,22 @@ def _summarize_codex_line(line: str) -> dict[str, Any] | None:
     return None
 
 
+def _codex_headless_flags() -> list[str]:
+    """Extra ``codex exec`` flags for non-interactive / server use.
+
+    When ``CODEX_API_KEY`` is set we pass ``--ignore-user-config`` so codex
+    authenticates from that key in the environment rather than any personal
+    ~/.codex login state (auth.json/config.toml). This is the clean headless
+    VM path; mounting ~/.codex stays a local-dev convenience. We gate on the
+    dedicated ``CODEX_API_KEY`` (not ``OPENAI_API_KEY``) so a developer who
+    merely has ``OPENAI_API_KEY`` exported for other tooling is not silently
+    forced onto API-key billing.
+    """
+    if os.environ.get("CODEX_API_KEY"):
+        return ["--ignore-user-config"]
+    return []
+
+
 def codex_extract(
     repo: dict[str, Any],
     model: str | None,
@@ -585,6 +601,7 @@ def codex_extract(
         codex,
         "exec",
         "--ephemeral",
+        *_codex_headless_flags(),
         "-c",
         f'model_reasoning_effort="{effort}"',
         "--cd",
@@ -768,6 +785,7 @@ def codex_correct(
         codex,
         "exec",
         "--ephemeral",
+        *_codex_headless_flags(),
         "-c",
         f'model_reasoning_effort="{effort}"',
         "--cd",

@@ -5,7 +5,25 @@ KUZU := $(shell $(PYTHON) evals/workspace_paths.py --workspace $(WORKSPACE) | $(
 SOURCE := $(shell $(PYTHON) evals/workspace_paths.py --workspace $(WORKSPACE) | $(PYTHON) -c 'import json,sys; print(json.load(sys.stdin)["clone_root"])')
 AUDIT_MD := docs/$(WORKSPACE)-catalog-audit.md
 
-.PHONY: eval-setup eval-extract eval-kuzu eval-run eval-report eval-audit stack stack-edge stack-crawl wheelhouse docker-build docker-build-offline
+.PHONY: eval-setup eval-extract eval-kuzu eval-run eval-report eval-audit stack stack-edge stack-crawl wheelhouse docker-build docker-build-offline demo demo-down
+
+# Zero-cost instant demo: serve the bundled, pre-extracted sock-shop catalog
+# (no LLM call, no credentials). First run builds the image.
+DEMO_ENV = WORKSPACE_ROOT=$(PWD)/.demo-data SERVICESCOUT_DATA_DIR=./.demo-data \
+	SERVICESCOUT_WORKSPACE_CONFIG=./workspace.json.example
+
+demo:
+	mkdir -p .demo-data
+	cp examples/sock-shop-catalog.json .demo-data/catalog.json
+	$(DEMO_ENV) docker compose up -d mcp dashboard
+	@echo ""
+	@echo "Demo running with the bundled sock-shop catalog (no LLM, no auth):"
+	@echo "  Dashboard: http://127.0.0.1:8788"
+	@echo "  MCP:       http://127.0.0.1:8765/mcp"
+	@echo "Stop with: make demo-down"
+
+demo-down:
+	$(DEMO_ENV) docker compose down
 
 eval-setup:
 	PYTHON=$(PYTHON) ./evals/setup.sh --workspace $(WORKSPACE)
