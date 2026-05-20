@@ -337,104 +337,107 @@ export function GraphPage() {
           </>
         }
       />
-      <div className="grid grid-cols-[1fr_320px] min-h-0">
-        <div className="relative bg-bg">
-          <div className="absolute top-3 left-3 z-10 w-[320px] rounded-lg border border-border bg-bg-elevated/90 shadow-xl backdrop-blur">
-            <div className="flex items-start justify-between gap-3 border-b border-border px-3 py-2.5">
-              <div>
-                <div className="flex items-center gap-1.5 text-sm font-medium text-fg">
-                  <Filter size={14} />
-                  Filters
-                </div>
-                <div className="mt-0.5 text-[11px] text-fg-dim">
-                  {effectiveKinds.size} entity types · {confidences.size} confidence · {relationSummary}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={resetFilters}
-                title="Reset graph filters"
-                className="grid h-7 w-7 shrink-0 place-items-center rounded text-fg-dim hover:bg-bg hover:text-fg"
-              >
-                <RotateCcw size={13} />
-              </button>
-            </div>
-
-            <div className="max-h-[min(66vh,560px)] overflow-auto p-3 space-y-4">
-              <FilterSection title="Entity types" hint="What the nodes represent">
-                {flowActive && (
-                  <div className="mb-2 rounded-md border border-border bg-bg/50 px-2 py-1.5 text-[11px] leading-4 text-fg-dim">
-                    Flow map shows service-to-service communication. Switch to Evidence graph to inspect APIs,
-                    data, systems, domains, and owners.
+      <div className="grid min-h-0 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="grid min-h-0 grid-cols-1 bg-bg lg:grid-cols-[344px_minmax(0,1fr)]">
+          <div className="min-h-0 border-b border-border bg-bg p-3 lg:border-b-0 lg:border-r">
+            <div className="max-h-[min(52vh,560px)] overflow-hidden rounded-lg border border-border bg-bg-elevated shadow-xl lg:max-h-full">
+              <div className="flex items-start justify-between gap-3 border-b border-border px-3 py-2.5">
+                <div>
+                  <div className="flex items-center gap-1.5 text-sm font-medium text-fg">
+                    <Filter size={14} />
+                    Filters
                   </div>
-                )}
-                <div className="grid grid-cols-2 gap-1.5">
-                  {ALL_KINDS.map((kind) => {
-                    const disabledByFlow = flowActive && kind !== "Component";
-                    return (
-                      <FilterChip
-                        key={kind}
-                        active={flowActive ? kind === "Component" : kinds.has(kind)}
-                        disabled={disabledByFlow}
-                        onClick={() => toggle(kind)}
-                        title={
-                          disabledByFlow
-                            ? "Flow map only displays service-to-service communication. Switch to Evidence graph to filter this kind."
-                            : KIND_META[kind]?.description
-                        }
-                      >
-                        <span className="h-2 w-2 rounded-full" style={{ background: kindColor(kind) }} />
-                        <span className="truncate">{kindLabel(kind, true)}</span>
-                      </FilterChip>
-                    );
-                  })}
+                  <div className="mt-0.5 text-[11px] text-fg-dim">
+                    {effectiveKinds.size} entity types · {confidences.size} confidence · {relationSummary}
+                  </div>
                 </div>
-              </FilterSection>
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  title="Reset graph filters"
+                  className="grid h-7 w-7 shrink-0 place-items-center rounded text-fg-dim hover:bg-bg hover:text-fg"
+                >
+                  <RotateCcw size={13} />
+                </button>
+              </div>
 
-              <FilterSection title="Confidence" hint="Extractor/verifier certainty">
-                <div className="grid grid-cols-4 gap-1.5">
-                  {ALL_CONFIDENCE.map((confidence) => (
-                    <FilterChip
-                      key={confidence}
-                      active={confidences.has(confidence)}
-                      onClick={() => toggleConfidence(confidence)}
-                    >
-                      <span className="truncate">{confidence}</span>
-                    </FilterChip>
-                  ))}
-                </div>
-              </FilterSection>
+              <div className="max-h-[calc(min(52vh,560px)-54px)] overflow-auto p-3 space-y-4 lg:max-h-[calc(100vh-190px)]">
+                <FilterSection title="Entity types" hint="What the nodes represent">
+                  {flowActive && (
+                    <div className="mb-2 rounded-md border border-border bg-bg/50 px-2 py-1.5 text-[11px] leading-4 text-fg-dim">
+                      Flow map shows service-to-service communication. Switch to Evidence graph to inspect APIs,
+                      data, systems, domains, and owners.
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {ALL_KINDS.map((kind) => {
+                      const disabledByFlow = flowActive && kind !== "Component";
+                      return (
+                        <FilterChip
+                          key={kind}
+                          active={flowActive ? kind === "Component" : kinds.has(kind)}
+                          disabled={disabledByFlow}
+                          onClick={() => toggle(kind)}
+                          title={
+                            disabledByFlow
+                              ? "Flow map only displays service-to-service communication. Switch to Evidence graph to filter this kind."
+                              : KIND_META[kind]?.description
+                          }
+                        >
+                          <span className="h-2 w-2 rounded-full" style={{ background: kindColor(kind) }} />
+                          <span className="truncate">{kindLabel(kind, true)}</span>
+                        </FilterChip>
+                      );
+                    })}
+                  </div>
+                </FilterSection>
 
-              <FilterSection title="Relationships" hint="Choose a high-level flow view or inspect raw evidence">
-                <div className="grid grid-cols-2 gap-1.5">
-                  <FilterChip active={flowActive} onClick={showFlowView} title={EDGE_TYPE_META.communicatesWith.description}>
-                    Flow map
-                  </FilterChip>
-                  <FilterChip active={!flowActive} onClick={showEvidenceView}>
-                    Evidence graph
-                  </FilterChip>
-                </div>
-                {!flowActive && (
-                  <div className="mt-2 grid grid-cols-2 gap-1.5">
-                    <FilterChip active={edgeTypes.size === 0} onClick={() => setEdgeTypes(new Set())}>
-                      All evidence
-                    </FilterChip>
-                    {EVIDENCE_EDGE_TYPES.map((et) => (
+                <FilterSection title="Confidence" hint="Extractor/verifier certainty">
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {ALL_CONFIDENCE.map((confidence) => (
                       <FilterChip
-                        key={et.value}
-                        active={edgeTypes.has(et.value)}
-                        onClick={() => toggleEdgeType(et.value)}
-                        title={EDGE_TYPE_META[et.value]?.description}
+                        key={confidence}
+                        active={confidences.has(confidence)}
+                        onClick={() => toggleConfidence(confidence)}
                       >
-                        <span className="truncate">{et.label}</span>
+                        <span className="truncate">{confidence}</span>
                       </FilterChip>
                     ))}
                   </div>
-                )}
-              </FilterSection>
+                </FilterSection>
+
+                <FilterSection title="Relationships" hint="Choose a high-level flow view or inspect raw evidence">
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <FilterChip active={flowActive} onClick={showFlowView} title={EDGE_TYPE_META.communicatesWith.description}>
+                      Flow map
+                    </FilterChip>
+                    <FilterChip active={!flowActive} onClick={showEvidenceView}>
+                      Evidence graph
+                    </FilterChip>
+                  </div>
+                  {!flowActive && (
+                    <div className="mt-2 grid grid-cols-2 gap-1.5">
+                      <FilterChip active={edgeTypes.size === 0} onClick={() => setEdgeTypes(new Set())}>
+                        All evidence
+                      </FilterChip>
+                      {EVIDENCE_EDGE_TYPES.map((et) => (
+                        <FilterChip
+                          key={et.value}
+                          active={edgeTypes.has(et.value)}
+                          onClick={() => toggleEdgeType(et.value)}
+                          title={EDGE_TYPE_META[et.value]?.description}
+                        >
+                          <span className="truncate">{et.label}</span>
+                        </FilterChip>
+                      ))}
+                    </div>
+                  )}
+                </FilterSection>
+              </div>
             </div>
           </div>
 
+          <div className="relative min-h-[520px] min-w-0 bg-bg lg:min-h-0">
           {/* Search results overlay */}
           {filteredSearch.length > 0 && (
             <div className="absolute top-3 right-3 z-10 w-72 rounded-md border border-border bg-bg-elevated shadow-lg max-h-72 overflow-auto">
@@ -500,10 +503,11 @@ export function GraphPage() {
           >
             <GraphLoader graph={graphInstance} onSelect={setSelectedRef} onSigmaReady={setSigmaRef} />
           </SigmaContainer>
+          </div>
         </div>
 
         {/* Detail panel */}
-        <aside className="border-l border-border bg-bg-elevated overflow-auto">
+        <aside className="min-h-0 border-t border-border bg-bg-elevated overflow-auto xl:border-l xl:border-t-0">
           {!selectedRef && (
             <div className="p-6 text-sm text-fg-muted">
               <h3 className="text-base font-semibold text-fg mb-2">Select a node</h3>
