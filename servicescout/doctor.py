@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from servicescout.harnesses import provider_auth_status
@@ -27,13 +28,11 @@ from servicescout.harnesses import provider_auth_status
 OK, WARN, FAIL, SKIP = "ok", "warn", "fail", "skip"
 
 
+@dataclass(slots=True)
 class Check:
-    __slots__ = ("name", "status", "detail")
-
-    def __init__(self, name: str, status: str, detail: str) -> None:
-        self.name = name
-        self.status = status
-        self.detail = detail
+    name: str
+    status: str
+    detail: str
 
 
 def _github_check(env: Mapping[str, str]) -> Check:
