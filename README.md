@@ -1,9 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./assets/servicescout-logo-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="./assets/servicescout-logo-light.png">
-    <img alt="ServiceScout" src="./assets/servicescout-logo-light.png" width="720">
-  </picture>
+  <img alt="ServiceScout" src="./assets/servicescout-logo.png" width="820">
 </p>
 
 <div align="center">
@@ -370,8 +366,10 @@ Alpha. The pipeline works end-to-end and has been validated on a real
 ~200-repo workspace producing a Backstage-shaped catalog served to coding
 agents. Expect rough edges in the operator path:
 
-- `crawler_state.json` is written but not yet read for resume — restart is
-  full-recrawl.
+- `crawler.py --resume` can continue a compatible interrupted run by reading
+  `crawler_state.json` and skipping repos already completed successfully.
+  Scheduler-level incremental re-extraction is commit-aware, but long-running
+  production soak and deleted-repo tombstoning are still tracked separately.
 - MCP/dashboard have no built-in user auth and the dashboard can trigger
   crawls using mounted repo/LLM credentials. Keep the default localhost bind
   for SSH-tunnel use, or put the bundled nginx edge behind your normal VPN,
@@ -395,7 +393,9 @@ Issues and PRs welcome.
   GitHub Enterprise.
 - **Runtime correlation.** OpenTelemetry / Datadog / service-mesh
   integrations to enrich the catalog with live topology.
-- **Resumeable crawl** + **eval suite** for the extractor.
+- **Continuous crawl hardening.** Deleted-repo tombstoning, entity-level
+  crawl provenance in the UI, trigger auth, and incremental LLM session
+  resume/savings.
 - **Hosted MCP** with auth, for orgs that want a managed deployment.
 
 ---
