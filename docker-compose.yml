@@ -23,6 +23,11 @@ x-servicescout-env: &servicescout-env
   GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
   GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-us-central1}
   GOOGLE_APPLICATION_CREDENTIALS: /home/cg/.config/gcloud/application_default_credentials.json
+  # Extractor auth. For a headless VM, set CODEX_API_KEY (codex) and/or
+  # ANTHROPIC_API_KEY (claude) in .env — the crawler then runs without any
+  # mounted ~/.codex / ~/.claude login state. CODEX_API_KEY is preferred over
+  # OPENAI_API_KEY for codex so billing is explicit (see .env.example).
+  CODEX_API_KEY: ${CODEX_API_KEY:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
 
@@ -174,5 +179,24 @@ services:
       --llm-model ${LLM_MODEL:-gpt-5.4-mini}
     volumes:
       - ${SERVICESCOUT_DATA_DIR:-./data}:/data
+      - ${HOME}/.codex:/home/cg/.codex:ro
+      - ${HOME}/.claude:/home/cg/.claude:ro
+
+  # Pre-crawl diagnostics: `docker compose run --rm doctor`. Verifies extractor
+  # auth (CLI login or API key), GitHub access, mounts, and embeddings before a
+  # crawl burns time/budget on a misconfigured run.
+  doctor:
+    <<: *servicescout
+    profiles: ["doctor"]
+    environment:
+      <<: *servicescout-env
+      WORKSPACE_ROOT: /workspace
+      LLM_PROVIDER: ${LLM_PROVIDER:-codex}
+    command: python -m servicescout.doctor
+    volumes:
+      - ${WORKSPACE_ROOT:?Set WORKSPACE_ROOT in .env}:/workspace
+      - ${SERVICESCOUT_DATA_DIR:-./data}:/data
+      - ${HOME}/.config/gh:/home/cg/.config/gh:ro
+      - ${HOME}/.config/gcloud:/home/cg/.config/gcloud:ro
       - ${HOME}/.codex:/home/cg/.codex:ro
       - ${HOME}/.claude:/home/cg/.claude:ro

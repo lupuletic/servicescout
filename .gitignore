@@ -8,6 +8,7 @@ seeds/*.json
 
 # --- Generated catalog state ---
 data/
+.demo-data/
 
 # --- Roadmap notes kept locally ---
 FUTURE.md

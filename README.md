@@ -18,6 +18,25 @@ and answers with file:line citations from real code.
 
 ---
 
+## Instant demo (no LLM, no credentials)
+
+Want to see the dashboard and MCP tools right now? A small, pre-extracted
+catalog of the public Weaveworks **sock-shop** demo ships in the repo, so you
+can explore without an API key or a crawl:
+
+```bash
+git clone https://github.com/lupuletic/servicescout.git
+cd servicescout
+make demo            # first run builds the image, then serves the bundled catalog
+```
+
+Open [`http://127.0.0.1:8788`](http://127.0.0.1:8788); stop with `make demo-down`.
+This indexes nothing of your own — it just loads
+[`examples/sock-shop-catalog.json`](examples/sock-shop-catalog.json). To build a
+catalog from real repos, follow the Quickstart.
+
+---
+
 ## Quickstart
 
 **1. Run the server (Docker, HTTP streamable on `:8765`):**
@@ -102,7 +121,8 @@ with citations.
 - `deploy/`, `Dockerfile`, `docker-compose.yml`, `Makefile` — deployment and
   local operator entrypoints.
 
-For local Python development:
+For local Python development (Python **3.11–3.13** — the pinned `kuzu` wheel is
+not yet published for 3.14; on 3.14 use Docker or the JSON backend):
 
 ```bash
 python -m pip install -e .
@@ -147,21 +167,28 @@ Then open `http://<host>:<port>/` for the UI or point agents at
 balancer or reverse proxy; the bundled nginx is intentionally a small internal
 edge, not an identity provider.
 
-Extraction currently shells out to the Codex or Claude Code CLI inside the
-crawler/scheduler container. On a developer machine, Compose mounts
-`~/.codex` and `~/.claude` so an existing CLI login can work in Docker. On a
-headless VM, validate the selected CLI auth path before running a crawl:
+Extraction shells out to the Codex or Claude Code CLI inside the
+crawler/scheduler container, with two auth modes:
+
+- **Local dev** — Compose mounts your already-logged-in `~/.codex` / `~/.claude`
+  into the container. Convenient on a laptop only; not a server model.
+- **Headless / VM** — set an API key in `.env` and the crawler runs with no
+  mounted login state. For codex set `CODEX_API_KEY` (the crawler then runs
+  `codex exec --ignore-user-config`, so personal config is ignored and billing
+  is explicit); for claude set `ANTHROPIC_API_KEY`. Setting `OPENAI_API_KEY`
+  alone also authenticates codex but can silently switch it to API-key billing —
+  prefer `CODEX_API_KEY`.
+
+Verify the whole setup — extractor auth, GitHub access, mounts, embeddings —
+before a crawl:
 
 ```bash
-docker compose run --rm --entrypoint sh crawler -lc 'codex login status'
-docker compose run --rm --entrypoint sh crawler -lc 'claude auth status'
+docker compose run --rm doctor
 ```
 
-Run the command for the provider you configured in `LLM_PROVIDER`.
-
-For remote VM deployments, prefer a dedicated API key, service account, or
-credential proxy once the direct API/Agent SDK harness lands. Until then,
-treat CLI auth inside the container as a release gate for crawling.
+The crawler also preflights provider auth and aborts early with a clear,
+actionable message if it can't authenticate, so a misconfigured run fails fast
+instead of part-way through.
 
 ### Switch between workspaces and public evals
 

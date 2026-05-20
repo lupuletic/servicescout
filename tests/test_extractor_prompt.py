@@ -11,7 +11,9 @@ the .format() call blows up at runtime when the crawler runs an
 extraction.
 """
 
+import os
 import unittest
+from unittest import mock
 
 from servicescout import extractor
 
@@ -67,6 +69,28 @@ class PromptRendersTests(unittest.TestCase):
             "absolute_path": "/tmp/example",
         })
         self.assertGreater(len(rendered), 1000)
+
+
+class CodexHeadlessFlagsTests(unittest.TestCase):
+    """API-key (headless/VM) mode adds --ignore-user-config; CLI-login mode
+    (no CODEX_API_KEY) does not, so local-dev users keep their ~/.codex config."""
+
+    def test_codex_api_key_enables_ignore_user_config(self) -> None:
+        with mock.patch.dict(os.environ, {"CODEX_API_KEY": "sk-x"}, clear=False):
+            self.assertIn("--ignore-user-config", extractor._codex_headless_flags())
+
+    def test_no_codex_api_key_keeps_user_config(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "CODEX_API_KEY"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(extractor._codex_headless_flags(), [])
+
+    def test_openai_key_alone_does_not_force_headless(self) -> None:
+        # The footgun guard: OPENAI_API_KEY without CODEX_API_KEY must NOT add
+        # --ignore-user-config (would silently force API-key billing).
+        env = {k: v for k, v in os.environ.items() if k != "CODEX_API_KEY"}
+        env["OPENAI_API_KEY"] = "sk-x"
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(extractor._codex_headless_flags(), [])
 
 
 if __name__ == "__main__":
