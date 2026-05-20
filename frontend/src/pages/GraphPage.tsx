@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import Graph from "graphology";
 import useSWR from "swr";
 import { SigmaContainer, useLoadGraph, useRegisterEvents, useSigma } from "@react-sigma/core";
 import { NodeCircleProgram, EdgeArrowProgram } from "sigma/rendering";
 import forceAtlas2 from "graphology-layout-forceatlas2";
+import { Filter, RotateCcw } from "lucide-react";
 import { type EntityRecord, type GraphPayload } from "@/lib/api";
-import { Button, Input, KindBadge, PageHeader } from "@/components/ui";
+import { Button, ConfidenceBadge, Input, KindBadge, PageHeader } from "@/components/ui";
+import { EDGE_TYPE_META, KIND_META, edgeTypeLabel, kindColor, kindLabel } from "@/lib/catalogLabels";
+import { drawReadableNodeHover } from "@/lib/sigmaRenderers";
 
 // Sigma 3.x requires the programs to be registered explicitly. Pass these in
 // `settings` on the SigmaContainer (single source of truth — do NOT also pass
@@ -27,6 +30,7 @@ const SIGMA_SETTINGS = {
   // legible at any zoom level. Sigma picks the largest-by-size first.
   labelDensity: 0.6,
   labelGridCellSize: 80,
+  defaultDrawNodeHover: drawReadableNodeHover,
   renderEdgeLabels: false,
   defaultEdgeColor: "#2a3242",
   minCameraRatio: 0.05,
@@ -34,33 +38,36 @@ const SIGMA_SETTINGS = {
   allowInvalidContainer: true,
 };
 
-const KIND_COLOR: Record<string, string> = {
-  Component: "#3b82f6",
-  API: "#eab308",
-  Resource: "#a855f7",
-  Provider: "#ec4899",
-  System: "#10b981",
-  Domain: "#06b6d4",
-  Group: "#f97316",
+const ALL_KINDS = ["Component", "API", "Resource", "Provider", "System", "Domain", "Group"];
+const ALL_CONFIDENCE = ["high", "medium", "low", "review"];
+
+type EntityFull = EntityRecord & {
+  metadata: {
+    annotations?: {
+      source_repos?: string[];
+      aliases?: string[];
+      tagline?: string;
+    };
+  };
+  spec: {
+    environments?: string[];
+    type?: string;
+  };
+  evidence: Array<{ path?: string; line?: number }>;
+  confidence?: string;
 };
 
-const ALL_KINDS = ["Component", "API", "Resource", "Provider", "System", "Domain", "Group"];
-
-const FLOW_EDGE_TYPES: Array<{ value: string; label: string }> = [
-  { value: "communicatesWith", label: "communicatesWith" },
-];
-
 const EVIDENCE_EDGE_TYPES: Array<{ value: string; label: string }> = [
-  { value: "consumesApi", label: "consumesApi" },
-  { value: "providesApi", label: "providesApi" },
-  { value: "dependsOn", label: "dependsOn" },
-  { value: "consumesMessage", label: "consumesMessage" },
-  { value: "producesMessage", label: "producesMessage" },
-  { value: "readsResource", label: "readsResource" },
-  { value: "writesResource", label: "writesResource" },
-  { value: "ownedBy", label: "ownedBy" },
-  { value: "partOf", label: "partOf" },
-  { value: "subcomponentOf", label: "subcomponentOf" },
+  { value: "consumesApi", label: edgeTypeLabel("consumesApi") },
+  { value: "providesApi", label: edgeTypeLabel("providesApi") },
+  { value: "dependsOn", label: edgeTypeLabel("dependsOn") },
+  { value: "consumesMessage", label: edgeTypeLabel("consumesMessage") },
+  { value: "producesMessage", label: edgeTypeLabel("producesMessage") },
+  { value: "readsResource", label: edgeTypeLabel("readsResource") },
+  { value: "writesResource", label: edgeTypeLabel("writesResource") },
+  { value: "ownedBy", label: edgeTypeLabel("ownedBy") },
+  { value: "partOf", label: edgeTypeLabel("partOf") },
+  { value: "subcomponentOf", label: edgeTypeLabel("subcomponentOf") },
 ];
 
 function GraphLoader({
@@ -149,6 +156,7 @@ function GraphLoader({
 export function GraphPage() {
   const [kinds, setKinds] = useState<Set<string>>(new Set(["Component", "Provider", "Resource"]));
   const [edgeTypes, setEdgeTypes] = useState<Set<string>>(new Set(["communicatesWith"]));
+  const [confidences, setConfidences] = useState<Set<string>>(new Set(ALL_CONFIDENCE));
   const [limit, setLimit] = useState(400);
   const [selectedRef, setSelectedRef] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -172,15 +180,22 @@ export function GraphPage() {
     }
   };
 
+  const flowActive = edgeTypes.size === 1 && edgeTypes.has("communicatesWith");
+  const effectiveKinds = useMemo(
+    () => (flowActive ? new Set(["Component"]) : kinds),
+    [flowActive, kinds],
+  );
   const graphQs = useMemo(() => {
     const qs = new URLSearchParams();
-    Array.from(kinds).sort().forEach((k) => qs.append("kind", k));
+    Array.from(effectiveKinds).sort().forEach((k) => qs.append("kind", k));
     Array.from(edgeTypes).sort().forEach((t) => qs.append("edge_type", t));
+    Array.from(confidences).sort().forEach((c) => qs.append("confidence", c));
+    if (!flowActive) qs.set("include_orphans", "true");
     qs.set("limit", String(limit));
     return qs.toString();
-  }, [kinds, edgeTypes, limit]);
+  }, [effectiveKinds, edgeTypes, confidences, flowActive, limit]);
   const { data, isLoading } = useSWR<GraphPayload>(`/api/graph?${graphQs}`);
-  const { data: selectedEntity } = useSWR<EntityRecord & { metadata: any; spec: any; evidence: any[] }>(
+  const { data: selectedEntity } = useSWR<EntityFull>(
     selectedRef ? `/api/entity/${encodeURIComponent(selectedRef)}` : null,
   );
 
@@ -217,7 +232,7 @@ export function GraphPage() {
         label: n.label,
         kind: n.kind,
         system: n.system || "",
-        color: KIND_COLOR[n.kind] || "#666",
+        color: kindColor(n.kind),
         size: Math.min(16, (3 + Math.sqrt(deg) * 1.4) * sysBoost),
         x: r * Math.cos(a),
         y: r * Math.sin(a),
@@ -242,7 +257,11 @@ export function GraphPage() {
   const toggle = (kind: string) => {
     setKinds((prev) => {
       const next = new Set(prev);
-      next.has(kind) ? next.delete(kind) : next.add(kind);
+      if (next.has(kind)) {
+        next.delete(kind);
+      } else {
+        next.add(kind);
+      }
       return next;
     });
   };
@@ -250,14 +269,39 @@ export function GraphPage() {
   const toggleEdgeType = (t: string) => {
     setEdgeTypes((prev) => {
       const next = new Set(prev);
-      next.has(t) ? next.delete(t) : next.add(t);
+      if (next.has(t)) {
+        next.delete(t);
+      } else {
+        next.add(t);
+      }
+      return next;
+    });
+  };
+
+  const toggleConfidence = (confidence: string) => {
+    setConfidences((prev) => {
+      const next = new Set(prev);
+      if (next.has(confidence)) {
+        next.delete(confidence);
+      } else {
+        next.add(confidence);
+      }
       return next;
     });
   };
 
   const showFlowView = () => setEdgeTypes(new Set(["communicatesWith"]));
   const showEvidenceView = () => setEdgeTypes(new Set());
-  const flowActive = edgeTypes.size === 1 && edgeTypes.has("communicatesWith");
+  const resetFilters = () => {
+    setKinds(new Set(["Component", "Provider", "Resource"]));
+    setConfidences(new Set(ALL_CONFIDENCE));
+    setEdgeTypes(new Set(["communicatesWith"]));
+  };
+  const relationSummary = flowActive
+    ? "service flows"
+    : edgeTypes.size === 0
+      ? "all evidence"
+      : `${edgeTypes.size} evidence type${edgeTypes.size === 1 ? "" : "s"}`;
 
   const filteredSearch = useMemo(() => {
     if (!data || !search.trim()) return [];
@@ -294,98 +338,99 @@ export function GraphPage() {
       />
       <div className="grid grid-cols-[1fr_320px] min-h-0">
         <div className="relative bg-bg">
-          {/* Kind filter row */}
-          <div className="absolute top-3 left-3 z-10 flex flex-wrap gap-1.5 max-w-[70%]">
-            {ALL_KINDS.map((kind) => (
+          <div className="absolute top-3 left-3 z-10 w-[320px] rounded-lg border border-border bg-bg-elevated/90 shadow-xl backdrop-blur">
+            <div className="flex items-start justify-between gap-3 border-b border-border px-3 py-2.5">
+              <div>
+                <div className="flex items-center gap-1.5 text-sm font-medium text-fg">
+                  <Filter size={14} />
+                  Filters
+                </div>
+                <div className="mt-0.5 text-[11px] text-fg-dim">
+                  {effectiveKinds.size} entity types · {confidences.size} confidence · {relationSummary}
+                </div>
+              </div>
               <button
-                key={kind}
-                onClick={() => toggle(kind)}
-                className={`flex items-center gap-1.5 rounded border px-2 py-1 text-xs transition-colors ${
-                  kinds.has(kind)
-                    ? "border-border-strong bg-bg-elevated"
-                    : "border-border bg-bg/40 opacity-40 hover:opacity-70"
-                }`}
+                type="button"
+                onClick={resetFilters}
+                title="Reset graph filters"
+                className="grid h-7 w-7 shrink-0 place-items-center rounded text-fg-dim hover:bg-bg hover:text-fg"
               >
-                <span
-                  className="h-2 w-2 rounded-full"
-                  style={{ background: KIND_COLOR[kind] }}
-                />
-                <span className="text-fg-muted">{kind}</span>
-              </button>
-            ))}
-          </div>
-
-          <div className="absolute top-12 left-3 z-10 flex flex-col gap-1.5 max-w-[72%]">
-            <div className="flex flex-wrap items-center gap-1">
-              <button
-                onClick={showFlowView}
-                className={`rounded border px-2 py-0.5 text-[10px] transition-colors ${
-                  flowActive
-                    ? "border-accent/50 bg-accent/15 text-fg"
-                    : "border-border bg-bg/40 text-fg-muted hover:text-fg"
-                }`}
-              >
-                Flow
-              </button>
-              <button
-                onClick={showEvidenceView}
-                className={`rounded border px-2 py-0.5 text-[10px] transition-colors ${
-                  !flowActive
-                    ? "border-accent/50 bg-accent/15 text-fg"
-                    : "border-border bg-bg/40 text-fg-muted hover:text-fg"
-                }`}
-              >
-                Evidence
+                <RotateCcw size={13} />
               </button>
             </div>
 
-            <div className="flex flex-wrap items-center gap-1">
-              {FLOW_EDGE_TYPES.map((et) => {
-                const on = edgeTypes.has(et.value);
-                return (
-                  <button
-                    key={et.value}
-                    onClick={() => setEdgeTypes(new Set([et.value]))}
-                    className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
-                      on
-                        ? "border-teal-400/50 bg-teal-400/15 text-fg"
-                        : "border-border bg-bg/40 text-fg-muted hover:text-fg"
-                    }`}
-                  >
-                    {et.label}
-                  </button>
-                );
-              })}
-            </div>
+            <div className="max-h-[min(66vh,560px)] overflow-auto p-3 space-y-4">
+              <FilterSection title="Entity types" hint="What the nodes represent">
+                {flowActive && (
+                  <div className="mb-2 rounded-md border border-border bg-bg/50 px-2 py-1.5 text-[11px] leading-4 text-fg-dim">
+                    Flow map shows service-to-service communication. Switch to Evidence graph to inspect APIs,
+                    data, systems, domains, and owners.
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-1.5">
+                  {ALL_KINDS.map((kind) => {
+                    const disabledByFlow = flowActive && kind !== "Component";
+                    return (
+                      <FilterChip
+                        key={kind}
+                        active={flowActive ? kind === "Component" : kinds.has(kind)}
+                        disabled={disabledByFlow}
+                        onClick={() => toggle(kind)}
+                        title={
+                          disabledByFlow
+                            ? "Flow map only displays service-to-service communication. Switch to Evidence graph to filter this kind."
+                            : KIND_META[kind]?.description
+                        }
+                      >
+                        <span className="h-2 w-2 rounded-full" style={{ background: kindColor(kind) }} />
+                        <span className="truncate">{kindLabel(kind, true)}</span>
+                      </FilterChip>
+                    );
+                  })}
+                </div>
+              </FilterSection>
 
-            <div className="flex flex-wrap gap-1">
-              {EVIDENCE_EDGE_TYPES.map((et) => {
-              const on = edgeTypes.has(et.value);
-              const anyOn = edgeTypes.size > 0;
-              return (
-                <button
-                  key={et.value}
-                  onClick={() => toggleEdgeType(et.value)}
-                  className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
-                    on
-                      ? "border-accent/40 bg-accent/15 text-fg"
-                      : anyOn
-                        ? "border-border bg-bg/40 opacity-50 text-fg-muted"
-                        : "border-border bg-bg/40 text-fg-muted hover:text-fg"
-                  }`}
-                >
-                  {et.label}
-                </button>
-              );
-            })}
-            {edgeTypes.size > 0 && (
-              <button
-                onClick={() => setEdgeTypes(new Set())}
-                className="rounded border border-border bg-bg/40 px-1.5 py-0.5 text-[10px] text-fg-dim hover:text-accent"
-              >
-                all evidence
-              </button>
-            )}
+              <FilterSection title="Confidence" hint="Extractor/verifier certainty">
+                <div className="grid grid-cols-4 gap-1.5">
+                  {ALL_CONFIDENCE.map((confidence) => (
+                    <FilterChip
+                      key={confidence}
+                      active={confidences.has(confidence)}
+                      onClick={() => toggleConfidence(confidence)}
+                    >
+                      <span className="truncate">{confidence}</span>
+                    </FilterChip>
+                  ))}
+                </div>
+              </FilterSection>
+
+              <FilterSection title="Relationships" hint="Choose a high-level flow view or inspect raw evidence">
+                <div className="grid grid-cols-2 gap-1.5">
+                  <FilterChip active={flowActive} onClick={showFlowView} title={EDGE_TYPE_META.communicatesWith.description}>
+                    Flow map
+                  </FilterChip>
+                  <FilterChip active={!flowActive} onClick={showEvidenceView}>
+                    Evidence graph
+                  </FilterChip>
+                </div>
+                {!flowActive && (
+                  <div className="mt-2 grid grid-cols-2 gap-1.5">
+                    <FilterChip active={edgeTypes.size === 0} onClick={() => setEdgeTypes(new Set())}>
+                      All evidence
+                    </FilterChip>
+                    {EVIDENCE_EDGE_TYPES.map((et) => (
+                      <FilterChip
+                        key={et.value}
+                        active={edgeTypes.has(et.value)}
+                        onClick={() => toggleEdgeType(et.value)}
+                        title={EDGE_TYPE_META[et.value]?.description}
+                      >
+                        <span className="truncate">{et.label}</span>
+                      </FilterChip>
+                    ))}
+                  </div>
+                )}
+              </FilterSection>
             </div>
           </div>
 
@@ -466,12 +511,12 @@ export function GraphPage() {
                 highlight the local neighbourhood.
               </p>
               <p className="mt-4 text-xs text-fg-dim">
-                Tip: hide kinds you don't care about with the filter chips top-left to declutter the canvas.
+                Tip: use the filter panel to switch between the service flow map and raw evidence relationships.
               </p>
             </div>
           )}
           {selectedRef && selectedEntity && (
-            <EntityDetail entity={selectedEntity as any} />
+            <EntityDetail entity={selectedEntity} />
           )}
           {selectedRef && !selectedEntity && (
             <div className="p-6 text-sm text-fg-muted">Loading {selectedRef}…</div>
@@ -482,10 +527,55 @@ export function GraphPage() {
   );
 }
 
+function FilterSection({ title, hint, children }: { title: string; hint: string; children: ReactNode }) {
+  return (
+    <section>
+      <div className="mb-1.5 flex items-end justify-between gap-2">
+        <h2 className="text-[11px] font-medium uppercase tracking-wider text-fg-dim">{title}</h2>
+        <span className="text-[10px] text-fg-dim">{hint}</span>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function FilterChip({
+  active,
+  disabled = false,
+  onClick,
+  title,
+  children,
+}: {
+  active: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  title?: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      disabled={disabled}
+      title={title}
+      onClick={onClick}
+      className={`flex min-h-8 items-center gap-1.5 rounded-md border px-2 py-1.5 text-left text-xs transition-colors ${
+        disabled
+          ? "cursor-not-allowed border-border bg-bg/20 text-fg-dim opacity-55"
+          : active
+          ? "border-accent/45 bg-accent/15 text-fg"
+          : "border-border bg-bg/45 text-fg-muted hover:border-border-strong hover:bg-bg hover:text-fg"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
 function EntityDetail({
   entity,
 }: {
-  entity: EntityRecord & { metadata: any; spec: any; evidence: any[] };
+  entity: EntityFull;
 }) {
   const annotations = entity.metadata?.annotations || {};
   const sourceRepos: string[] = annotations.source_repos || [];
@@ -495,6 +585,7 @@ function EntityDetail({
     <div className="p-6 space-y-4 text-sm">
       <div>
         <KindBadge kind={entity.kind} />
+        <ConfidenceBadge confidence={entity.confidence} className="ml-1" />
         <h2 className="mt-2 text-lg font-semibold text-fg">{entity.name}</h2>
         {annotations.tagline && (
           <p className="text-sm text-fg-muted mt-1">{annotations.tagline}</p>
@@ -556,7 +647,7 @@ function EntityDetail({
         <div>
           <div className="text-xs uppercase tracking-wider text-fg-dim mb-1.5">Evidence</div>
           <ul className="space-y-1 text-xs text-fg-muted">
-            {entity.evidence.slice(0, 5).map((e: any, i: number) => (
+            {entity.evidence.slice(0, 5).map((e, i: number) => (
               <li key={i} className="font-mono truncate">
                 {e.path}:{e.line}
               </li>

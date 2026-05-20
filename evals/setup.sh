@@ -2,13 +2,14 @@
 # Clone the eval workspace at pinned SHAs (or pin them on first run).
 #
 # Usage:
-#   ./evals/setup.sh                    # clone + pin if not already pinned
-#   ./evals/setup.sh --refresh          # fetch latest + re-pin (drops lock)
-#   ./evals/setup.sh --catalog          # also build the catalog after cloning
+#   ./evals/setup.sh                                  # sock-shop clone + pin
+#   ./evals/setup.sh --workspace online-boutique      # clone + pin another eval workspace
+#   ./evals/setup.sh --refresh                        # fetch latest + re-pin
+#   ./evals/setup.sh --catalog                        # print catalog build hint
 #
 # Layout produced:
-#   evals/workspace/<repo>/             # clones
-#   evals/workspace.lock.json           # pinned SHAs (committed)
+#   sock-shop: evals/workspace/<repo>/ and evals/workspace.lock.json
+#   others:    evals/workspaces/<name>/workspace/<repo>/ and workspace.lock.json
 #
 # Catalog build is a separate step because it costs LLM tokens. Run with
 # --catalog when you want a fresh extraction, or use the project's normal
@@ -17,21 +18,31 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKSPACE_JSON="$HERE/workspace.json"
-LOCK_JSON="$HERE/workspace.lock.json"
-CLONE_ROOT="$HERE/workspace"
-CATALOG_DIR="$HERE/data"
-
+PYTHON_BIN="${PYTHON:-python3}"
+WORKSPACE_NAME="sock-shop"
 REFRESH=0
 BUILD_CATALOG=0
-for arg in "$@"; do
-  case "$arg" in
-    --refresh) REFRESH=1 ;;
-    --catalog) BUILD_CATALOG=1 ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workspace) WORKSPACE_NAME="$2"; shift 2 ;;
+    --refresh) REFRESH=1; shift ;;
+    --catalog) BUILD_CATALOG=1; shift ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
-    *) echo "unknown arg: $arg" >&2; exit 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+eval "$("$PYTHON_BIN" "$HERE/workspace_paths.py" --workspace "$WORKSPACE_NAME" --shell)"
+
+WORKSPACE_JSON="$SS_WORKSPACE_JSON"
+LOCK_JSON="$SS_LOCK_JSON"
+CLONE_ROOT="$SS_CLONE_ROOT"
+CATALOG_DIR="$SS_DATA_DIR"
+
+if [[ ! -f "$WORKSPACE_JSON" ]]; then
+  echo "workspace spec not found: $WORKSPACE_JSON" >&2
+  exit 2
+fi
 
 mkdir -p "$CLONE_ROOT"
 
@@ -40,7 +51,7 @@ if [[ $REFRESH -eq 1 && -f "$LOCK_JSON" ]]; then
 fi
 
 # Parse repo list with python (avoids jq dependency)
-mapfile -t REPOS < <(python3 -c "
+mapfile -t REPOS < <("$PYTHON_BIN" -c "
 import json, sys
 with open('$WORKSPACE_JSON') as f:
     ws = json.load(f)
@@ -52,7 +63,7 @@ declare -A LOCKED
 if [[ -f "$LOCK_JSON" ]]; then
   while IFS=$'\t' read -r id sha; do
     LOCKED[$id]=$sha
-  done < <(python3 -c "
+  done < <("$PYTHON_BIN" -c "
 import json
 with open('$LOCK_JSON') as f:
     lk = json.load(f)
@@ -89,7 +100,7 @@ for line in "${REPOS[@]}"; do
   fi
 done
 
-python3 - <<PY
+"$PYTHON_BIN" - <<PY
 import json
 locks = {}
 $(for id in "${!NEW_LOCKS[@]}"; do echo "locks['$id'] = '${NEW_LOCKS[$id]}'"; done)
@@ -114,6 +125,6 @@ fi
 
 echo ""
 echo "done. next steps:"
-echo "  1) build a catalog into evals/data/catalog.json (see evals/README.md)"
-echo "  2) python evals/runner.py            # catalog-only metrics (free, fast)"
-echo "  3) python evals/runner.py --agent    # add agent-based metrics (\$\$)"
+echo "  1) ./evals/build_eval_catalog.sh --workspace $SS_NAME"
+echo "  2) python build_kuzu.py --catalog $SS_DATA_DIR/catalog.json --db $SS_DATA_DIR/catalog.kuzu"
+echo "  3) python evals/runner.py --workspace $SS_NAME"

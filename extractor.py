@@ -47,6 +47,7 @@ This prompt is intentionally domain-agnostic — apply it to any kind of service
 
 Repository: {repo_id}
 Local path: {repo_path}
+{focus_instruction}
 
 Return JSON conforming to the supplied schema (Backstage-aligned). Every fact must include file/line
 evidence. Do not optimize for a specific ticket — extract reusable repo-level facts that help many
@@ -437,9 +438,19 @@ def load_glossary(catalog_path: Path = DEFAULT_CATALOG, max_entries: int = GLOSS
 
 def build_prompt(repo: dict[str, Any], catalog_path: Path = DEFAULT_CATALOG) -> str:
     glossary = load_glossary(catalog_path)
+    focus_path = (repo.get("focus_path") or "").strip()
+    focus_instruction = ""
+    if focus_path:
+        focus_instruction = (
+            f"Focus path: {focus_path}\n"
+            "This is one extraction unit inside a larger repository. Extract only the deployable "
+            "unit under the focus path, but use root-level manifests, shared protos, and deployment "
+            "config in this repository when they prove that unit's APIs, resources, or dependencies."
+        )
     return PROMPT_TEMPLATE.format(
         repo_id=repo["id"],
         repo_path=repo["absolute_path"],
+        focus_instruction=focus_instruction,
         glossary=glossary,
     )
 
@@ -554,11 +565,13 @@ def codex_extract(
     timeout_seconds: int,
     post_result_grace: int,
     stream_logs: bool,
+    catalog_path: Path,
+    scratch_dir: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     codex = shutil.which("codex")
     if not codex:
         raise SystemExit("codex CLI was not found on PATH")
-    work_dir = DEFAULT_OUTPUT_DIR / ".scratch"
+    work_dir = scratch_dir
     work_dir.mkdir(parents=True, exist_ok=True)
     schema_path = work_dir / f".{repo['name']}.schema.json"
     result_path = work_dir / f".{repo['name']}.result.json"
@@ -566,7 +579,7 @@ def codex_extract(
     if result_path.exists():
         result_path.unlink()
 
-    prompt = build_prompt(repo)
+    prompt = build_prompt(repo, catalog_path=catalog_path)
     cmd = [
         codex,
         "exec",
@@ -668,11 +681,12 @@ def claude_extract(
     model: str,
     effort: str,
     max_budget_usd: str | None,
+    catalog_path: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     claude = shutil.which("claude")
     if not claude:
         raise SystemExit("claude CLI was not found on PATH")
-    prompt = build_prompt(repo)
+    prompt = build_prompt(repo, catalog_path=catalog_path)
     cmd = [
         claude,
         "-p",
@@ -722,6 +736,7 @@ def codex_correct(
     prompt: str,
     model: str | None,
     effort: str,
+    scratch_dir: Path,
     timeout_seconds: int = 600,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Single targeted correction call to Codex with the correction schema.
@@ -733,7 +748,7 @@ def codex_correct(
     codex = shutil.which("codex")
     if not codex:
         raise SystemExit("codex CLI was not found on PATH")
-    work_dir = DEFAULT_OUTPUT_DIR / ".scratch"
+    work_dir = scratch_dir
     work_dir.mkdir(parents=True, exist_ok=True)
     schema_path = work_dir / f".{repo['name']}.correction.schema.json"
     result_path = work_dir / f".{repo['name']}.correction.result.json"
@@ -918,7 +933,7 @@ def confine_evidence_paths(payload: dict[str, Any], repo_root: Path) -> int:
 def write_output(output_dir: Path, payload: dict[str, Any]) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     repo_id = payload["repo"]["id"]
-    name = repo_id.split("/", 1)[-1]
+    name = repo_id.split("/", 1)[-1].replace("/", "__")
     path = output_dir / f"{name}.json"
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -926,11 +941,11 @@ def write_output(output_dir: Path, payload: dict[str, Any]) -> Path:
     return path
 
 
-def append_run_ledger(record: dict[str, Any]) -> Path:
-    RUNS_LEDGER.parent.mkdir(parents=True, exist_ok=True)
-    with RUNS_LEDGER.open("a", encoding="utf-8") as handle:
+def append_run_ledger(record: dict[str, Any], ledger_path: Path = RUNS_LEDGER) -> Path:
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    with ledger_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
-    return RUNS_LEDGER
+    return ledger_path
 
 
 def _correction_call(
@@ -942,10 +957,11 @@ def _correction_call(
     effort: str,
     timeout_seconds: int,
     max_budget_usd: str | None,
+    scratch_dir: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if provider == "claude":
         return claude_correct(repo, prompt, model or "sonnet", effort, max_budget_usd)
-    return codex_correct(repo, prompt, model, effort, timeout_seconds=max(300, timeout_seconds // 2))
+    return codex_correct(repo, prompt, model, effort, scratch_dir=scratch_dir, timeout_seconds=max(300, timeout_seconds // 2))
 
 
 def run_for_repo(
@@ -961,10 +977,18 @@ def run_for_repo(
     output_dir: Path,
     correction_rounds: int = 1,
 ) -> dict[str, Any]:
+    data_dir = output_dir.parent
+    catalog_path = data_dir / "catalog.json"
+    scratch_dir = output_dir / ".scratch"
+    ledger_path = data_dir / "extraction_runs.jsonl"
     if provider == "claude":
-        payload, run = claude_extract(repo, model or "sonnet", effort, max_budget_usd)
+        payload, run = claude_extract(repo, model or "sonnet", effort, max_budget_usd, catalog_path=catalog_path)
     else:
-        payload, run = codex_extract(repo, model, effort, timeout_seconds, post_result_grace, stream_logs)
+        payload, run = codex_extract(
+            repo, model, effort, timeout_seconds, post_result_grace, stream_logs,
+            catalog_path=catalog_path,
+            scratch_dir=scratch_dir,
+        )
     payload = normalize_payload(payload, repo)
     repo_root = Path(repo["absolute_path"])
     quarantined = confine_evidence_paths(payload, repo_root)
@@ -996,6 +1020,7 @@ def run_for_repo(
                     effort=effort,
                     timeout_seconds=timeout_seconds,
                     max_budget_usd=max_budget_usd,
+                    scratch_dir=scratch_dir,
                 )
                 directives = correction.parse_correction_response(raw)
                 apply_summary = correction.apply_corrections(payload, directives)
@@ -1046,13 +1071,13 @@ def run_for_repo(
         "run": run,
     }
     if errors:
-        target_dir = DEFAULT_QUARANTINE_DIR
+        target_dir = data_dir / "catalog_quarantine"
         target_dir.mkdir(parents=True, exist_ok=True)
         out = write_output(target_dir, payload)
-        append_run_ledger({"repo": repo["id"], "status": "quarantined", "errors": errors, **run})
+        append_run_ledger({"repo": repo["id"], "status": "quarantined", "errors": errors, **run}, ledger_path)
         return {"output": str(out), "status": "quarantined", "errors": errors, "run": run}
     out = write_output(output_dir, payload)
-    append_run_ledger({"repo": repo["id"], "status": "ok", **run})
+    append_run_ledger({"repo": repo["id"], "status": "ok", **run}, ledger_path)
     return {
         "output": str(out),
         "status": "ok",
@@ -1088,7 +1113,7 @@ def main() -> int:
 
     root = args.root.resolve()
     workspace = load_workspace_config(args.workspace)
-    repos = find_repos(root, workspace["orgs"], workspace["excluded_repos"])
+    repos = find_repos(root, workspace["orgs"], workspace["excluded_repos"], workspace.get("repo_units") or [])
     selected = next((r for r in repos if args.repo in {r["id"], r["name"]}), None)
     if selected is None:
         raise SystemExit(f"Repo {args.repo!r} not found under {root}")

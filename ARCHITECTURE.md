@@ -129,7 +129,7 @@ each tool for what it's best at.
 
 ## Empirical evidence so far
 
-### THG workspace (195 repos, 2530 facts)
+### Large enterprise workspace (195 repos, 2530 facts)
 
 Phase A verifier post-hoc, no LLM cost:
 
@@ -371,7 +371,7 @@ sees the call deterministically; LLM enrichment then names it.
 | No-Graph combined | — | — | $0.149 |
 
 DKB build is ~2× the No-Graph baseline. LLM-KB is ~20× on Shopizer
-and ~45× on larger workloads. For our 195-repo THG workspace,
+and ~45× on larger workloads. For a 195-repo enterprise workspace,
 extrapolating from per-repo extraction time (~3 min average) gives
 **a DKB-first pipeline would cut catalog build wall time from hours to
 minutes** while improving correctness.
@@ -435,7 +435,7 @@ Append decisions here as they happen so future contributors can see why.
   language-agnostic mini-extractors (Dockerfile / k8s / Helm / build
   manifests / OpenAPI / .proto / .graphql) for the structural facts
   that *can* be derived deterministically from interchange formats.
-  Result on THG 195 repos: Phase B universal-confirmed 846 / 892
+  Result on a 195-repo enterprise workspace: Phase B universal-confirmed 846 / 892
   (was 392 per-language), 0 unsupported (was 120). Mini-extractors
   yield 525 components / 215 providers / 91 resources / 40 APIs
   language-agnostically across 126 repos with manifests.
@@ -550,4 +550,3 @@ Append decisions here as they happen so future contributors can see why.
   one repo declares `target=B` and B exists as a Component, or (b) a
   `reconcile.py --llm-assist` pass that proposes missing edges using
   the full catalog as cross-repo context.
-

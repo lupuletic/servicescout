@@ -26,7 +26,9 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -169,6 +171,261 @@ def latest_decisions(decisions: list[dict[str, Any]]) -> dict[str, dict[str, Any
     return latest
 
 
+def _confidence_allowed(value: str | None, filters: set[str]) -> bool:
+    if not filters:
+        return True
+    return (value or "review") in filters
+
+
+def _read_lock(lock_path: Path) -> dict[str, Any]:
+    if not lock_path.is_file():
+        return {"held": False}
+    try:
+        parts = lock_path.read_text(encoding="utf-8").strip().split()
+        if len(parts) >= 3:
+            return {
+                "held": True,
+                "pid": int(parts[0]),
+                "host": parts[1],
+                "acquired_at": parts[2],
+            }
+    except (OSError, ValueError):
+        pass
+    return {"held": True, "stale_or_corrupt": True}
+
+
+def _parse_dt(value: str | None) -> dt.datetime | None:
+    if not value:
+        return None
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _repo_run_records(catalog_dir: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    if not catalog_dir.is_dir():
+        return records
+    for path in sorted(catalog_dir.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        meta = payload.get("_meta") or {}
+        run = meta.get("run") or {}
+        cost = (run.get("cost") or {}).get("estimated_usd")
+        records.append({
+            "repo": path.stem,
+            "extracted_at": meta.get("extracted_at"),
+            "provider": meta.get("provider") or run.get("provider"),
+            "model": meta.get("model") or run.get("model"),
+            "effort": meta.get("effort") or run.get("effort"),
+            "status": run.get("status") or ("ok" if not meta.get("validation_errors") else "validation_errors"),
+            "cost": float(cost or 0.0),
+            "duration_seconds": float(run.get("duration_seconds") or 0.0),
+            "validation_errors": len(meta.get("validation_errors") or []),
+            "evidence_quarantined": int(meta.get("evidence_quarantined") or 0),
+        })
+    return records
+
+
+def _repo_record_dir(data_dir: Path) -> Path:
+    """Return the directory that contains per-repo extraction records.
+
+    Normal runtime crawls write to `data/catalog/`. The sock-shop eval harness
+    historically writes to `evals/data/extractions/`; support both so the
+    operator view works for a fresh eval clone and for the packaged app.
+    """
+    catalog_dir = data_dir / "catalog"
+    if catalog_dir.is_dir() and any(catalog_dir.glob("*.json")):
+        return catalog_dir
+    extractions_dir = data_dir / "extractions"
+    if extractions_dir.is_dir() and any(extractions_dir.glob("*.json")):
+        return extractions_dir
+    return catalog_dir
+
+
+def _activity_run_id(repo: str) -> str:
+    safe = re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", repo.lower())).strip("-")
+    return f"extraction-{safe or 'repo'}"
+
+
+def _started_at_from_finish(finished_at: str | None, duration_seconds: float) -> str | None:
+    finished = _parse_dt(finished_at)
+    if not finished:
+        return None
+    return (finished - dt.timedelta(seconds=max(duration_seconds, 0.0))).isoformat()
+
+
+def _extraction_activity_summary(record: dict[str, Any]) -> dict[str, Any]:
+    finished_at = record.get("extracted_at")
+    duration_seconds = float(record.get("duration_seconds") or 0.0)
+    return {
+        "run_id": _activity_run_id(str(record.get("repo") or "")),
+        "trigger": "extraction",
+        "started_at": _started_at_from_finish(finished_at, duration_seconds),
+        "finished_at": finished_at,
+        "status": record.get("status"),
+        "repos_checked": 1,
+        "repos_changed_count": 1,
+        "budget_usd": None,
+        "cost_usd": record.get("cost"),
+        "duration_seconds": duration_seconds,
+        "crawler_returncode": 0 if record.get("status") == "ok" else None,
+    }
+
+
+def _extraction_activity_runs(data_dir: Path, limit: int) -> list[dict[str, Any]]:
+    rows = [_extraction_activity_summary(record) for record in _repo_run_records(_repo_record_dir(data_dir))]
+    rows.sort(key=lambda row: row.get("finished_at") or row.get("started_at") or "", reverse=True)
+    return rows[:limit]
+
+
+def _extraction_activity_detail(data_dir: Path, run_id: str) -> dict[str, Any] | None:
+    for record in _repo_run_records(_repo_record_dir(data_dir)):
+        repo = str(record.get("repo") or "")
+        if _activity_run_id(repo) != run_id:
+            continue
+        summary = _extraction_activity_summary(record)
+        duration_seconds = float(summary.get("duration_seconds") or 0.0)
+        cost = float(summary.get("cost_usd") or 0.0)
+        return {
+            **summary,
+            "cost_usd": cost,
+            "workspace_root": os.environ.get("WORKSPACE_ROOT") or "",
+            "repos_changed": [{
+                "repo": repo,
+                "reason": "catalog extraction",
+            }],
+            "events": [
+                {
+                    "event": "repo_extracted",
+                    "repo": repo,
+                    "status": summary.get("status"),
+                    "provider": record.get("provider"),
+                    "model": record.get("model"),
+                    "effort": record.get("effort"),
+                    "duration_seconds": duration_seconds,
+                    "cost_usd": cost,
+                    "validation_errors": record.get("validation_errors"),
+                    "evidence_quarantined": record.get("evidence_quarantined"),
+                }
+            ],
+        }
+    return None
+
+
+TERMINAL_FACT_ACTIONS = {"mark_corrected", "accept_risk", "false_positive"}
+
+
+def _fact_label(category: str, fact: dict[str, Any]) -> str:
+    if category == "dependencies":
+        source = fact.get("source") or "unknown"
+        target = fact.get("target") or "unknown"
+        kind = fact.get("kind") or "dependsOn"
+        return f"{source} {kind} {target}"
+    return str(fact.get("name") or fact.get("target") or fact.get("operation_or_usage") or category)
+
+
+def _combined_fact_verdict(fact: dict[str, Any]) -> tuple[str | None, str]:
+    phase_a = ((fact.get("_cross_check") or {}).get("verdict") or "").strip()
+    phase_b = ((fact.get("_cross_check_ast") or {}).get("verdict") or "").strip()
+    if phase_a == "disconfirmed":
+        return "disconfirmed", "phase A: no evidence verified"
+    if phase_a == "mixed":
+        return "mixed", "phase A: partial evidence"
+    if phase_a == "confirmed" and phase_b == "disconfirmed":
+        return "mixed", "phase A confirmed citation but phase B pattern absent"
+    return None, ""
+
+
+def _fact_reasons(fact: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    phase_a = fact.get("_cross_check") or {}
+    phase_b = fact.get("_cross_check_ast") or {}
+    if phase_a.get("evidence_missing"):
+        reasons.append(f"{phase_a['evidence_missing']} cited snippet(s) missing from file")
+    if phase_a.get("evidence_invalid_path"):
+        reasons.append(f"{phase_a['evidence_invalid_path']} evidence path(s) invalid")
+    if phase_a.get("evidence_partial"):
+        reasons.append(f"{phase_a['evidence_partial']} partial snippet match(es)")
+    if phase_b.get("verdict") == "disconfirmed":
+        reasons.append("code-shape verifier did not find the claimed dependency pattern")
+    if not reasons:
+        verdict, explanation = _combined_fact_verdict(fact)
+        if verdict:
+            reasons.append(explanation)
+    return reasons
+
+
+def _latest_fact_decisions(decisions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for record in decisions:
+        if record.get("type") == "fact" and record.get("entity"):
+            latest[str(record["entity"])] = record
+    return latest
+
+
+def disconfirmed_facts(catalog_dir: Path, decisions_path: Path, *, include_mixed: bool = True) -> list[dict[str, Any]]:
+    decisions = _latest_fact_decisions(read_jsonl(decisions_path))
+    rows: list[dict[str, Any]] = []
+    if not catalog_dir.is_dir():
+        return rows
+    for path in sorted(catalog_dir.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        repo = str(((payload.get("repo") or {}).get("id")) or path.stem)
+        for category in ("components", "apis", "dependencies", "resources"):
+            items = payload.get(category) or []
+            if not isinstance(items, list):
+                continue
+            for index, fact in enumerate(items):
+                if not isinstance(fact, dict):
+                    continue
+                verdict, explanation = _combined_fact_verdict(fact)
+                if verdict == "mixed" and not include_mixed:
+                    continue
+                if verdict not in {"disconfirmed", "mixed"}:
+                    continue
+                fact_id = f"{repo}:{category}:{index}"
+                decision = decisions.get(fact_id)
+                if decision and decision.get("action") in TERMINAL_FACT_ACTIONS:
+                    continue
+                evidence = fact.get("evidence") or []
+                rows.append({
+                    "id": fact_id,
+                    "repo": repo,
+                    "category": category,
+                    "index": index,
+                    "label": _fact_label(category, fact),
+                    "combined_verdict": verdict,
+                    "explanation": explanation,
+                    "phase_a_verdict": (fact.get("_cross_check") or {}).get("verdict"),
+                    "phase_b_verdict": (fact.get("_cross_check_ast") or {}).get("verdict"),
+                    "confidence": fact.get("confidence"),
+                    "reasons": _fact_reasons(fact),
+                    "evidence": evidence[:5] if isinstance(evidence, list) else [],
+                    "owner": (decision or {}).get("owner") or "",
+                    "due_date": (decision or {}).get("due_date") or "",
+                    "last_action": (decision or {}).get("action") or "",
+                    "current_fact": {
+                        k: v for k, v in fact.items()
+                        if k not in {"_cross_check", "_cross_check_ast", "evidence"}
+                    },
+                })
+    rows.sort(key=lambda r: (
+        0 if r["combined_verdict"] == "disconfirmed" else 1,
+        r["owner"] != "",
+        r["repo"].lower(),
+        r["category"],
+        r["index"],
+    ))
+    return rows
+
+
 def _entity_brief(entity: dict[str, Any]) -> dict[str, Any]:
     meta = entity.get("metadata") or {}
     ann = meta.get("annotations") or {}
@@ -183,6 +440,7 @@ def _entity_brief(entity: dict[str, Any]) -> dict[str, Any]:
         "system": spec.get("system") or "",
         "source_repos": ann.get("source_repos") or [],
         "environments": spec.get("environments") or [],
+        "confidence": entity.get("confidence") or "review",
     }
 
 
@@ -197,7 +455,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         summary = catalog.get("summary") or {}
         log_path, log_tail = latest_crawl_log()
         return JSONResponse({
-            "backend": "kuzu" if DEFAULT_KUZU.exists() else "json",
+            "backend": "kuzu" if (catalog_path.parent / "catalog.kuzu").exists() else "json",
             "summary": {
                 "entities": summary.get("entities") or 0,
                 "relations": summary.get("relations") or 0,
@@ -220,11 +478,12 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
     def api_entities(
         kind: str | None = None,
         query: str | None = None,
-        owner: list[str] | None = None,
-        lifecycle: list[str] | None = None,
-        environment: list[str] | None = None,
-        tag: list[str] | None = None,
-        runtime: list[str] | None = None,
+        owner: list[str] | None = Query(default=None),
+        lifecycle: list[str] | None = Query(default=None),
+        environment: list[str] | None = Query(default=None),
+        tag: list[str] | None = Query(default=None),
+        runtime: list[str] | None = Query(default=None),
+        confidence: list[str] | None = Query(default=None),
         limit: int = 500,
     ) -> JSONResponse:
         catalog = load_catalog(catalog_path)
@@ -234,9 +493,12 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         envs_filter = set(environment or [])
         tags_filter = set(tag or [])
         runtimes_filter = set(runtime or [])
+        confidence_filter = set(confidence or [])
         out: list[dict[str, Any]] = []
         for entity in catalog.get("entities") or []:
             if kind and entity.get("kind") != kind:
+                continue
+            if not _confidence_allowed(entity.get("confidence"), confidence_filter):
                 continue
             spec = entity.get("spec") or {}
             meta = entity.get("metadata") or {}
@@ -278,9 +540,12 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         envs_count: dict[str, int] = {}
         tags_count: dict[str, int] = {}
         runtimes_count: dict[str, int] = {}
+        confidence_count: dict[str, int] = {}
         for entity in catalog.get("entities") or []:
             kind = entity.get("kind") or ""
             kinds_count[kind] = kinds_count.get(kind, 0) + 1
+            confidence = entity.get("confidence") or "review"
+            confidence_count[confidence] = confidence_count.get(confidence, 0) + 1
             spec = entity.get("spec") or {}
             meta = entity.get("metadata") or {}
             t = spec.get("type") or ""
@@ -309,6 +574,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             "environment": sorted_facet(envs_count),
             "tag": sorted_facet(tags_count),
             "runtime": sorted_facet(runtimes_count),
+            "confidence": sorted_facet(confidence_count),
         })
 
     @app.get("/api/entity/{ref:path}")
@@ -336,6 +602,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         center: str | None = None,
         depth: int = 1,
         edge_type: list[str] | None = Query(default=None),
+        confidence: list[str] | None = Query(default=None),
     ) -> JSONResponse:
         """Return nodes + edges in a Sigma-friendly shape.
 
@@ -350,8 +617,11 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         catalog = load_catalog(catalog_path)
         relations = catalog.get("relations") or []
         edge_types_filter = set(edge_type or [])
+        confidence_filter = set(confidence or [])
         if edge_types_filter:
             relations = [r for r in relations if r.get("type") in edge_types_filter]
+        if confidence_filter:
+            relations = [r for r in relations if _confidence_allowed(r.get("confidence"), confidence_filter)]
         edge_total = len(relations)
 
         # Ego-graph mode: BFS from `center` for `depth` hops (any kind).
@@ -409,6 +679,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                     "kind": entity["kind"],
                     "system": (entity.get("spec") or {}).get("system") or "",
                     "tagline": ann.get("tagline") or "",
+                    "confidence": entity.get("confidence") or "review",
                     "degree": sum(1 for e in picked_edges if e["from"] == ref or e["to"] == ref),
                     "is_center": ref == center,
                 })
@@ -469,6 +740,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 "kind": entity["kind"],
                 "system": (entity.get("spec") or {}).get("system") or "",
                 "tagline": ann.get("tagline") or "",
+                "confidence": entity.get("confidence") or "review",
                 "degree": degree.get(ref_for(entity), 0),
             })
         return JSONResponse({
@@ -478,6 +750,98 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             "node_total": node_total,
             "edge_total": edge_total,
             "include_orphans": include_orphans,
+        })
+
+    @app.get("/api/operator/summary")
+    def operator_summary() -> JSONResponse:
+        catalog = load_catalog(catalog_path)
+        catalog_dir = _repo_record_dir(catalog_path.parent)
+        repo_records = _repo_run_records(catalog_dir)
+        now = dt.datetime.now(dt.timezone.utc)
+
+        cost_by_day: dict[str, dict[str, Any]] = {}
+        stale_buckets = {"fresh": 0, "warm": 0, "aging": 0, "stale": 0, "unknown": 0}
+        stale_repos: list[dict[str, Any]] = []
+        verifier = {
+            "validation_errors": 0,
+            "evidence_quarantined": 0,
+            "repos_with_validation_errors": 0,
+            "repos_with_quarantined_evidence": 0,
+        }
+        for record in repo_records:
+            extracted = _parse_dt(record.get("extracted_at"))
+            if extracted:
+                day = extracted.date().isoformat()
+                day_row = cost_by_day.setdefault(day, {"day": day, "cost": 0.0, "repos": 0, "duration_seconds": 0.0})
+                day_row["cost"] += record["cost"]
+                day_row["repos"] += 1
+                day_row["duration_seconds"] += record["duration_seconds"]
+                age_hours = max((now - extracted).total_seconds() / 3600, 0)
+                if age_hours <= 24:
+                    bucket = "fresh"
+                elif age_hours <= 72:
+                    bucket = "warm"
+                elif age_hours <= 168:
+                    bucket = "aging"
+                else:
+                    bucket = "stale"
+                stale_buckets[bucket] += 1
+                stale_repos.append({
+                    "repo": record["repo"],
+                    "extracted_at": record["extracted_at"],
+                    "age_hours": round(age_hours, 1),
+                    "cost": record["cost"],
+                    "status": record["status"],
+                })
+            else:
+                stale_buckets["unknown"] += 1
+                stale_repos.append({
+                    "repo": record["repo"],
+                    "extracted_at": None,
+                    "age_hours": None,
+                    "cost": record["cost"],
+                    "status": record["status"],
+                })
+            verifier["validation_errors"] += record["validation_errors"]
+            verifier["evidence_quarantined"] += record["evidence_quarantined"]
+            if record["validation_errors"]:
+                verifier["repos_with_validation_errors"] += 1
+            if record["evidence_quarantined"]:
+                verifier["repos_with_quarantined_evidence"] += 1
+
+        confidence_entities: dict[str, int] = {}
+        for entity in catalog.get("entities") or []:
+            value = entity.get("confidence") or "review"
+            confidence_entities[value] = confidence_entities.get(value, 0) + 1
+        confidence_relations: dict[str, int] = {}
+        for relation in catalog.get("relations") or []:
+            value = relation.get("confidence") or "review"
+            confidence_relations[value] = confidence_relations.get(value, 0) + 1
+
+        stale_repos.sort(key=lambda r: (r["age_hours"] is None, -(r["age_hours"] or 0), r["repo"]))
+        trend = list(cost_by_day.values())
+        trend.sort(key=lambda row: row["day"])
+        for row in trend:
+            row["cost"] = round(row["cost"], 4)
+            row["duration_seconds"] = round(row["duration_seconds"], 1)
+
+        return JSONResponse({
+            "catalog": {
+                "last_build_at": last_build_timestamp(catalog_path),
+                "repos_indexed": (catalog.get("summary") or {}).get("repos_indexed") or len(repo_records),
+                "entities": (catalog.get("summary") or {}).get("entities") or len(catalog.get("entities") or []),
+                "relations": (catalog.get("summary") or {}).get("relations") or len(catalog.get("relations") or []),
+            },
+            "cost_trend": trend[-30:],
+            "staleness": {
+                "buckets": stale_buckets,
+                "repos": stale_repos[:40],
+            },
+            "verifier": {
+                **verifier,
+                "entity_confidence": confidence_entities,
+                "relation_confidence": confidence_relations,
+            },
         })
 
     @app.get("/api/communications")
@@ -542,6 +906,17 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         out.sort(key=lambda r: (-r["inbound"], r["name"].lower()))
         return JSONResponse({"count": len(out), "components": out})
 
+    @app.get("/api/triage/facts")
+    def triage_facts(include_mixed: bool = True) -> JSONResponse:
+        rows = disconfirmed_facts(catalog_path.parent / "catalog", decisions_path, include_mixed=include_mixed)
+        assigned = sum(1 for row in rows if row.get("owner"))
+        return JSONResponse({
+            "count": len(rows),
+            "assigned": assigned,
+            "unassigned": len(rows) - assigned,
+            "facts": rows,
+        })
+
     @app.get("/api/crawl/runs")
     def crawl_runs(limit: int = Query(default=50, ge=1, le=500)) -> JSONResponse:
         """List recent scheduler runs (Issue #1 / Epic #9 Tier 1 #2).
@@ -552,7 +927,8 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         """
         run_log_dir = (catalog_path.parent / "crawl_runs").resolve()
         if not run_log_dir.is_dir():
-            return JSONResponse({"runs": [], "total": 0})
+            runs = _extraction_activity_runs(catalog_path.parent, limit)
+            return JSONResponse({"runs": runs, "total": len(runs), "source": "extractions"})
         entries: list[dict[str, Any]] = []
         for path in sorted(run_log_dir.glob("*.json"), reverse=True):
             try:
@@ -572,7 +948,10 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             })
             if len(entries) >= limit:
                 break
-        return JSONResponse({"runs": entries, "total": len(entries)})
+        if not entries:
+            entries = _extraction_activity_runs(catalog_path.parent, limit)
+            return JSONResponse({"runs": entries, "total": len(entries), "source": "extractions"})
+        return JSONResponse({"runs": entries, "total": len(entries), "source": "scheduler"})
 
     @app.get("/api/crawl/runs/{run_id}")
     def crawl_run_detail(run_id: str) -> JSONResponse:
@@ -593,6 +972,9 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         except ValueError:
             return JSONResponse({"error": "invalid_run_id"}, status_code=400)
         if not path.is_file():
+            detail = _extraction_activity_detail(catalog_path.parent, safe)
+            if detail:
+                return JSONResponse(detail)
             return JSONResponse({"error": "not_found", "run_id": safe}, status_code=404)
         try:
             doc = json.loads(path.read_text(encoding="utf-8"))
@@ -609,19 +991,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         / budget configured.
         """
         lock_path = (catalog_path.parent / "crawl_lock").resolve()
-        lock_info: dict[str, Any] = {"held": False}
-        if lock_path.is_file():
-            try:
-                parts = lock_path.read_text(encoding="utf-8").strip().split()
-                if len(parts) >= 3:
-                    lock_info = {
-                        "held": True,
-                        "pid": int(parts[0]),
-                        "host": parts[1],
-                        "acquired_at": parts[2],
-                    }
-            except (OSError, ValueError):
-                pass
+        lock_info = _read_lock(lock_path)
         run_log_dir = (catalog_path.parent / "crawl_runs").resolve()
         last_run = None
         if run_log_dir.is_dir():
@@ -638,12 +1008,102 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                     }
                 except (OSError, json.JSONDecodeError):
                     pass
+        if last_run is None:
+            extraction_runs = _extraction_activity_runs(catalog_path.parent, 1)
+            if extraction_runs:
+                last_run = extraction_runs[0]
         return JSONResponse({
             "lock": lock_info,
             "last_run": last_run,
             "interval_minutes": int(os.environ.get("CRAWL_INTERVAL_MINUTES") or 360),
             "budget_usd": float(os.environ.get("CRAWL_TICK_BUDGET_USD") or 20.0),
         })
+
+    @app.post("/api/crawl/trigger")
+    def trigger_crawl() -> JSONResponse:
+        """Start one scheduler tick from the dashboard.
+
+        The work runs out-of-process and writes the same run-log JSON as the
+        daemon scheduler. This keeps the HTTP request short and makes the
+        Activity page the source of truth for progress.
+        """
+        data_dir = catalog_path.parent.resolve()
+        lock_path = (data_dir / "crawl_lock").resolve()
+        lock_info = _read_lock(lock_path)
+        if lock_info.get("held") and not lock_info.get("stale_or_corrupt"):
+            return JSONResponse({"error": "crawl_busy", "lock": lock_info}, status_code=409)
+
+        workspace_root = Path(os.environ.get("WORKSPACE_ROOT") or "/workspace").resolve()
+        if not workspace_root.is_dir():
+            return JSONResponse({
+                "error": "workspace_root_missing",
+                "workspace_root": str(workspace_root),
+                "setup_hint": "Set WORKSPACE_ROOT and mount it into the dashboard container.",
+            }, status_code=400)
+
+        budget = os.environ.get("CRAWL_TICK_BUDGET_USD") or os.environ.get("BUDGET_USD") or "20"
+        provider = os.environ.get("LLM_PROVIDER") or "codex"
+        effort = os.environ.get("LLM_EFFORT") or "medium"
+        model = os.environ.get("LLM_MODEL")
+        workspace_config = os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json")
+        log_path = data_dir / "crawl_trigger.log"
+        cmd = [
+            sys.executable, str(HERE / "scheduler.py"),
+            "--once",
+            "--workspace-root", str(workspace_root),
+            "--catalog-dir", str(data_dir / "catalog"),
+            "--workspace", workspace_config,
+            "--run-log-dir", str(data_dir / "crawl_runs"),
+            "--lock-path", str(lock_path),
+            "--budget-usd", budget,
+            "--provider", provider,
+            "--effort", effort,
+            "--crawler-arg", "--reconcile",
+            "--crawler-arg", "--embed",
+            "--crawler-arg", "--build-kuzu",
+        ]
+        if model:
+            cmd.extend(["--model", model])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with log_path.open("ab") as fh:
+                proc = subprocess.Popen(cmd, cwd=str(HERE), stdout=fh, stderr=subprocess.STDOUT)
+        except OSError as exc:
+            return JSONResponse({"error": "trigger_failed", "detail": str(exc)}, status_code=500)
+        return JSONResponse({
+            "status": "accepted",
+            "pid": proc.pid,
+            "log_path": str(log_path),
+            "workspace_root": str(workspace_root),
+        }, status_code=202)
+
+    @app.get("/api/triage/decisions")
+    def triage_decisions(limit: int = Query(default=50, ge=1, le=500)) -> JSONResponse:
+        decisions = read_jsonl(decisions_path)
+        rows = decisions[-limit:][::-1]
+        return JSONResponse({"decisions": rows, "total": len(decisions)})
+
+    @app.post("/api/triage/facts/decide")
+    def decide_fact(
+        fact_id: str = Form(...), action: str = Form(...),
+        owner: str = Form(""), due_date: str = Form(""),
+        reviewer: str = Form(""), reason: str = Form(""),
+    ) -> JSONResponse:
+        if action not in {"assign_owner", "mark_corrected", "accept_risk", "false_positive"}:
+            return JSONResponse({"error": "invalid_action"}, status_code=400)
+        record: dict[str, Any] = {
+            "type": "fact",
+            "entity": fact_id,
+            "action": action,
+            "owner": owner.strip(),
+            "due_date": due_date.strip(),
+            "reviewer": reviewer.strip(),
+            "ts": dt.datetime.now(dt.timezone.utc).isoformat(),
+        }
+        if reason.strip():
+            record["reason"] = reason.strip()
+        append_jsonl(decisions_path, record)
+        return JSONResponse({"status": "ok", "decision": record})
 
     @app.post("/triage/decide")
     def decide(

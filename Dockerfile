@@ -9,6 +9,12 @@
 FROM nikolaik/python-nodejs:python3.12-nodejs22-slim AS base
 
 ARG GH_VERSION=2.62.0
+ARG PIP_INDEX_URL=
+ARG PIP_EXTRA_INDEX_URL=
+ARG PIP_TRUSTED_HOST=
+ARG PIP_NO_INDEX=
+ARG PIP_FIND_LINKS=/tmp/wheels
+ARG NPM_CONFIG_REGISTRY=
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -21,12 +27,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Optional: trust extra CA certificates from ./certs/ (e.g. corporate TLS-
-# inspecting proxies). Anything copied into /usr/local/share/ca-certificates/
-# is picked up by update-ca-certificates. The COPY uses a wildcard so the
-# build still works when the directory is absent.
-COPY certs* /tmp/extra-ca/
+# inspecting proxies). Real PEM files stay git-ignored; certs/.gitkeep keeps
+# the directory present for clean Docker builds.
+COPY certs/ /tmp/extra-ca/
 RUN if [ -d /tmp/extra-ca ] && ls /tmp/extra-ca/*.pem >/dev/null 2>&1; then \
-        for f in /tmp/extra-ca/*.pem; do cp "$f" "/usr/local/share/ca-certificates/$(basename "$f" .pem).crt"; done && \
+        for f in /tmp/extra-ca/*.pem; do \
+            base="/usr/local/share/ca-certificates/$(basename "$f" .pem)"; \
+            awk -v base="$base" '/-----BEGIN CERTIFICATE-----/{n++} n{print > base "-" n ".crt"}' "$f"; \
+        done && \
         update-ca-certificates && \
         echo "Trusted extra CA bundles: $(ls /tmp/extra-ca/*.pem | wc -l)"; \
     fi && rm -rf /tmp/extra-ca
@@ -50,14 +58,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 # Only the crawler service actually uses these; mcp + dashboard work without
 # them. In restricted networks, install on host and mount ~/.codex / ~/.claude
 # as documented in README.
-RUN npm install -g @openai/codex@latest @anthropic-ai/claude-code@latest \
+RUN if [ -n "$NPM_CONFIG_REGISTRY" ]; then npm config set registry "$NPM_CONFIG_REGISTRY"; fi \
+    && npm install -g @openai/codex@latest @anthropic-ai/claude-code@latest \
     && npm cache clean --force \
     || echo "WARN: codex / claude CLI install failed; crawler service must run with host-mounted CLIs."
 
 # Python venv with project deps
 RUN python -m venv /opt/venv
 COPY requirements.txt /tmp/requirements.txt
-RUN /opt/venv/bin/pip install -r /tmp/requirements.txt
+COPY vendor/wheels/ /tmp/wheels/
+RUN pip_args="" \
+    && if [ -n "$PIP_NO_INDEX" ]; then pip_args="$pip_args --no-index"; fi \
+    && if [ -n "$PIP_FIND_LINKS" ] && [ -d "$PIP_FIND_LINKS" ] && find "$PIP_FIND_LINKS" -type f | grep -q .; then pip_args="$pip_args --find-links $PIP_FIND_LINKS"; fi \
+    && if [ -n "$PIP_INDEX_URL" ]; then pip_args="$pip_args --index-url $PIP_INDEX_URL"; fi \
+    && if [ -n "$PIP_EXTRA_INDEX_URL" ]; then pip_args="$pip_args --extra-index-url $PIP_EXTRA_INDEX_URL"; fi \
+    && if [ -n "$PIP_TRUSTED_HOST" ]; then pip_args="$pip_args --trusted-host $PIP_TRUSTED_HOST"; fi \
+    && /opt/venv/bin/pip install $pip_args -r /tmp/requirements.txt
 
 WORKDIR /app
 COPY . /app/

@@ -24,6 +24,7 @@ Service-identity reconciliation:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -32,6 +33,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from repo_discovery import find_repos, load_workspace_config
+from static_extractors.mini import runner as mini_runner
 
 
 HERE = Path(__file__).parent
@@ -42,6 +44,16 @@ DEFAULT_SEEDS_DIR = HERE / "seeds"
 
 SUFFIXES_TO_STRIP = ["serviceapi", "apiservice", "service", "api", "backend", "frontend", "client", "gateway"]
 COMMUNICATION_RELATION = "communicatesWith"
+BROKER_TECHNOLOGIES = {
+    "rabbitmq": "RabbitMQ",
+    "kafka": "Kafka",
+    "activemq": "ActiveMQ",
+    "nats": "NATS",
+    "redisstreams": "Redis Streams",
+    "kinesis": "Kinesis",
+    "pubsub": "Pub/Sub",
+    "servicebus": "Service Bus",
+}
 
 
 def canonical_key(name: str) -> str:
@@ -70,12 +82,32 @@ def host_to_key(host: str) -> str:
     return canonical_key(label)
 
 
+def normalize_domain_label(label: str) -> str:
+    """Collapse obvious spelling/punctuation drift in repo-level domains.
+
+    Domain ownership is organization-specific, so this deliberately stays
+    conservative: it fixes lexical variants of the same parent domain and
+    leaves unrelated labels alone for an org-level reconciliation pass.
+    """
+    raw = (label or "").strip()
+    if not raw:
+        return ""
+    lowered = re.sub(r"[_/]+", " ", raw.lower())
+    lowered = re.sub(r"[^a-z0-9]+", " ", lowered).strip()
+    if not lowered:
+        return ""
+    compact = lowered.replace(" ", "")
+    if compact == "ecommerce" or lowered.startswith("e commerce ") or lowered.startswith("ecommerce "):
+        return "e-commerce"
+    return canonical_name(lowered.replace(" ", "-"))
+
+
 class Catalog:
     def __init__(self) -> None:
         self.entities: dict[str, dict[str, Any]] = {}
         self.relations: list[dict[str, Any]] = []
         self._relation_keys: set[str] = set()
-        self._alias_index: dict[str, str] = {}
+        self._alias_index: dict[str, dict[str, str]] = {}
 
     def upsert(self, entity: dict[str, Any]) -> dict[str, Any]:
         key = entity_ref(entity)
@@ -89,21 +121,28 @@ class Catalog:
         return existing
 
     def _index_aliases(self, entity: dict[str, Any]) -> None:
-        if entity["kind"] != "Component":
-            return
+        kind = entity["kind"]
         name = entity["metadata"]["name"]
         ref = entity_ref(entity)
-        self._alias_index.setdefault(canonical_key(name), ref)
+        self._alias_index.setdefault(kind, {}).setdefault(canonical_key(name), ref)
         annotations = entity["metadata"].setdefault("annotations", {})
         aliases = annotations.get("aliases") or []
         if isinstance(aliases, str):
             aliases = [a.strip() for a in aliases.split(",") if a.strip()]
+        if kind == "Resource":
+            aliases = [
+                *aliases,
+                *list(annotations.get("env_keys") or []),
+                annotations.get("datasource_url") or "",
+                (entity.get("spec") or {}).get("host") or "",
+            ]
         for alias in aliases:
             key = canonical_key(alias) or host_to_key(alias)
             if key:
-                self._alias_index.setdefault(key, ref)
+                self._alias_index.setdefault(kind, {}).setdefault(key, ref)
 
     def add_relation(self, relation: dict[str, Any]) -> None:
+        relation = copy.deepcopy(relation)
         key = relation_key(relation)
         if key in self._relation_keys:
             existing = next(r for r in self.relations if relation_key(r) == key)
@@ -112,9 +151,16 @@ class Catalog:
         self._relation_keys.add(key)
         self.relations.append(relation)
 
-    def resolve_alias(self, label: str) -> str | None:
+    def resolve_alias(self, label: str, kinds: Iterable[str] | None = None) -> str | None:
         key = canonical_key(label) or host_to_key(label)
-        return self._alias_index.get(key)
+        if not key:
+            return None
+        search_kinds = list(kinds or self._alias_index.keys())
+        for kind in search_kinds:
+            ref = self._alias_index.get(kind, {}).get(key)
+            if ref:
+                return ref
+        return None
 
     def to_json(self) -> dict[str, Any]:
         entities_sorted = [self.entities[k] for k in sorted(self.entities)]
@@ -255,27 +301,34 @@ def make_component(name: str, *, repo_id: str | None, type_: str, system: str | 
             "annotations": annotations,
         },
         "spec": spec,
-        "evidence": evidence or [],
+        "evidence": list(evidence or []),
         "confidence": "high" if not external else "medium",
     }
 
 
-def make_api(name: str, *, type_: str, exposed_by: str, description: str, evidence: list[dict[str, Any]], operations: list[dict[str, Any]]) -> dict[str, Any]:
+def make_api(name: str, *, type_: str, exposed_by: str, description: str, evidence: list[dict[str, Any]], operations: list[dict[str, Any]], repo_id: str | None = None, aliases: list[str] | None = None) -> dict[str, Any]:
+    annotations: dict[str, Any] = {"exposed_by": exposed_by, "operations": operations or []}
+    if repo_id:
+        annotations["source_repos"] = [repo_id]
+    if aliases:
+        annotations["aliases"] = sorted({a for a in aliases if a})
     return {
         "kind": "API",
         "metadata": {
             "name": canonical_name(name),
             "description": description,
-            "annotations": {"exposed_by": exposed_by, "operations": operations or []},
+            "annotations": annotations,
         },
         "spec": {"type": type_, "lifecycle": "unknown", "owner": "unknown"},
-        "evidence": evidence or [],
+        "evidence": list(evidence or []),
         "confidence": "high",
     }
 
 
-def make_provider(name: str, *, category: str, description: str, aliases: list[str], evidence: list[dict[str, Any]]) -> dict[str, Any]:
+def make_provider(name: str, *, category: str, description: str, aliases: list[str], evidence: list[dict[str, Any]], repo_id: str | None = None) -> dict[str, Any]:
     annotations: dict[str, Any] = {"external": "true"}
+    if repo_id:
+        annotations["source_repos"] = [repo_id]
     if aliases:
         annotations["aliases"] = sorted({a for a in aliases if a})
     return {
@@ -291,13 +344,17 @@ def make_provider(name: str, *, category: str, description: str, aliases: list[s
             "owner": "external",
             "lifecycle": "production",
         },
-        "evidence": evidence or [],
+        "evidence": list(evidence or []),
         "confidence": "high",
     }
 
 
-def make_resource(name: str, *, type_: str, technology: str, host: str, description: str, evidence: list[dict[str, Any]], used_by: str, messaging_pattern: str | None, subscribes_to: str | None, datasource_url: str | None, env_keys: list[str], tables: list[str], access: str, confidence: str) -> dict[str, Any]:
+def make_resource(name: str, *, type_: str, technology: str, host: str, description: str, evidence: list[dict[str, Any]], used_by: str, messaging_pattern: str | None, subscribes_to: str | None, datasource_url: str | None, env_keys: list[str], tables: list[str], access: str, confidence: str, repo_id: str | None = None, aliases: list[str] | None = None) -> dict[str, Any]:
     annotations: dict[str, Any] = {}
+    if repo_id:
+        annotations["source_repos"] = [repo_id]
+    if aliases:
+        annotations["aliases"] = sorted({a for a in aliases if a})
     if env_keys:
         annotations["env_keys"] = sorted(set(env_keys))
     if tables:
@@ -324,7 +381,7 @@ def make_resource(name: str, *, type_: str, technology: str, host: str, descript
             "access": access,
             "owner": "unknown",
         },
-        "evidence": evidence or [],
+        "evidence": list(evidence or []),
         "confidence": confidence or "medium",
     }
 
@@ -336,6 +393,102 @@ def canonical_name(name: str) -> str:
     name = re.sub(r"[^A-Za-z0-9_.-]+", "-", name)
     name = re.sub(r"-+", "-", name).strip("-")
     return name or "unknown"
+
+
+def _host_label(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    match = re.search(r"\$\{[^:}]+:([^}]+)\}", value)
+    if match:
+        value = match.group(1)
+    value = re.sub(r"^[a-z][a-z0-9+.-]*://", "", value, flags=re.IGNORECASE)
+    value = value.split("/", 1)[0].split(":", 1)[0]
+    return canonical_name(value)
+
+
+def preferred_resource_name(resource: dict[str, Any], existing_components: set[str] | None = None) -> str:
+    raw_name = resource.get("name") or "unknown-resource"
+    current = canonical_name(raw_name)
+    host_name = _host_label(resource.get("host_or_instance") or resource.get("datasource_url") or "")
+    if not host_name:
+        return current
+    if existing_components and host_name in existing_components:
+        return current
+    key = canonical_key(current)
+    generic_markers = ("database", "datastore", "datastore", "data", "store", "mongodb", "mysql", "postgres", "redis")
+    if any(marker in key for marker in generic_markers):
+        return host_name
+    return current
+
+
+def _api_match_key(name: str) -> str:
+    tokens = [
+        token for token in re.split(r"[^a-z0-9]+", (name or "").lower())
+        if token and token not in {"api", "apis", "rest", "http", "https", "openapi", "swagger", "resource", "resources", "service", "services", "contract", "and"}
+    ]
+    return "".join(tokens)
+
+
+def _merge_operations(target: dict[str, Any], operations: Iterable[dict[str, Any]]) -> int:
+    existing = target.setdefault("operations", [])
+    seen = {
+        (str(op.get("method") or ""), str(op.get("path") or "") or str(op.get("name") or ""))
+        for op in existing
+        if isinstance(op, dict)
+    }
+    added = 0
+    for op in operations:
+        if not isinstance(op, dict):
+            continue
+        sig = (str(op.get("method") or ""), str(op.get("path") or "") or str(op.get("name") or ""))
+        if sig in seen:
+            continue
+        existing.append(op)
+        seen.add(sig)
+        added += 1
+    return added
+
+
+def merge_static_api_operations(repo_payload: dict[str, Any], repo_root: Path) -> dict[str, int]:
+    """Enrich LLM APIs with operations from exact source API specs.
+
+    This deliberately only merges into an existing API with a strong name match.
+    It does not add new APIs, because unmatched spec titles are often broad
+    umbrella specs that would duplicate contract-level APIs.
+    """
+    if not repo_root.exists():
+        return {"facts": 0, "merged_apis": 0, "operations_added": 0}
+    try:
+        facts = mini_runner.extract_all(repo_root)
+    except Exception:  # noqa: BLE001
+        return {"facts": 0, "merged_apis": 0, "operations_added": 0}
+    apis = repo_payload.get("apis") or []
+    api_by_key: dict[str, list[dict[str, Any]]] = {}
+    for api in apis:
+        if isinstance(api, dict):
+            api_by_key.setdefault(_api_match_key(str(api.get("name") or "")), []).append(api)
+
+    merged_apis = 0
+    operations_added = 0
+    for fact in facts:
+        if fact.category != "apis":
+            continue
+        body = fact.body
+        candidates = api_by_key.get(_api_match_key(str(body.get("name") or ""))) or []
+        if len(candidates) != 1:
+            continue
+        target = candidates[0]
+        added = _merge_operations(target, body.get("operations") or [])
+        if added:
+            operations_added += added
+            merged_apis += 1
+        evidence = target.setdefault("evidence", [])
+        _merge_evidence(evidence, body.get("evidence") or [])
+        emitters = target.setdefault("_emitted_by", [])
+        if fact.rule not in emitters:
+            emitters.append(fact.rule)
+    return {"facts": len([f for f in facts if f.category == "apis"]), "merged_apis": merged_apis, "operations_added": operations_added}
 
 
 _CODEOWNERS_LOCATIONS = ("CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS")
@@ -376,7 +529,8 @@ def add_repo(catalog: Catalog, repo_payload: dict[str, Any]) -> dict[str, Any]:
     repo_meta = repo_payload.get("repo", {})
     repo_id = repo_meta.get("id") or ""
     system = (repo_meta.get("system") or "").strip()
-    domain = (repo_meta.get("domain") or "").strip()
+    raw_domain = (repo_meta.get("domain") or "").strip()
+    domain = normalize_domain_label(raw_domain)
     owner = (repo_meta.get("owner") or "").strip()
     lifecycle = (repo_meta.get("lifecycle") or "unknown").strip() or "unknown"
     tagline = (repo_meta.get("tagline") or "").strip()
@@ -421,7 +575,7 @@ def add_repo(catalog: Catalog, repo_payload: dict[str, Any]) -> dict[str, Any]:
             lifecycle=effective_lifecycle,
             description=component.get("notes") or description,
             tags=tags + (component.get("tags") or []),
-            aliases=[],
+            aliases=component.get("aliases") or [],
             evidence=component.get("evidence") or evidence,
             runtime=(component.get("runtime") or "").strip(),
             subcomponent_of=(component.get("subcomponent_of") or "").strip(),
@@ -433,6 +587,8 @@ def add_repo(catalog: Catalog, repo_payload: dict[str, Any]) -> dict[str, Any]:
                 annotations["tagline"] = tagline
             if capability_sheet:
                 annotations["capability_sheet"] = capability_sheet
+            if raw_domain and raw_domain != domain:
+                annotations["original_domain_label"] = raw_domain
             spec = component_entity.setdefault("spec", {})
             if domain_attributes:
                 spec["domain_attributes"] = domain_attributes
@@ -469,7 +625,10 @@ def add_repo(catalog: Catalog, repo_payload: dict[str, Any]) -> dict[str, Any]:
             if domain:
                 domain_entity = catalog.upsert({
                     "kind": "Domain",
-                    "metadata": {"name": canonical_name(domain), "annotations": {}},
+                    "metadata": {
+                        "name": canonical_name(domain),
+                        "annotations": {"aliases": [raw_domain]} if raw_domain and raw_domain != domain else {},
+                    },
                     "spec": {"owner": owner or "unknown"},
                     "evidence": [],
                     "confidence": "medium",
@@ -495,6 +654,7 @@ def add_repo(catalog: Catalog, repo_payload: dict[str, Any]) -> dict[str, Any]:
             description=provider.get("description") or "",
             aliases=list(provider.get("aliases") or []),
             evidence=provider.get("evidence") or [],
+            repo_id=repo_id,
         )
         catalog.upsert(prov_entity)
         catalog.add_relation({
@@ -505,6 +665,8 @@ def add_repo(catalog: Catalog, repo_payload: dict[str, Any]) -> dict[str, Any]:
             "properties": {
                 "via": "provider",
                 "category": provider.get("category") or "other",
+                "source_repo": repo_id,
+                "target_kind": "provider",
             },
             "confidence": "high",
         })
@@ -519,6 +681,8 @@ def add_repo(catalog: Catalog, repo_payload: dict[str, Any]) -> dict[str, Any]:
             description=api.get("notes") or "",
             evidence=api.get("evidence") or [],
             operations=api.get("operations") or [],
+            repo_id=repo_id,
+            aliases=list(api.get("aliases") or []),
         )
         catalog.upsert(api_entity)
         catalog.add_relation({
@@ -526,13 +690,13 @@ def add_repo(catalog: Catalog, repo_payload: dict[str, Any]) -> dict[str, Any]:
             "type": "providesApi",
             "to": entity_ref(api_entity),
             "evidence": api.get("evidence") or [],
-            "properties": {},
+            "properties": {"source_repo": repo_id, "target_kind": "api"},
             "confidence": "high",
         })
 
     resources = repo_payload.get("resources") or []
     for resource in resources:
-        res_name = canonical_name(resource.get("name") or "unknown-resource")
+        res_name = preferred_resource_name(resource, created_component_names)
         res_entity = make_resource(
             res_name,
             type_=resource.get("type") or "unknown",
@@ -548,6 +712,8 @@ def add_repo(catalog: Catalog, repo_payload: dict[str, Any]) -> dict[str, Any]:
             tables=resource.get("tables_or_collections") or [],
             access=resource.get("access") or "unknown",
             confidence=resource.get("confidence") or "medium",
+            repo_id=repo_id,
+            aliases=list(resource.get("aliases") or []),
         )
         catalog.upsert(res_entity)
         kind_map = {
@@ -564,7 +730,11 @@ def add_repo(catalog: Catalog, repo_payload: dict[str, Any]) -> dict[str, Any]:
             "type": relation_type,
             "to": entity_ref(res_entity),
             "evidence": resource.get("evidence") or [],
-            "properties": {"access": resource.get("access") or "unknown"},
+            "properties": {
+                "access": resource.get("access") or "unknown",
+                "source_repo": repo_id,
+                "target_kind": "resource",
+            },
             "confidence": resource.get("confidence") or "medium",
         })
 
@@ -596,7 +766,7 @@ def add_repo(catalog: Catalog, repo_payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def short_repo_name(repo_id: str) -> str:
-    return repo_id.split("/", 1)[-1] if "/" in repo_id else repo_id
+    return repo_id.rstrip("/").split("/")[-1] if "/" in repo_id else repo_id
 
 
 def add_seed_platform(catalog: Catalog, seed: dict[str, Any]) -> None:
@@ -732,35 +902,144 @@ def add_seed_service_map(catalog: Catalog, seed: dict[str, Any], cloned_repo_ids
             })
 
 
+def _preferred_target_kinds(dep: dict[str, Any]) -> list[str]:
+    if _is_dynamic_api_dependency(dep):
+        return ["API", "Component"]
+    explicit = canonical_key(str(dep.get("target_kind") or ""))
+    if explicit == "resource":
+        return ["Resource"]
+    if explicit == "provider":
+        return ["Provider"]
+    if explicit == "api":
+        return ["API"]
+    if explicit == "component":
+        return ["Component"]
+    if explicit == "external":
+        if dep.get("kind") == "consumesApi":
+            return ["Component", "API", "Provider"]
+        return ["Provider"]
+    relation_kind = dep.get("kind") or ""
+    if relation_kind in {"producesMessage", "consumesMessage", "readsResource", "writesResource"}:
+        return ["Resource"]
+    if relation_kind == "consumesApi":
+        return ["Component", "API"]
+    return ["Component", "Provider", "Resource", "API"]
+
+
+def _dependency_relation_confidence(dep: dict[str, Any], target: dict[str, Any] | None) -> str:
+    confidence = dep.get("confidence") or "medium"
+    if target and target.get("confidence"):
+        confidence = _confidence_floor(confidence, target.get("confidence"))
+    if _is_dynamic_api_dependency(dep):
+        confidence = _confidence_floor(confidence, "review")
+    explicit = canonical_key(str(dep.get("target_kind") or ""))
+    protocol = canonical_key(str(dep.get("protocol") or ""))
+    if explicit == "external" and dep.get("kind") == "dependsOn" and protocol in {"", "unknown"}:
+        confidence = _confidence_floor(confidence, "review")
+    return confidence
+
+
+def _is_dynamic_api_dependency(dep: dict[str, Any]) -> bool:
+    if dep.get("kind") != "consumesApi":
+        return False
+    text = " ".join(
+        str(dep.get(key) or "")
+        for key in ("notes", "operation_or_usage", "target_label")
+    ).lower()
+    aliases = " ".join(str(alias) for alias in dep.get("aliases") or []).lower()
+    dynamic_markers = (
+        "caller-supplied",
+        "request body",
+        "runtime-supplied",
+        "runtime supplied",
+        "user-supplied",
+        "user supplied",
+    )
+    return any(marker in text for marker in dynamic_markers) or any(alias.startswith("item.") for alias in aliases.split())
+
+
+def _make_unresolved_target(dep: dict[str, Any], repo_id: str) -> dict[str, Any]:
+    name = canonical_name(dep["target_label"])
+    aliases = dep.get("aliases") or []
+    evidence = dep.get("evidence") or []
+    target_kind = (_preferred_target_kinds(dep) or ["Component"])[0]
+    if target_kind == "Resource":
+        resource_type = "queue" if dep.get("kind") in {"producesMessage", "consumesMessage"} else "unknown"
+        return make_resource(
+            name,
+            type_=resource_type,
+            technology=dep.get("protocol") if dep.get("protocol") != "unknown" else "",
+            host="",
+            description=f"Unresolved resource dependency: {dep['target_label']}",
+            evidence=evidence,
+            used_by=dep.get("source") or "",
+            messaging_pattern=None,
+            subscribes_to=None,
+            datasource_url=None,
+            env_keys=dep.get("env_keys") or [],
+            tables=[],
+            access="unknown",
+            confidence="review",
+            repo_id=repo_id,
+            aliases=aliases,
+        )
+    if target_kind == "Provider":
+        return make_provider(
+            name,
+            category="other",
+            description=f"Unresolved provider dependency: {dep['target_label']}",
+            aliases=aliases,
+            evidence=evidence,
+            repo_id=repo_id,
+        ) | {"confidence": "review"}
+    if target_kind == "API":
+        api_entity = make_api(
+            name,
+            type_="dynamic-http" if _is_dynamic_api_dependency(dep) else dep.get("protocol") or "unknown",
+            exposed_by="runtime-supplied" if _is_dynamic_api_dependency(dep) else "unknown",
+            description=f"Unresolved API dependency: {dep['target_label']}",
+            evidence=evidence,
+            operations=[],
+            repo_id=repo_id,
+            aliases=aliases,
+        ) | {"confidence": "review"}
+        if _is_dynamic_api_dependency(dep):
+            annotations = api_entity["metadata"].setdefault("annotations", {})
+            annotations["dynamic_dependency"] = "true"
+        return api_entity
+    return make_component(
+        name,
+        repo_id=None,
+        type_="service",
+        system=None,
+        domain=None,
+        owner=None,
+        lifecycle="unknown",
+        description=f"External or unresolved: {dep['target_label']}",
+        tags=["external"],
+        aliases=aliases,
+        evidence=evidence,
+        external=True,
+    )
+
+
 def resolve_deferred_dependencies(catalog: Catalog, deferred_by_repo: dict[str, list[dict[str, Any]]]) -> int:
     unresolved = 0
     for repo_id, deferred in deferred_by_repo.items():
         for dep in deferred:
             source_ref = f"Component:{dep['source']}"
-            target_ref = catalog.resolve_alias(dep["target_label"])
+            preferred_kinds = _preferred_target_kinds(dep)
+            target_ref = catalog.resolve_alias(dep["target_label"], preferred_kinds)
             if target_ref is None:
                 for alias in dep["aliases"]:
-                    target_ref = catalog.resolve_alias(alias)
+                    target_ref = catalog.resolve_alias(alias, preferred_kinds)
                     if target_ref:
                         break
             if target_ref is None:
-                external_name = canonical_name(dep["target_label"])
-                external = catalog.upsert(make_component(
-                    external_name,
-                    repo_id=None,
-                    type_="service",
-                    system=None,
-                    domain=None,
-                    owner=None,
-                    lifecycle="unknown",
-                    description=f"External or unresolved: {dep['target_label']}",
-                    tags=["external"],
-                    aliases=dep["aliases"],
-                    evidence=dep["evidence"],
-                    external=True,
-                ))
+                external = catalog.upsert(_make_unresolved_target(dep, repo_id))
                 target_ref = entity_ref(external)
                 unresolved += 1
+            target_entity = catalog.entities.get(target_ref)
             relation_type_map = {
                 "dependsOn": "dependsOn",
                 "consumesApi": "consumesApi",
@@ -781,8 +1060,9 @@ def resolve_deferred_dependencies(catalog: Catalog, deferred_by_repo: dict[str, 
                     "env_keys": dep["env_keys"],
                     "aliases": sorted(set(dep["aliases"])),
                     "source_repo": repo_id,
+                    "target_kind": _ref_kind(target_ref).lower(),
                 },
-                "confidence": dep["confidence"],
+                "confidence": _dependency_relation_confidence(dep, target_entity),
             })
     return unresolved
 
@@ -804,12 +1084,394 @@ def _ref_kind(ref: str) -> str:
     return ref.split(":", 1)[0] if ":" in ref else ""
 
 
+def _ref_name(ref: str) -> str:
+    return ref.split(":", 1)[1] if ":" in ref else ref
+
+
 def _entity_by_ref(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {
         f"{entity.get('kind')}:{entity.get('metadata', {}).get('name')}": entity
         for entity in (payload.get("entities") or [])
         if entity.get("kind") and entity.get("metadata", {}).get("name")
     }
+
+
+def _broker_name_for_resource(entity: dict[str, Any]) -> str:
+    spec = entity.get("spec") or {}
+    annotations = entity.get("metadata", {}).get("annotations", {}) or {}
+    candidates = [
+        str(spec.get("technology") or ""),
+        str(spec.get("type") or ""),
+        str(annotations.get("messaging_pattern") or ""),
+        str(annotations.get("datasource_url") or ""),
+    ]
+    for candidate in candidates:
+        key = canonical_key(candidate)
+        for marker, name in BROKER_TECHNOLOGIES.items():
+            if marker in key:
+                return name
+    return ""
+
+
+def _merge_evidence(into: list[dict[str, Any]], evidence: Iterable[dict[str, Any]]) -> None:
+    seen = {(ev.get("path"), ev.get("line"), ev.get("snippet")) for ev in into}
+    for ev in evidence:
+        sig = (ev.get("path"), ev.get("line"), ev.get("snippet"))
+        if sig not in seen:
+            into.append(ev)
+            seen.add(sig)
+
+
+def _upsert_payload_entity(payload: dict[str, Any], entity: dict[str, Any]) -> dict[str, Any]:
+    entities = payload.setdefault("entities", [])
+    ref = entity_ref(entity)
+    for existing in entities:
+        if entity_ref(existing) == ref:
+            merge_entity(existing, entity)
+            return existing
+    entities.append(entity)
+    return entity
+
+
+def _upsert_payload_relation(payload: dict[str, Any], relation: dict[str, Any]) -> bool:
+    relations = payload.setdefault("relations", [])
+    for existing in relations:
+        if relation_key(existing) == relation_key(relation):
+            merge_relation(existing, relation)
+            return False
+    relations.append(relation)
+    return True
+
+
+def derive_broker_resources(payload: dict[str, Any]) -> int:
+    """Add broker-instance Resources as a facet over queue/topic resources.
+
+    Queue/topic resources remain the precise endpoints. The broker resource lets
+    blast-radius questions such as "RabbitMQ is down" resolve without turning
+    broker products into Providers or Components.
+    """
+    entities = _entity_by_ref(payload)
+    added = 0
+    broker_refs_by_resource: dict[str, str] = {}
+
+    for resource_ref, entity in list(entities.items()):
+        if _ref_kind(resource_ref) != "Resource":
+            continue
+        broker_name = _broker_name_for_resource(entity)
+        if not broker_name:
+            continue
+        broker_ref = f"Resource:{canonical_name(broker_name.lower())}"
+        annotations = entity.get("metadata", {}).get("annotations", {}) or {}
+        source_repos = annotations.get("source_repos") or []
+        if isinstance(source_repos, str):
+            source_repos = [source_repos]
+        broker_entity = {
+            "kind": "Resource",
+            "metadata": {
+                "name": canonical_name(broker_name.lower()),
+                "description": f"{broker_name} broker instance inferred from queue/topic resources.",
+                "annotations": {
+                    "source_repos": sorted({str(repo) for repo in source_repos if repo}),
+                    "aliases": [
+                        broker_name,
+                        broker_name.lower(),
+                        canonical_name(broker_name),
+                        f"{broker_name} broker",
+                        "async",
+                        "asynchronous",
+                        "message broker",
+                        "queue broker",
+                    ],
+                    "inferred_broker": "true",
+                },
+            },
+            "spec": {
+                "type": "broker",
+                "technology": broker_name,
+                "host": (entity.get("spec") or {}).get("host") or broker_name.lower(),
+                "access": "publish-consume",
+                "owner": "unknown",
+            },
+            "evidence": list(entity.get("evidence") or []),
+            "confidence": "medium",
+        }
+        _upsert_payload_entity(payload, broker_entity)
+        broker_refs_by_resource[resource_ref] = broker_ref
+        added += int(broker_ref not in entities)
+        entities[broker_ref] = broker_entity
+
+        _upsert_payload_relation(payload, {
+            "from": resource_ref,
+            "type": "dependsOn",
+            "to": broker_ref,
+            "evidence": entity.get("evidence") or [],
+            "properties": {
+                "via": "broker-technology",
+                "source_repo": source_repos[0] if source_repos else "",
+                "source_repos": sorted({str(repo) for repo in source_repos if repo}),
+                "target_kind": "resource",
+            },
+            "confidence": "medium",
+        })
+
+    if not broker_refs_by_resource:
+        return added
+
+    for relation in list(payload.get("relations") or []):
+        rtype = relation.get("type")
+        target = relation.get("to")
+        if rtype not in {"producesMessage", "consumesMessage", "dependsOn"}:
+            continue
+        broker_ref = broker_refs_by_resource.get(target)
+        if not broker_ref:
+            continue
+        source = relation.get("from")
+        if _ref_kind(source) != "Component":
+            continue
+        props = dict(relation.get("properties") or {})
+        props.update({
+            "via": "broker-resource",
+            "via_resource": target,
+            "target_kind": "resource",
+            "protocol": props.get("protocol") or _broker_name_for_resource(entities.get(target, {})),
+        })
+        added += int(_upsert_payload_relation(payload, {
+            "from": source,
+            "type": rtype,
+            "to": broker_ref,
+            "evidence": relation.get("evidence") or [],
+            "properties": props,
+            "confidence": _confidence_floor(relation.get("confidence"), "medium"),
+        }))
+    return added
+
+
+def normalize_api_granularity(payload: dict[str, Any], *, min_fragments: int = 4) -> int:
+    """Collapse route-level API fragments into one contract per component.
+
+    The LLM sometimes emits one API entity per route. Backstage-style catalogs
+    are more useful when the contract is the API entity and routes are
+    operations. This conservative pass only merges components with many tiny
+    API fragments, leaving smaller sets of intentionally separate contracts
+    alone.
+    """
+    entities = payload.get("entities") or []
+    relations = payload.get("relations") or []
+    apis_by_provider: dict[str, list[dict[str, Any]]] = {}
+    for entity in entities:
+        if entity.get("kind") != "API":
+            continue
+        annotations = entity.get("metadata", {}).get("annotations", {}) or {}
+        provider = annotations.get("exposed_by") or ""
+        if provider:
+            apis_by_provider.setdefault(str(provider), []).append(entity)
+
+    collapsed = 0
+    for provider, apis in sorted(apis_by_provider.items()):
+        if len(apis) < min_fragments:
+            continue
+        if any(len((api.get("metadata", {}).get("annotations", {}) or {}).get("operations") or []) > 2 for api in apis):
+            continue
+        merged_name = canonical_name(f"{provider}-API")
+        merged_ref = f"API:{merged_name}"
+        old_refs = {entity_ref(api) for api in apis}
+        operations: list[dict[str, Any]] = []
+        op_seen: set[str] = set()
+        evidence: list[dict[str, Any]] = []
+        source_repos: set[str] = set()
+        aliases: set[str] = set()
+        descriptions: list[str] = []
+        types: set[str] = set()
+        confidence = "high"
+        for api in apis:
+            meta = api.get("metadata", {}) or {}
+            annotations = meta.get("annotations", {}) or {}
+            aliases.add(str(meta.get("name") or ""))
+            aliases.update(str(alias) for alias in (annotations.get("aliases") or []) if alias)
+            for repo in annotations.get("source_repos") or []:
+                if repo:
+                    source_repos.add(str(repo))
+            for op in annotations.get("operations") or []:
+                if not isinstance(op, dict):
+                    continue
+                sig = f"{op.get('method','')} {op.get('path','')} {op.get('name','')}"
+                if sig not in op_seen:
+                    operations.append(op)
+                    op_seen.add(sig)
+            _merge_evidence(evidence, api.get("evidence") or [])
+            if meta.get("description"):
+                descriptions.append(str(meta["description"]))
+            if (api.get("spec") or {}).get("type"):
+                types.add(str((api.get("spec") or {}).get("type")))
+            confidence = _confidence_floor(confidence, api.get("confidence"))
+
+        merged_api = {
+            "kind": "API",
+            "metadata": {
+                "name": merged_name,
+                "description": " ".join(descriptions[:3]),
+                "annotations": {
+                    "exposed_by": provider,
+                    "operations": operations,
+                    "source_repos": sorted(source_repos),
+                    "aliases": sorted(alias for alias in aliases if alias and alias != merged_name),
+                    "granularity_normalized": "true",
+                },
+            },
+            "spec": {
+                "type": sorted(types)[0] if types else "rest",
+                "lifecycle": "unknown",
+                "owner": "unknown",
+            },
+            "evidence": evidence,
+            "confidence": confidence or "medium",
+        }
+        payload["entities"] = [e for e in payload.get("entities") or [] if entity_ref(e) not in old_refs]
+        _upsert_payload_entity(payload, merged_api)
+
+        new_relations: list[dict[str, Any]] = []
+        added_provider_relation = False
+        for relation in relations:
+            if relation.get("type") == "providesApi" and relation.get("to") in old_refs:
+                if not added_provider_relation:
+                    merged_relation = dict(relation)
+                    merged_relation["to"] = merged_ref
+                    merged_relation["evidence"] = evidence
+                    merged_relation["properties"] = {
+                        **(relation.get("properties") or {}),
+                        "target_kind": "api",
+                        "granularity_normalized": True,
+                    }
+                    new_relations.append(merged_relation)
+                    added_provider_relation = True
+                continue
+            if relation.get("from") in old_refs:
+                relation = {**relation, "from": merged_ref}
+            if relation.get("to") in old_refs:
+                relation = {**relation, "to": merged_ref}
+            new_relations.append(relation)
+        payload["relations"] = []
+        for relation in new_relations:
+            _upsert_payload_relation(payload, relation)
+        relations = payload.get("relations") or []
+        collapsed += len(apis) - 1
+    return collapsed
+
+
+_INFRA_COMPONENT_TAGS = {
+    "database",
+    "datastore",
+    "db",
+    "mongodb",
+    "mongo",
+    "mysql",
+    "postgres",
+    "postgresql",
+    "redis",
+    "cache",
+    "seed-data",
+}
+
+
+def _resource_match_keys(entity: dict[str, Any]) -> set[str]:
+    meta = entity.get("metadata", {}) or {}
+    spec = entity.get("spec", {}) or {}
+    annotations = meta.get("annotations", {}) or {}
+    keys = {
+        canonical_key(str(meta.get("name") or "")),
+        host_to_key(str(spec.get("host") or "")),
+        host_to_key(str(annotations.get("datasource_url") or "")),
+    }
+    for alias in annotations.get("aliases") or []:
+        keys.add(canonical_key(str(alias)) or host_to_key(str(alias)))
+    return {key for key in keys if key}
+
+
+def demote_infrastructure_components(payload: dict[str, Any]) -> int:
+    """Remove DB/cache-only Components when the same thing is already a Resource.
+
+    Some repos build a database image with seed data. That is source-backed, but
+    for catalog navigation it is infrastructure, not a runnable application
+    Component. This pass only demotes conservative cases that have a matching
+    Resource host/name and no API/message behavior.
+    """
+    entities = payload.get("entities") or []
+    relations = payload.get("relations") or []
+    resource_by_key: dict[str, str] = {}
+    resources_by_ref = {
+        entity_ref(entity): entity
+        for entity in entities
+        if entity.get("kind") == "Resource"
+    }
+    for ref, resource in resources_by_ref.items():
+        for key in _resource_match_keys(resource):
+            resource_by_key.setdefault(key, ref)
+
+    relation_counts: dict[str, dict[str, int]] = {}
+    for relation in relations:
+        for side in ("from", "to"):
+            ref = relation.get(side)
+            if ref:
+                counts = relation_counts.setdefault(ref, {})
+                counts[relation.get("type") or ""] = counts.get(relation.get("type") or "", 0) + 1
+
+    demotions: dict[str, str] = {}
+    for entity in entities:
+        if entity.get("kind") != "Component":
+            continue
+        ref = entity_ref(entity)
+        meta = entity.get("metadata", {}) or {}
+        spec = entity.get("spec", {}) or {}
+        tags = {canonical_key(str(tag)) for tag in (meta.get("tags") or [])}
+        text = " ".join([
+            str(meta.get("name") or ""),
+            str(meta.get("description") or ""),
+            str(spec.get("type") or ""),
+            *[str(tag) for tag in (meta.get("tags") or [])],
+        ]).lower()
+        looks_infra = bool(tags & _INFRA_COMPONENT_TAGS) or any(marker in text for marker in ("database", "mongodb", "mysql", "postgres", "redis", "seed data"))
+        if not looks_infra:
+            continue
+        counts = relation_counts.get(ref, {})
+        behavior_edges = sum(counts.get(kind, 0) for kind in ("providesApi", "consumesApi", "producesMessage", "consumesMessage", "communicatesWith"))
+        if behavior_edges:
+            continue
+        match_key = canonical_key(str(meta.get("name") or ""))
+        target_resource = resource_by_key.get(match_key)
+        if target_resource:
+            demotions[ref] = target_resource
+
+    if not demotions:
+        return 0
+
+    payload["entities"] = [entity for entity in entities if entity_ref(entity) not in demotions]
+    rewritten: list[dict[str, Any]] = []
+    for relation in relations:
+        source = relation.get("from")
+        target = relation.get("to")
+        if source in demotions:
+            continue
+        if target in demotions:
+            if relation.get("type") == "partOf":
+                continue
+            relation = copy.deepcopy(relation)
+            target_resource = demotions[target]
+            relation["to"] = target_resource
+            props = relation.setdefault("properties", {})
+            props["target_kind"] = "resource"
+            props["demoted_from_component"] = target
+            relation["confidence"] = _confidence_floor(relation.get("confidence"), (resources_by_ref.get(target_resource) or {}).get("confidence"))
+        rewritten.append(relation)
+
+    deduped: dict[str, dict[str, Any]] = {}
+    for relation in rewritten:
+        key = relation_key(relation)
+        if key in deduped:
+            merge_relation(deduped[key], relation)
+        else:
+            deduped[key] = relation
+    payload["relations"] = list(deduped.values())
+    return len(demotions)
 
 
 def _resource_endpoint(resource_ref: str, entity: dict[str, Any] | None) -> str:
@@ -1118,6 +1780,150 @@ def refresh_summary_counts(payload: dict[str, Any]) -> None:
     payload.setdefault("summary", {})["relations"] = sum(edge_counts.values())
 
 
+def demote_provider_duplicate_components(payload: dict[str, Any]) -> int:
+    """Fold external placeholder Components into matching Providers.
+
+    Extractors sometimes emit an observability/SaaS endpoint as a Component when
+    one repo calls it like a service, while another repo correctly emits the
+    same runtime dependency as a Provider. If the placeholder Component has no
+    source repo and matches a Provider by name or alias, the Provider is the
+    more specific entity kind.
+    """
+    entities = payload.get("entities") or []
+    provider_by_key: dict[str, str] = {}
+    entities_by_ref = {f"{e.get('kind')}:{e.get('metadata', {}).get('name')}": e for e in entities}
+
+    def keys_for(entity: dict[str, Any]) -> set[str]:
+        meta = entity.get("metadata") or {}
+        annotations = meta.get("annotations") or {}
+        values = [meta.get("name") or "", *list(annotations.get("aliases") or [])]
+        return {canonical_key(v) or host_to_key(v) for v in values if v}
+
+    for entity in entities:
+        if entity.get("kind") != "Provider":
+            continue
+        ref = f"Provider:{entity.get('metadata', {}).get('name')}"
+        for key in keys_for(entity):
+            if key:
+                provider_by_key.setdefault(key, ref)
+
+    remap: dict[str, str] = {}
+    for entity in entities:
+        if entity.get("kind") != "Component":
+            continue
+        annotations = entity.get("metadata", {}).get("annotations") or {}
+        if annotations.get("source_repos"):
+            continue
+        if str(annotations.get("external") or "").lower() != "true":
+            continue
+        provider_ref = next((provider_by_key.get(key) for key in keys_for(entity) if provider_by_key.get(key)), None)
+        if provider_ref:
+            remap[f"Component:{entity.get('metadata', {}).get('name')}"] = provider_ref
+            provider = entities_by_ref.get(provider_ref)
+            if provider:
+                merge_entity(provider, entity)
+                provider["kind"] = "Provider"
+
+    if not remap:
+        return 0
+
+    payload["entities"] = [
+        entity for entity in entities
+        if f"{entity.get('kind')}:{entity.get('metadata', {}).get('name')}" not in remap
+    ]
+    deduped: dict[str, dict[str, Any]] = {}
+    for relation in payload.get("relations") or []:
+        relation = copy.deepcopy(relation)
+        if relation.get("from") in remap:
+            continue
+        if relation.get("to") in remap:
+            relation["to"] = remap[relation["to"]]
+            if relation.get("type") in {"consumesApi", COMMUNICATION_RELATION}:
+                relation["type"] = "dependsOn"
+            relation.setdefault("properties", {})["target_kind"] = "provider"
+            relation["confidence"] = "review"
+        key = relation_key(relation)
+        if key in deduped:
+            merge_relation(deduped[key], relation)
+        else:
+            deduped[key] = relation
+    payload["relations"] = list(deduped.values())
+    return len(remap)
+
+
+def merge_suffix_duplicate_components(payload: dict[str, Any]) -> int:
+    """Merge external component placeholders into sourced components by suffix.
+
+    Monorepo callers often refer to `repo-service` while the extracted service
+    unit is just `service`. If the longer component has no source repo and the
+    shorter one does, the shorter sourced component is canonical.
+    """
+    entities = payload.get("entities") or []
+    sourced: dict[str, tuple[str, str]] = {}
+    entities_by_ref = {f"{e.get('kind')}:{e.get('metadata', {}).get('name')}": e for e in entities}
+    for entity in entities:
+        if entity.get("kind") != "Component":
+            continue
+        annotations = entity.get("metadata", {}).get("annotations") or {}
+        if not annotations.get("source_repos"):
+            continue
+        name = entity.get("metadata", {}).get("name") or ""
+        sourced[canonical_key(name)] = (canonical_name(name).lower(), f"Component:{name}")
+
+    remap: dict[str, str] = {}
+    for entity in entities:
+        if entity.get("kind") != "Component":
+            continue
+        annotations = entity.get("metadata", {}).get("annotations") or {}
+        if annotations.get("source_repos"):
+            continue
+        if str(annotations.get("external") or "").lower() != "true":
+            continue
+        name = entity.get("metadata", {}).get("name") or ""
+        name_key = canonical_key(name)
+        name_slug = canonical_name(name).lower()
+        target_ref = None
+        for key, (slug, ref) in sourced.items():
+            if name_key != key and name_slug.endswith(f"-{slug}"):
+                target_ref = ref
+                break
+        if not target_ref:
+            aliases = annotations.get("aliases") or []
+            alias_keys = {canonical_key(alias) or host_to_key(alias) for alias in aliases if alias}
+            target_ref = next((ref for key, (_slug, ref) in sourced.items() if key in alias_keys), None)
+        if target_ref:
+            source_ref = f"Component:{name}"
+            remap[source_ref] = target_ref
+            target = entities_by_ref.get(target_ref)
+            if target:
+                merge_entity(target, entity)
+
+    if not remap:
+        return 0
+
+    payload["entities"] = [
+        entity for entity in entities
+        if f"{entity.get('kind')}:{entity.get('metadata', {}).get('name')}" not in remap
+    ]
+    deduped: dict[str, dict[str, Any]] = {}
+    for relation in payload.get("relations") or []:
+        relation = copy.deepcopy(relation)
+        if relation.get("from") in remap:
+            relation["from"] = remap[relation["from"]]
+        if relation.get("to") in remap:
+            relation["to"] = remap[relation["to"]]
+            relation.setdefault("properties", {})["target_kind"] = "component"
+        if relation.get("from") == relation.get("to"):
+            continue
+        key = relation_key(relation)
+        if key in deduped:
+            merge_relation(deduped[key], relation)
+        else:
+            deduped[key] = relation
+    payload["relations"] = list(deduped.values())
+    return len(remap)
+
+
 def load_catalog_dir(catalog_dir: Path) -> Iterable[dict[str, Any]]:
     if not catalog_dir.exists():
         return []
@@ -1340,14 +2146,29 @@ def build(
     workspace_config: dict[str, Any],
 ) -> dict[str, Any]:
     catalog = Catalog()
-    cloned_repos = find_repos(root, workspace_config.get("orgs") or [], workspace_config.get("excluded_repos") or [])
+    cloned_repos = find_repos(
+        root,
+        workspace_config.get("orgs") or [],
+        workspace_config.get("excluded_repos") or [],
+        workspace_config.get("repo_units") or [],
+    )
     cloned_ids = {r["id"] for r in cloned_repos}
 
     deferred_by_repo: dict[str, list[dict[str, Any]]] = {}
     repo_count = 0
+    repos_by_id = {repo["id"]: repo for repo in cloned_repos}
+    static_api_specs_merged = 0
+    static_api_operations_added = 0
     for payload in load_catalog_dir(catalog_dir):
+        repo_id = payload.get("repo", {}).get("id") or "unknown"
+        repo_root = Path((repos_by_id.get(repo_id) or {}).get("absolute_path") or root / short_repo_name(repo_id))
+        static_api_summary = merge_static_api_operations(payload, repo_root)
+        if static_api_summary.get("operations_added"):
+            payload.setdefault("_meta", {})["static_api_specs"] = static_api_summary
+            static_api_specs_merged += int(static_api_summary.get("merged_apis") or 0)
+            static_api_operations_added += int(static_api_summary.get("operations_added") or 0)
         result = add_repo(catalog, payload)
-        deferred_by_repo[payload.get("repo", {}).get("id") or "unknown"] = result["deferred_dependencies"]
+        deferred_by_repo[repo_id] = result["deferred_dependencies"]
         repo_count += 1
 
     for seed in load_seeds(seeds_dir):
@@ -1388,6 +2209,8 @@ def build(
     payload["summary"]["unresolved_external_components"] = unresolved
     payload["summary"]["dropped_for_missing_evidence"] = evidence_dropped
     payload["summary"]["cloned_repos_count"] = len(cloned_ids)
+    payload["summary"]["static_api_specs_merged"] = static_api_specs_merged
+    payload["summary"]["static_api_operations_added"] = static_api_operations_added
 
     decisions_path = output_path.parent / "triage_decisions.jsonl"
     if decisions_path.exists():
@@ -1404,6 +2227,16 @@ def build(
             triage_counts = apply_triage_decisions(payload, decisions)
             payload["summary"]["triage_applied"] = triage_counts
 
+    demoted_infra_components = demote_infrastructure_components(payload)
+    payload["summary"]["demoted_infrastructure_components"] = demoted_infra_components
+    merged_suffix_components = merge_suffix_duplicate_components(payload)
+    payload["summary"]["merged_suffix_duplicate_components"] = merged_suffix_components
+    demoted_provider_components = demote_provider_duplicate_components(payload)
+    payload["summary"]["demoted_provider_duplicate_components"] = demoted_provider_components
+    normalized_api_fragments = normalize_api_granularity(payload)
+    payload["summary"]["normalized_api_fragments"] = normalized_api_fragments
+    derived_broker_resources = derive_broker_resources(payload)
+    payload["summary"]["derived_broker_resources"] = derived_broker_resources
     derived_communication_flows = derive_communication_flows(payload)
     payload["summary"]["derived_communication_flows"] = derived_communication_flows
     refresh_summary_counts(payload)

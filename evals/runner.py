@@ -5,9 +5,11 @@
   python evals/runner.py --agent --no-judge    # agent tier without LLM judge
   python evals/runner.py --refresh-cache       # bust agent_eval response cache
   python evals/runner.py --catalog evals/data/catalog.json
+  python evals/runner.py --workspace online-boutique
 
-Catalog discovery: prefers --catalog, then evals/data/catalog.json, then
-the project-level data/catalog.json. Falls back to Kuzu DB if available.
+Catalog discovery: prefers --catalog, then the selected eval workspace's
+catalog.json, then the project-level data/catalog.json. Falls back to Kuzu DB
+if available.
 """
 
 from __future__ import annotations
@@ -33,18 +35,23 @@ from storage import make_backend  # noqa: E402
 import catalog_eval  # noqa: E402
 import agent_eval    # noqa: E402
 import plots         # noqa: E402
+from workspace_paths import resolve_workspace  # noqa: E402
 
 
-def _resolve_catalog(arg_path: Path | None) -> tuple[Path, Path | None]:
+def _resolve_catalog(arg_path: Path | None, arg_kuzu: Path | None, workspace_name: str) -> tuple[Path, Path | None]:
     """Return (catalog_json_path, kuzu_db_path). Either may not exist."""
+    ws = resolve_workspace(workspace_name)
     candidates = []
     if arg_path:
         candidates.append(arg_path)
-    candidates.append(HERE / "data" / "catalog.json")
+    candidates.append(ws.data_dir / "catalog.json")
     candidates.append(PROJECT_ROOT / "data" / "catalog.json")
     catalog_path = next((c for c in candidates if c.exists()), candidates[0])
 
-    kuzu_candidates = [HERE / "data" / "catalog.kuzu", PROJECT_ROOT / "data" / "catalog.kuzu"]
+    kuzu_candidates = []
+    if arg_kuzu:
+        kuzu_candidates.append(arg_kuzu)
+    kuzu_candidates.extend([ws.data_dir / "catalog.kuzu", PROJECT_ROOT / "data" / "catalog.kuzu"])
     kuzu_path = next((c for c in kuzu_candidates if c.exists()), None)
     return catalog_path, kuzu_path
 
@@ -59,8 +66,10 @@ def _catalog_summary(backend) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--workspace", default="sock-shop", help="Eval workspace slug.")
     parser.add_argument("--catalog", type=Path, default=None, help="Override catalog.json path.")
-    parser.add_argument("--questions", type=Path, default=HERE / "questions.yaml")
+    parser.add_argument("--kuzu", type=Path, default=None, help="Override catalog.kuzu path.")
+    parser.add_argument("--questions", type=Path, default=None)
     parser.add_argument("--agent", action="store_true", help="Run agent-tier eval (uses Anthropic API).")
     parser.add_argument("--no-judge", action="store_true", help="Skip LLM judge (still scores repo/keyword recall).")
     parser.add_argument("--refresh-cache", action="store_true", help="Bypass agent_eval response cache.")
@@ -71,26 +80,29 @@ def main() -> int:
     parser.add_argument("--no-plots", action="store_true", help="Skip PNG generation.")
     args = parser.parse_args()
 
-    catalog_path, kuzu_path = _resolve_catalog(args.catalog)
-    questions = (yaml.safe_load(args.questions.read_text()) or {}).get("questions") or []
+    workspace = resolve_workspace(args.workspace)
+    questions_path = args.questions or workspace.questions
+    catalog_path, kuzu_path = _resolve_catalog(args.catalog, args.kuzu, args.workspace)
+    questions = (yaml.safe_load(questions_path.read_text()) or {}).get("questions") or []
     if args.limit:
         questions = questions[: args.limit]
     if not questions:
-        print(f"no questions in {args.questions}", file=sys.stderr)
+        print(f"no questions in {questions_path}", file=sys.stderr)
         return 1
 
     print(f"catalog: {catalog_path} (exists={catalog_path.exists()})  kuzu: {kuzu_path}")
-    print(f"questions: {len(questions)}")
+    print(f"workspace: {workspace.name}  questions: {len(questions)}")
 
     if not catalog_path.exists() and (kuzu_path is None or not kuzu_path.exists()):
         print(f"\nERROR: No catalog at {catalog_path} (and no Kuzu DB at {kuzu_path}).", file=sys.stderr)
-        print("Hint: run ./evals/setup.sh, then ./evals/build_eval_catalog.sh.", file=sys.stderr)
+        print(f"Hint: run ./evals/setup.sh --workspace {workspace.name}, then ./evals/build_eval_catalog.sh --workspace {workspace.name}.", file=sys.stderr)
         return 2
 
     backend = make_backend("auto", catalog_path=catalog_path, kuzu_path=kuzu_path)
 
     run = {
         "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "workspace": workspace.name,
         "catalog_path": str(catalog_path),
         "kuzu_path": str(kuzu_path) if kuzu_path else None,
         "catalog_summary": _catalog_summary(backend),
@@ -117,7 +129,7 @@ def main() -> int:
         print(f"agent: mean repo-recall delta (treatment - baseline) = {delta:+.2f}")
 
     ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = HERE / "runs"
+    out_dir = workspace.runs_dir
     out_dir.mkdir(exist_ok=True)
     out_path = args.output or (out_dir / f"run_{ts}.json")
     out_path.write_text(json.dumps(run, indent=2))

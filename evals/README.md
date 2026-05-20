@@ -4,10 +4,11 @@ A small, opinionated eval harness for measuring whether ServiceScout actually
 improves what AI agents (and curious humans) can learn about a multi-service
 codebase they don't have on their laptop.
 
-The workspace is [Weaveworks sock-shop](https://microservices-demo.github.io/)
-— 9 polyglot microservices with HTTP and RabbitMQ async messaging. Real
-multi-repo, real cross-language, real async. Exactly the shape that
-exercises the parts of ServiceScout most analogues skip.
+The default workspace is [Weaveworks sock-shop](https://microservices-demo.github.io/)
+— 9 polyglot microservices with HTTP and RabbitMQ async messaging. A second
+public benchmark, Google Online Boutique / `microservices-demo`, lives under
+`evals/workspaces/online-boutique` and exercises focused extraction units in a
+large monorepo.
 
 ## Iteration 3 — added structural-quality questions
 
@@ -87,9 +88,9 @@ change you just made:
 
 | Speed | Command | Cost | Time | When to use |
 |---|---|---|---|---|
-| **Re-eval only** | `python evals/runner.py` | $0 | seconds | Prompt-only change in retrieval / scoring / RRF — extractor untouched. |
-| **Targeted re-extract** | `./evals/build_eval_catalog.sh --only X,Y,Z` then re-eval | ~$0.50-$2 per repo | ~3 min per repo | Extractor prompt change that affects a *known cluster* (e.g. all messaging repos). |
-| **Full sweep** | `./evals/build_eval_catalog.sh` (all 9) + `runner.py --agent` | ~$5-15 | ~30 min + ~5 min agent | Release-candidate validation; ~weekly. Promote the result to baseline. |
+| **Re-eval only** | `python evals/runner.py --workspace sock-shop` | $0 | seconds | Prompt-only change in retrieval / scoring / RRF — extractor untouched. |
+| **Targeted re-extract** | `./evals/build_eval_catalog.sh --workspace online-boutique --only frontend,checkoutservice` then re-eval | ~$0.15-$0.50 per unit | ~3-8 min per unit | Extractor prompt change that affects a known cluster. |
+| **Full sweep** | `./evals/build_eval_catalog.sh --workspace sock-shop` or `--workspace online-boutique` + `runner.py --agent` | varies | 30-80 min + agent | Release-candidate validation; promote the result to baseline. |
 
 The catalog-tier eval is genuinely free at runtime — it drives the in-memory
 `Backend` over a pre-built `catalog.json` with zero LLM calls. The agent-tier
@@ -118,26 +119,58 @@ cloned.
 ## Quickstart
 
 ```bash
+# Optional: reset generated eval state for a first-run rehearsal.
+# This does not touch the project-level ./data catalog.
+rm -rf evals/workspace evals/data evals/runs
+
 # 1. clone the 9 sock-shop repos at pinned SHAs
-./evals/setup.sh
+./evals/setup.sh --workspace sock-shop
 
 # 2. build a catalog for the cloned workspace
-#    (uses ServiceScout's normal extractor pipeline — costs LLM tokens once)
-#    Target evals/data/catalog.json so the eval catalog is isolated from
-#    your real catalog at data/catalog.json.
-WORKSPACE_ROOT=$(pwd)/evals/workspace \
-CATALOG_OUT=$(pwd)/evals/data/catalog.json \
-  python crawler.py --workspace evals/workspace.json   # adjust to your CLI flags
+#    (uses ServiceScout's normal extractor pipeline; costs LLM tokens once)
+./evals/build_eval_catalog.sh --workspace sock-shop 2>&1 | tee /tmp/servicescout-socks-build.log
 
-# 3. catalog tier (free, fast — run on every change)
-python evals/runner.py
+# Watch progress in the same terminal, or from another shell:
+tail -f /tmp/servicescout-socks-build.log
 
-# 4. agent tier (paid; uses ANTHROPIC_API_KEY)
-python evals/runner.py --agent
+# 3. build the local graph DB used by MCP/search
+python build_kuzu.py --catalog evals/data/catalog.json --db evals/data/catalog.kuzu
 
-# 5. render the report
-python evals/report.py
+# Optional: run the operator UI/MCP against the eval catalog without touching
+# ./data, because Compose is pointed at evals/data.
+docker compose --env-file .env.socks-shop.example up -d mcp dashboard
+open http://127.0.0.1:8790
+
+# 4. catalog tier (free, fast — run on every change)
+python evals/runner.py --workspace sock-shop
+
+# 5. agent tier (paid; uses ANTHROPIC_API_KEY)
+python evals/runner.py --workspace sock-shop --agent
+
+# 6. render the report
+python evals/report.py --runs-dir evals/runs
 ```
+
+Online Boutique uses the same commands with `--workspace online-boutique`.
+Its workspace config includes `repo_units[]`, so the extractor runs one focused
+unit per service while still reading shared protos and root deployment manifests.
+
+Recent verified results:
+
+- Sock Shop: 44 entities, 76 relations, catalog eval **18/18**, audit
+  `0` high findings.
+- Online Boutique: 47 entities, 108 relations, catalog eval **10/10**, audit
+  `0` high findings.
+
+### Dashboard screenshots
+
+Screenshots from the isolated sock-shop workspace are checked in under
+`docs/screenshots/socks-shop-onboarding/` and can be used directly in README
+examples or converted into a GIF:
+
+![Explorer](../docs/screenshots/socks-shop-onboarding/03-explorer.png)
+![Catalog](../docs/screenshots/socks-shop-onboarding/04-catalog.png)
+![Operator](../docs/screenshots/socks-shop-onboarding/06-operator.png)
 
 ## Layout
 

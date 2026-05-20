@@ -73,7 +73,7 @@ def evaluate_question(backend: Any, question: dict) -> dict:
             max_hops=int(spec.get("max_hops", 5)),
             edge_types=spec.get("edge_types") or DEFAULT_FLOW_EDGE_TYPES,
             include_async=bool(spec.get("include_async", True)),
-            fanout_per_node=int(spec.get("fanout_per_node", 5)),
+            fanout_per_node=int(spec.get("fanout_per_node", 12)),
         )
         visited = {hop["to"] for hop in plan.get("hops", [])}
         visited.add(spec["start"])

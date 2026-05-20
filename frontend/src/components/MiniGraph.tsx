@@ -6,16 +6,8 @@ import { NodeCircleProgram, EdgeArrowProgram } from "sigma/rendering";
 import ForceAtlas2Layout from "graphology-layout-forceatlas2/worker";
 import { useNavigate } from "react-router-dom";
 import { type GraphPayload } from "@/lib/api";
-
-const KIND_COLOR: Record<string, string> = {
-  Component: "#3b82f6",
-  API: "#eab308",
-  Resource: "#a855f7",
-  Provider: "#ec4899",
-  System: "#10b981",
-  Domain: "#06b6d4",
-  Group: "#f97316",
-};
+import { kindColor } from "@/lib/catalogLabels";
+import { drawReadableNodeHover } from "@/lib/sigmaRenderers";
 
 const MINI_SETTINGS = {
   nodeProgramClasses: { circle: NodeCircleProgram },
@@ -27,11 +19,18 @@ const MINI_SETTINGS = {
   labelFont: "ui-sans-serif, system-ui, sans-serif",
   labelWeight: "500",
   labelRenderedSizeThreshold: 4,
+  defaultDrawNodeHover: drawReadableNodeHover,
   renderEdgeLabels: false,
   defaultEdgeColor: "#2a3242",
   minCameraRatio: 0.05,
   maxCameraRatio: 4,
   allowInvalidContainer: true,
+};
+
+const seed = (id: string, salt: number) => {
+  let h = salt;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  return (h >>> 0) / 0xffffffff;
 };
 
 function MiniLoader({ graph }: { graph: Graph }) {
@@ -59,14 +58,14 @@ export function MiniGraph({ centerRef, depth = 1, height = 360 }: { centerRef: s
     const g = new Graph({ multi: false, type: "directed" });
     if (!data) return g;
     data.nodes.forEach((n) => {
-      const isCenter = (n as any).is_center === true;
+      const isCenter = n.is_center === true;
       g.addNode(n.id, {
         label: n.label,
         kind: n.kind,
-        color: KIND_COLOR[n.kind] || "#666",
-        size: isCenter ? 12 : 5 + Math.min(6, Math.sqrt((n as any).degree || 1)),
-        x: Math.random(),
-        y: Math.random(),
+        color: kindColor(n.kind),
+        size: isCenter ? 12 : 5 + Math.min(6, Math.sqrt(n.degree || 1)),
+        x: seed(n.id, 1),
+        y: seed(n.id, 2),
         type: "circle",
       });
     });

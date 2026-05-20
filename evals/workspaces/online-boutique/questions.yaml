@@ -1,0 +1,142 @@
+# Eval question set for the Google Online Boutique / microservices-demo workspace.
+#
+# Ground truth should be rechecked against the pinned SHA in workspace.lock.json.
+# These questions intentionally target generic microservice facts: deployable
+# services, gRPC contracts, Redis, and direct runtime dependencies.
+
+version: 1
+
+questions:
+
+  - id: routing-01
+    category: routing
+    question: "Which service serves the storefront web UI?"
+    catalog:
+      search_top_k: 8
+      search_must_include_any_of: ["Component:frontend", "Component:frontend-proxy"]
+    agent:
+      expected_repos: ["GoogleCloudPlatform/microservices-demo"]
+      expected_keywords_any_of: ["frontend", "storefront", "HTTP"]
+      canonical_answer: "The frontend service serves the storefront UI; frontend-proxy may front it in some deployments."
+
+  - id: routing-02
+    category: routing
+    question: "Which service owns the product catalog API?"
+    catalog:
+      search_top_k: 8
+      search_must_include_any_of: ["Component:productcatalogservice", "API:productcatalogservice"]
+    agent:
+      expected_repos: ["GoogleCloudPlatform/microservices-demo"]
+      expected_keywords_any_of: ["productcatalogservice", "ListProducts", "GetProduct"]
+      canonical_answer: "productcatalogservice owns the product catalog gRPC API."
+
+  - id: routing-03
+    category: routing
+    question: "What backs shopping cart storage?"
+    catalog:
+      search_top_k: 8
+      search_must_include_any_of: ["Component:cartservice", "Resource:redis-cart"]
+    agent:
+      expected_repos: ["GoogleCloudPlatform/microservices-demo"]
+      expected_keywords_any_of: ["cartservice", "Redis", "cart"]
+      canonical_answer: "cartservice persists cart state in Redis, commonly deployed as redis-cart."
+
+  - id: routing-04
+    category: routing
+    question: "Which service sends order confirmation email?"
+    catalog:
+      search_top_k: 8
+      search_must_include_any_of: ["Component:emailservice", "API:emailservice"]
+    agent:
+      expected_repos: ["GoogleCloudPlatform/microservices-demo"]
+      expected_keywords_any_of: ["emailservice", "confirmation", "SendOrderConfirmation"]
+      canonical_answer: "emailservice sends order confirmation emails."
+
+  - id: checkout-01
+    category: sync-multihop
+    question: "What services does checkoutservice call while placing an order?"
+    catalog:
+      search_top_k: 10
+      search_must_include_any_of: ["Component:checkoutservice"]
+      neighbors:
+        of: "Component:checkoutservice"
+        direction: "out"
+        must_include_targets_any_of:
+          - "Component:paymentservice"
+          - "Component:shippingservice"
+          - "Component:emailservice"
+          - "Component:cartservice"
+          - "Component:productcatalogservice"
+          - "Component:currencyservice"
+    agent:
+      expected_repos: ["GoogleCloudPlatform/microservices-demo"]
+      expected_keywords_any_of: ["paymentservice", "shippingservice", "emailservice", "cartservice", "productcatalogservice", "currencyservice"]
+      canonical_answer: "checkoutservice calls the cart, product catalog, currency, shipping, payment, and email services during checkout."
+
+  - id: checkout-02
+    category: sync-multihop
+    question: "Trace checkout from the frontend to payment."
+    catalog:
+      search_top_k: 10
+      search_must_include_any_of: ["Component:frontend", "Component:checkoutservice", "Component:paymentservice"]
+      trace:
+        start: "Component:frontend"
+        must_visit_any_of: ["Component:checkoutservice", "Component:paymentservice"]
+        max_hops: 5
+    agent:
+      expected_repos: ["GoogleCloudPlatform/microservices-demo"]
+      expected_keywords_any_of: ["frontend", "checkoutservice", "paymentservice"]
+      canonical_answer: "frontend calls checkoutservice, and checkoutservice calls paymentservice to charge the order."
+
+  - id: recommendations-01
+    category: sync-multihop
+    question: "Which catalog service does recommendationservice use?"
+    catalog:
+      search_top_k: 8
+      search_must_include_any_of: ["Component:recommendationservice", "Component:productcatalogservice"]
+      neighbors:
+        of: "Component:recommendationservice"
+        direction: "out"
+        must_include_targets_any_of: ["Component:productcatalogservice"]
+    agent:
+      expected_repos: ["GoogleCloudPlatform/microservices-demo"]
+      expected_keywords_any_of: ["recommendationservice", "productcatalogservice"]
+      canonical_answer: "recommendationservice calls productcatalogservice to fetch catalog data for recommendations."
+
+  - id: blast-01
+    category: blast-radius
+    question: "If Redis becomes unavailable, which service is directly affected?"
+    catalog:
+      search_top_k: 8
+      search_must_include_any_of: ["Resource:redis-cart", "Component:cartservice"]
+      neighbors:
+        of: "Resource:redis-cart"
+        direction: "in"
+        must_include_sources_any_of: ["Component:cartservice"]
+    agent:
+      expected_repos: ["GoogleCloudPlatform/microservices-demo"]
+      expected_keywords_any_of: ["cartservice", "Redis"]
+      canonical_answer: "cartservice is directly affected because it stores carts in Redis."
+
+  - id: structural-01
+    category: structural
+    question: "Is Redis modeled as data infrastructure rather than a service component?"
+    catalog:
+      must_not_exist_refs:
+        - "Component:redis-cart"
+        - "Provider:redis-cart"
+
+  - id: structural-02
+    category: structural
+    question: "Are the main runnable services present as Components?"
+    catalog:
+      search_top_k: 20
+      search_must_include_any_of:
+        - "Component:frontend"
+        - "Component:cartservice"
+        - "Component:checkoutservice"
+        - "Component:productcatalogservice"
+        - "Component:currencyservice"
+        - "Component:paymentservice"
+        - "Component:shippingservice"
+        - "Component:emailservice"

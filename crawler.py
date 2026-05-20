@@ -415,7 +415,12 @@ def crawl(
     resume: bool = False,
 ) -> dict[str, Any]:
     workspace = load_workspace_config(workspace_path)
-    repos = find_repos(root, workspace.get("orgs") or [], workspace.get("excluded_repos") or [])
+    repos = find_repos(
+        root,
+        workspace.get("orgs") or [],
+        workspace.get("excluded_repos") or [],
+        workspace.get("repo_units") or [],
+    )
     if repos_filter:
         wanted = set(repos_filter)
         repos = [r for r in repos if r["name"] in wanted or r["id"] in wanted]
@@ -506,7 +511,12 @@ def crawl(
             if not cloned_now:
                 emit({"event": "discovery_round_no_clones"})
                 break
-            repos = find_repos(root, workspace.get("orgs") or [], workspace.get("excluded_repos") or [])
+            repos = find_repos(
+                root,
+                workspace.get("orgs") or [],
+                workspace.get("excluded_repos") or [],
+                workspace.get("repo_units") or [],
+            )
             emit({"event": "discovery_round_done", "workspace_repos_now": len(repos)})
             continue
 
@@ -567,7 +577,11 @@ def crawl(
 
     if build_kuzu:
         emit({"event": "build_kuzu_start"})
-        kuzu_cmd = [sys.executable, str(HERE / "build_kuzu.py"), "--catalog", str(catalog_output)]
+        kuzu_cmd = [
+            sys.executable, str(HERE / "build_kuzu.py"),
+            "--catalog", str(catalog_output),
+            "--db", str(catalog_output.parent / "catalog.kuzu"),
+        ]
         completed = subprocess.run(kuzu_cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         emit({"event": "build_kuzu_done", "returncode": completed.returncode, "tail": completed.stdout[-800:]})
 

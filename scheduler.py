@@ -274,6 +274,7 @@ def run_tick(
             sys.executable, str(HERE / "crawler.py"),
             "--root", str(workspace_root),
             "--catalog-dir", str(catalog_dir),
+            "--catalog-output", str(catalog_dir.parent / "catalog.json"),
             "--workspace", str(workspace_path),
             "--budget-usd", str(budget_usd),
             "--repos", *repo_names,

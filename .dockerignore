@@ -1,6 +1,13 @@
 .venv/
 .git/
 data/
+evals/data/
+evals/runs/
+evals/workspace/
+evals/workspaces/*/workspace/
+evals/workspaces/*/data/
+evals/workspaces/*/runs/
+evals/workspaces/*/cache/
 legacy/
 node_modules/
 frontend/node_modules/

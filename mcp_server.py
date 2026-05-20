@@ -174,7 +174,7 @@ def build_server(
         max_hops: int = 6,
         edge_types: list[str] | None = None,
         include_async: bool = True,
-        fanout_per_node: int = 5,
+        fanout_per_node: int = 12,
         min_confidence: str | None = None,
     ) -> dict[str, Any]:
         """Plan a multi-hop business-journey traversal across the KG. CANDIDATE hops only.
@@ -194,7 +194,7 @@ def build_server(
           include_async: when a producesMessage edge lands on a topic, also follow downstream
                          consumesMessage edges (turns synchronous traces into full async-aware traces).
           fanout_per_node: cap branches per edge type per node so the trace stays tractable.
-                           Default 5.
+                           Default 12.
 
         Returns:
           {start_resolved, end_condition, hops[], terminal_nodes[], hop_count, agent_instructions}

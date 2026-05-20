@@ -25,6 +25,8 @@ __pycache__/
 build/
 dist/
 node_modules/
+vendor/wheels/*
+!vendor/wheels/.gitkeep
 
 # --- Logs ---
 *.log
@@ -32,6 +34,9 @@ logs/
 
 # --- Optional corporate CA bundle (TLS-inspecting proxies). Never commit. ---
 certs/
+!certs/
+certs/*
+!certs/.gitkeep
 
 # --- Legacy / experiment scratch ---
 legacy/

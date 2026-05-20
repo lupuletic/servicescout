@@ -22,6 +22,7 @@ class PromptRendersTests(unittest.TestCase):
         rendered = extractor.PROMPT_TEMPLATE.format(
             repo_id="acme/example",
             repo_path="/tmp/example",
+            focus_instruction="",
             glossary="(no known components)",
         )
         self.assertGreater(len(rendered), 1000)
@@ -31,6 +32,7 @@ class PromptRendersTests(unittest.TestCase):
         rendered = extractor.PROMPT_TEMPLATE.format(
             repo_id="acme/example",
             repo_path="/tmp/example",
+            focus_instruction="",
             glossary="",
         )
         for keyword in [
@@ -44,7 +46,7 @@ class PromptRendersTests(unittest.TestCase):
     def test_prompt_contains_alias_hygiene_guidance(self) -> None:
         """Issue #2 — the alias-hygiene section should survive prompt edits."""
         rendered = extractor.PROMPT_TEMPLATE.format(
-            repo_id="x", repo_path="/y", glossary="",
+            repo_id="x", repo_path="/y", focus_instruction="", glossary="",
         )
         # Phrase markers (loose match — wording may evolve, but the
         # concept should remain).
@@ -53,7 +55,7 @@ class PromptRendersTests(unittest.TestCase):
 
     def test_prompt_has_evidence_discipline_rule(self) -> None:
         rendered = extractor.PROMPT_TEMPLATE.format(
-            repo_id="x", repo_path="/y", glossary="",
+            repo_id="x", repo_path="/y", focus_instruction="", glossary="",
         )
         # The "verbatim substring of the cited line" rule (post-Phase A).
         self.assertIn("verbatim", rendered.lower())
