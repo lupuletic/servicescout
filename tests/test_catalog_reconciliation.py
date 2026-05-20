@@ -4,7 +4,7 @@ import tempfile
 from copy import deepcopy
 from pathlib import Path
 
-from build_catalog import (
+from servicescout.build_catalog import (
     Catalog,
     add_repo,
     demote_infrastructure_components,

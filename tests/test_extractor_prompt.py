@@ -13,7 +13,7 @@ extraction.
 
 import unittest
 
-import extractor
+from servicescout import extractor
 
 
 class PromptRendersTests(unittest.TestCase):

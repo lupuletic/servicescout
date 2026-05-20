@@ -35,7 +35,7 @@ Three things that distinguish this from existing tools:
 
 ## Pipeline architecture — current and target
 
-### Current (this PR, "extractor-first")
+### Current ("extractor-first")
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -73,8 +73,8 @@ Three things that distinguish this from existing tools:
 
 ### Target ("AST-first hybrid")
 
-The research consensus from 2025–2026 (see "References" below) and
-empirical results from this PR all point to inverting this:
+Recent research (see "References" below) and empirical results from
+ServiceScout's verifier both point to inverting this:
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
@@ -105,7 +105,7 @@ empirical results from this PR all point to inverting this:
 └───────────────────────────────┬───────────────────────────────────┘
                                 ↓
 ┌───────────────────────────────────────────────────────────────────┐
-│ 4. Phase A+B re-verify (this PR's machinery, repurposed)          │
+│ 4. Phase A+B re-verify                                            │
 │    Confirm the LLM didn't smuggle in invented evidence. Phase A   │
 │    on every fact; Phase B on every edge.                          │
 └───────────────────────────────┬───────────────────────────────────┘
@@ -220,7 +220,7 @@ Concrete near-term work, in priority order:
    k8s manifests, Dockerfile FROM/EXPOSE, terraform/CDK, GitHub Actions,
    Backstage YAML when present. These yield ground-truth Component
    facts at zero LLM cost. Most of these don't even need tree-sitter
-   (YAML/JSON are trivial to parse). See Epic #9 Tier 1 #3.
+   (YAML/JSON are trivial to parse).
 6. **Optional SCIP layer.** For Java / TypeScript / Python / Go where
    the project has a working build, run `scip-java` / `scip-typescript` /
    `scip-python` / `rust-analyzer` to get actual semantic symbol
@@ -385,8 +385,8 @@ The paper explicitly notes:
 > them as alternative strategies, not complementary components.
 
 **This is precisely the gap we fill.** The empirical evidence from
-this PR (Phase A: 19 real bugs caught; Phase B: 63 additional bugs
-caught) shows that a *combined* AST-as-authority + LLM-as-enrichment
+ServiceScout's verifier (Phase A: 19 real bugs caught; Phase B: 63 additional
+bugs caught) shows that a *combined* AST-as-authority + LLM-as-enrichment
 + verifier-as-reconciler architecture beats either component alone.
 None of the prior art (CodeGraph, Codebase-Memory, the paper) does
 this reconciliation today. ServiceScout is the experiment.

@@ -11,7 +11,7 @@ These exercise:
 import unittest
 from pathlib import Path
 
-from static_extractors.mini import (
+from servicescout.static_extractors.mini import (
     api_specs,
     build_manifests,
     dockerfile,

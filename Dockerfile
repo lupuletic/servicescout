@@ -15,6 +15,8 @@ ARG PIP_TRUSTED_HOST=
 ARG PIP_NO_INDEX=
 ARG PIP_FIND_LINKS=/tmp/wheels
 ARG NPM_CONFIG_REGISTRY=
+ARG CODEX_CLI_VERSION=latest
+ARG CLAUDE_CODE_VERSION=latest
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -54,18 +56,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# codex + claude CLIs — best-effort install.
+# codex + claude CLIs — best-effort install. Defaults track the current
+# release; set CODEX_CLI_VERSION / CLAUDE_CODE_VERSION for reproducible builds.
 # Only the crawler service actually uses these; mcp + dashboard work without
-# them. In restricted networks, install on host and mount ~/.codex / ~/.claude
-# as documented in README.
+# them. The selected CLI still needs usable auth state inside the container.
 RUN if [ -n "$NPM_CONFIG_REGISTRY" ]; then npm config set registry "$NPM_CONFIG_REGISTRY"; fi \
-    && npm install -g @openai/codex@latest @anthropic-ai/claude-code@latest \
+    && npm install -g "@openai/codex@${CODEX_CLI_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force \
-    || echo "WARN: codex / claude CLI install failed; crawler service must run with host-mounted CLIs."
+    || echo "WARN: codex / claude CLI install failed; crawler and scheduler extraction will be unavailable."
 
 # Python venv with project deps
 RUN python -m venv /opt/venv
-COPY requirements.txt /tmp/requirements.txt
+COPY requirements.lock /tmp/requirements.lock
 COPY vendor/wheels/ /tmp/wheels/
 RUN pip_args="" \
     && if [ -n "$PIP_NO_INDEX" ]; then pip_args="$pip_args --no-index"; fi \
@@ -73,7 +75,7 @@ RUN pip_args="" \
     && if [ -n "$PIP_INDEX_URL" ]; then pip_args="$pip_args --index-url $PIP_INDEX_URL"; fi \
     && if [ -n "$PIP_EXTRA_INDEX_URL" ]; then pip_args="$pip_args --extra-index-url $PIP_EXTRA_INDEX_URL"; fi \
     && if [ -n "$PIP_TRUSTED_HOST" ]; then pip_args="$pip_args --trusted-host $PIP_TRUSTED_HOST"; fi \
-    && /opt/venv/bin/pip install $pip_args -r /tmp/requirements.txt
+    && /opt/venv/bin/pip install $pip_args -r /tmp/requirements.lock
 
 WORKDIR /app
 COPY . /app/
@@ -101,4 +103,4 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 
 USER cg
 ENTRYPOINT ["tini", "--", "/usr/local/bin/entrypoint.sh"]
-CMD ["python", "mcp_server.py", "--catalog", "/data/catalog.json", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8765"]
+CMD ["python", "-m", "servicescout.mcp_server", "--catalog", "/data/catalog.json", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8765"]

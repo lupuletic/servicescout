@@ -99,7 +99,7 @@ Rebuild command sequence:
 
 ```bash
 ./evals/build_eval_catalog.sh --skip-extraction
-python build_kuzu.py --catalog evals/data/catalog.json --db evals/data/catalog.kuzu
+python -m servicescout.build_kuzu --catalog evals/data/catalog.json --db evals/data/catalog.kuzu
 python evals/runner.py --catalog evals/data/catalog.json --no-plots
 python evals/report.py --current evals/runs/run_20260520_091528.json
 python evals/audit_catalog.py --catalog evals/data/catalog.json --workspace evals/workspace --fail-on-high

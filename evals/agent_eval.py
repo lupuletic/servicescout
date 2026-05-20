@@ -31,7 +31,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from storage import Backend, DEFAULT_FLOW_EDGE_TYPES  # noqa: E402
+from servicescout.storage import Backend, DEFAULT_FLOW_EDGE_TYPES  # noqa: E402
 
 from score import recall_set, repos_mentioned, text_mentions_any  # noqa: E402
 

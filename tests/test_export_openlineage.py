@@ -1,11 +1,11 @@
-"""Tests for the OpenLineage exporter (Epic #9 Tier 4 #10)."""
+"""Tests for the OpenLineage exporter."""
 
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-import export_openlineage
+from servicescout import export_openlineage
 
 
 def _entity(kind: str, name: str, **fields):

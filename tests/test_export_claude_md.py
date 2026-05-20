@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import export_claude_md
+from servicescout import export_claude_md
 
 
 def _entity(kind: str, name: str, *, system: str = "", **extra):

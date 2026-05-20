@@ -126,5 +126,5 @@ fi
 echo ""
 echo "done. next steps:"
 echo "  1) ./evals/build_eval_catalog.sh --workspace $SS_NAME"
-echo "  2) python build_kuzu.py --catalog $SS_DATA_DIR/catalog.json --db $SS_DATA_DIR/catalog.kuzu"
+echo "  2) python -m servicescout.build_kuzu --catalog $SS_DATA_DIR/catalog.json --db $SS_DATA_DIR/catalog.kuzu"
 echo "  3) python evals/runner.py --workspace $SS_NAME"

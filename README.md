@@ -2,19 +2,6 @@
   <img alt="ServiceScout" src="./assets/servicescout-logo.png" width="820">
 </p>
 
-<div align="center">
-
-# ServiceScout
-
-**Org-wide code context for AI coding agents. One MCP server, every repo.**
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Made for MCP](https://img.shields.io/badge/MCP-compatible-7c3aed)](https://modelcontextprotocol.io)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue)](https://www.python.org)
-[![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](#status)
-
-</div>
-
 In a multi-repo enterprise, AI coding agents struggle the moment a question
 crosses one repo. They grep the open repo, guess names, or fabricate
 connections. ServiceScout fixes that by giving them an evidence-backed graph
@@ -53,7 +40,15 @@ Workspace state is selected by env vars:
 Keeping `SERVICESCOUT_DATA_DIR` different per workspace is what prevents an
 eval crawl from overwriting your real catalog.
 
-**2. Crawl your GitHub orgs to build the catalog:**
+> **First time here? Try the public eval before your own repos.** ServiceScout
+> ships a pinned, isolated **sock-shop** workspace — its own source root, data
+> dir, and ports — so you can exercise the dashboard and MCP tools against a
+> known open-source microservices demo without ever pointing it at private
+> code. See [Switch between workspaces and public evals](#switch-between-workspaces-and-public-evals)
+> below. Extraction still calls your configured LLM provider (keep `BUDGET_USD`
+> small), but everything it indexes is public.
+
+**2. Crawl your own GitHub orgs to build the catalog:**
 
 ```bash
 cp workspace.json.example workspace.json && $EDITOR workspace.json   # add your orgs
@@ -64,10 +59,10 @@ The crawler is auto-convergent: it clones repos referenced by the catalog,
 re-runs extraction, and stops when no new repos are discovered. Budget cap
 in `.env` (`BUDGET_USD=100` by default) is a hard stop.
 
-**3. Wire it up to your coding agent (one line):**
+**3. Wire it up to your coding agent:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lupuletic/servicescout/main/install.sh | bash
+./install.sh
 ```
 
 Interactive — asks which agent (Claude Code / Codex / both) and the MCP
@@ -75,9 +70,11 @@ URL (default `http://127.0.0.1:8765/mcp`). Installs the `servicescout` and
 `journey` skills into `~/.claude/skills/` **and** registers the MCP server
 with your chosen agent(s).
 
-Headless / scripted:
+Remote install is available, but inspect the script first if this is a
+new machine or a shared environment:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/lupuletic/servicescout/main/install.sh | less
 curl -fsSL https://raw.githubusercontent.com/lupuletic/servicescout/main/install.sh \
   | bash -s -- --agent both --url http://127.0.0.1:8765/mcp --yes
 ```
@@ -94,6 +91,26 @@ codex  mcp add servicescout --url http://127.0.0.1:8765/mcp
 Restart the agent. Ask: *"trace the login flow end-to-end"* and watch it
 call `servicescout_search` → `servicescout_trace` → clone repos → answer
 with citations.
+
+## Repository layout
+
+- `servicescout/` — Python implementation package: crawler, extraction,
+  dashboard API, MCP server, storage backends, harnesses, and static extractors.
+- `frontend/` — React/Sigma operator UI.
+- `evals/` — reproducible benchmark workspaces and scoring harnesses.
+- `docs/` — runbooks, audits, screenshots, and release-readiness notes.
+- `deploy/`, `Dockerfile`, `docker-compose.yml`, `Makefile` — deployment and
+  local operator entrypoints.
+
+For local Python development:
+
+```bash
+python -m pip install -e .
+servicescout-dashboard --catalog data/catalog.json --host 127.0.0.1 --port 8788
+```
+
+Module entrypoints also work from a checkout, for example
+`python -m servicescout.dashboard` and `python -m servicescout.crawler`.
 
 ### Remote one-box setup
 
@@ -130,6 +147,22 @@ Then open `http://<host>:<port>/` for the UI or point agents at
 balancer or reverse proxy; the bundled nginx is intentionally a small internal
 edge, not an identity provider.
 
+Extraction currently shells out to the Codex or Claude Code CLI inside the
+crawler/scheduler container. On a developer machine, Compose mounts
+`~/.codex` and `~/.claude` so an existing CLI login can work in Docker. On a
+headless VM, validate the selected CLI auth path before running a crawl:
+
+```bash
+docker compose run --rm --entrypoint sh crawler -lc 'codex login status'
+docker compose run --rm --entrypoint sh crawler -lc 'claude auth status'
+```
+
+Run the command for the provider you configured in `LLM_PROVIDER`.
+
+For remote VM deployments, prefer a dedicated API key, service account, or
+credential proxy once the direct API/Agent SDK harness lands. Until then,
+treat CLI auth inside the container as a release gate for crawling.
+
 ### Switch between workspaces and public evals
 
 The repo includes a pinned Weaveworks sock-shop eval workspace under
@@ -139,7 +172,7 @@ same dashboard/MCP stack against it without touching your main catalog:
 ```bash
 make eval-setup WORKSPACE=sock-shop
 make eval-extract WORKSPACE=sock-shop
-python build_kuzu.py --catalog evals/data/catalog.json --db evals/data/catalog.kuzu
+python -m servicescout.build_kuzu --catalog evals/data/catalog.json --db evals/data/catalog.kuzu
 docker compose --env-file .env.socks-shop.example up -d mcp dashboard
 open http://127.0.0.1:8790
 python evals/runner.py --workspace sock-shop
@@ -241,12 +274,12 @@ through Compose/CLI.
 ## Pluggable storage backends
 
 ServiceScout's MCP server reads from a `Backend` — pick the one that fits
-your environment. New backends drop into `storage.py` behind the same
-interface.
+your environment. New backends drop into `servicescout/storage.py` behind the
+same interface.
 
 | Backend | When to use | Setup |
 |---|---|---|
-| **KuzuDB** *(recommended)* | Embedded graph DB with HNSW vector index + BM25 FTS. Persistent, fast at any size. | `pip install kuzu` (already in `requirements.txt`); run `python build_kuzu.py` after each crawl. |
+| **KuzuDB** *(recommended)* | Embedded graph DB with HNSW vector index + BM25 FTS. Persistent, fast at any size. | `kuzu` is pinned in `requirements.lock`; run `python -m servicescout.build_kuzu` after each crawl. |
 | **JSON** | Zero-dependency fallback. Reads `data/catalog.json` into memory. Fine up to ~50k entities. | No setup — just point at `data/catalog.json`. |
 
 Select with `--backend kuzu|json|auto` (default `auto` — Kuzu when a
@@ -259,7 +292,7 @@ either way.
 
 A React + Sigma.js dashboard ships with the project at
 [`http://localhost:8788`](http://localhost:8788) (Docker) or via
-`python dashboard.py`. Primary pages:
+`python -m servicescout.dashboard`. Primary pages:
 
 - **Explorer** — interactive force-directed layout of the catalog. Kind,
   edge, and confidence filters, hover-to-highlight neighbourhood,
@@ -320,17 +353,48 @@ k=60) and exposes eight tools for agents to navigate the result.
 | `WORKSPACE_ROOT` | yes | — | Path where the crawler clones repos. |
 | `LLM_PROVIDER` | yes | `codex` | Extractor harness: `codex` or `claude`. |
 | `LLM_MODEL` | yes | `gpt-5.4-mini` | Model name passed to the harness. |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | one of | — | Credential for the harness. Skip if your CLI is already logged in. |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | provider-dependent | — | Passed through for provider tooling and future direct API harnesses. Today, still verify the selected CLI is authenticated inside the crawler container. |
 | `GOOGLE_CLOUD_PROJECT` | optional | — | GCP project for Vertex AI embeddings. Empty disables embeddings (lexical-only fallback). |
 | `BUDGET_USD` | optional | `100` | Hard cost cap per crawl. |
 | `SERVICESCOUT_HTTP_BIND` | optional | `127.0.0.1:8080` | nginx edge bind address for remote Compose deployments. |
 | `CRAWL_INTERVAL_MINUTES` | optional | `360` | Continuous scheduler interval. |
 | `CRAWL_TICK_BUDGET_USD` | optional | `20` | Hard cost cap per scheduler tick. |
 
+**Credentials it needs** (mounted read-only into the container — see
+`docker-compose.yml`):
+
+- **GitHub** — `gh` CLI auth at `~/.config/gh`, used to discover and clone
+  repos. Required for crawling.
+- **Extractor** — *either* an authenticated `codex` / `claude` CLI login *or*
+  an API key (`CODEX_API_KEY` / `OPENAI_API_KEY` for codex, `ANTHROPIC_API_KEY`
+  for claude). The crawler preflights this and exits early with a clear message
+  if neither is present, so you find out before any repo is cloned.
+- **Embeddings** *(optional)* — Google Cloud ADC at `~/.config/gcloud` plus
+  `GOOGLE_CLOUD_PROJECT`. Leave the project empty to skip embeddings and use
+  lexical-only search.
+
 See `.env.example` for the full list. The first-run wizard
-(`python init_wizard.py`) walks you through everything interactively.
+(`python -m servicescout.init_wizard`) walks you through everything interactively.
 For the first controlled indexing run on a private estate, follow
 [`docs/controlled-indexing-runbook.md`](docs/controlled-indexing-runbook.md).
+
+## Security model
+
+ServiceScout is a local-first operator tool. It is not a hosted identity
+provider and it does not ship application-level auth in this alpha.
+
+- Default Compose binds the dashboard, MCP server, and nginx edge to
+  `127.0.0.1`.
+- The MCP server exposes read-only catalog tools.
+- The dashboard can start crawler and scheduler work. Those jobs can use the
+  mounted GitHub, cloud, Codex, Claude, and LLM API credentials.
+- Extraction sends source-derived prompts and snippets to the configured
+  extractor provider (`codex` or `claude`). Embeddings send catalog text to the
+  configured embedding provider when `GOOGLE_CLOUD_PROJECT` is set.
+- Do not expose the dashboard or `/mcp` directly to the public internet. Use a
+  VPN, firewall, SSH tunnel, or authenticated reverse proxy for shared access.
+
+See [`SECURITY.md`](SECURITY.md) before connecting it to private repositories.
 
 ### Corporate TLS / package mirrors
 
@@ -344,7 +408,7 @@ variables) before running Compose. For fully offline or allowlisted builds,
 populate `vendor/wheels/` on a network that can reach your package source:
 
 ```bash
-python -m pip download -r requirements.txt -d vendor/wheels
+python -m pip download -r requirements.lock -d vendor/wheels
 PIP_NO_INDEX=1 docker compose build
 ```
 
@@ -362,11 +426,11 @@ The runtime stack can still be started from a pre-built image with
 
 ## Status
 
-Alpha. The pipeline works end-to-end and has been validated on a real
-~200-repo workspace producing a Backstage-shaped catalog served to coding
-agents. Expect rough edges in the operator path:
+Alpha. The pipeline works end-to-end, has public eval coverage, and has been
+used against a large private workspace. Expect rough edges in the operator
+path:
 
-- `crawler.py --resume` can continue a compatible interrupted run by reading
+- `python -m servicescout.crawler --resume` can continue a compatible interrupted run by reading
   `crawler_state.json` and skipping repos already completed successfully.
   Scheduler-level incremental re-extraction is commit-aware, but long-running
   production soak and deleted-repo tombstoning are still tracked separately.
@@ -388,7 +452,8 @@ Issues and PRs welcome.
   pluggable provider interface.
 - **Extraction harnesses.** Today: `codex` and `claude` CLIs. Planned:
   Cursor agent mode, Cline, Continue, and direct OpenAI / Anthropic API
-  invocation for environments without the CLIs.
+  invocation for headless Docker/VM environments without mounted CLI login
+  state.
 - **Source-control hosts.** Today: GitHub. Planned: GitLab, Bitbucket,
   GitHub Enterprise.
 - **Runtime correlation.** OpenTelemetry / Datadog / service-mesh

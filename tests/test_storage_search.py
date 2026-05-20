@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from storage import JSONBackend
+from servicescout.storage import JSONBackend
 
 
 class StorageSearchTests(unittest.TestCase):

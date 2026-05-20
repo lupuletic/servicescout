@@ -2,9 +2,9 @@
 # Build an eval-specific catalog without touching the project-level data/.
 #
 # This script:
-#   1. Runs ServiceScout's extractor.py against repos cloned by setup.sh.
+#   1. Runs ServiceScout's extractor module against repos cloned by setup.sh.
 #   2. Writes per-repo extraction JSONs into that workspace's data/extractions/.
-#   3. Calls build_catalog.py to merge them into that workspace's catalog.json.
+#   3. Calls the build_catalog module to merge them into that workspace's catalog.json.
 #
 # Cost: LLM tokens (uses `codex` CLI). Typical first-run with
 # --effort medium and --model gpt-5.4-mini is single-digit dollars.
@@ -106,7 +106,7 @@ if [[ $SKIP_EXTRACTION -eq 0 ]]; then
     IFS=$'\t' read -r repo_id local <<< "$line"
     echo ""
     echo "==> extracting $repo_id"
-    "$PYTHON_BIN" extractor.py "$repo_id" \
+    "$PYTHON_BIN" -m servicescout.extractor "$repo_id" \
       --root "$WS_ROOT" \
       --workspace "$ORGS_CONFIG" \
       --output-dir "$EXTRACT_DIR" \
@@ -122,7 +122,7 @@ fi
 
 echo ""
 echo "==> merging into $OUT_DIR/catalog.json"
-"$PYTHON_BIN" build_catalog.py \
+"$PYTHON_BIN" -m servicescout.build_catalog \
   --root "$WS_ROOT" \
   --workspace "$ORGS_CONFIG" \
   --catalog-dir "$EXTRACT_DIR" \
@@ -131,5 +131,5 @@ echo "==> merging into $OUT_DIR/catalog.json"
 echo ""
 echo "done."
 echo "  catalog: $OUT_DIR/catalog.json"
-echo "  next:    python build_kuzu.py --catalog $OUT_DIR/catalog.json --db $OUT_DIR/catalog.kuzu"
+echo "  next:    python -m servicescout.build_kuzu --catalog $OUT_DIR/catalog.json --db $OUT_DIR/catalog.kuzu"
 echo "           python evals/runner.py --workspace $SS_NAME"

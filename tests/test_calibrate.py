@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from static_extractors import calibrate, code_shape as ast_crosscheck, snippet_verify
+from servicescout.static_extractors import calibrate, code_shape as ast_crosscheck, snippet_verify
 
 FIXTURES = Path(__file__).parent / "fixtures"
 REPO_A = FIXTURES / "repo_a"

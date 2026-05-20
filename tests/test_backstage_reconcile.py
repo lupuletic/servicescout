@@ -1,10 +1,10 @@
-"""Tests for the bi-directional Backstage YAML reconcile (Epic #9 Tier 4 #8)."""
+"""Tests for the bi-directional Backstage YAML reconcile."""
 
 import tempfile
 import unittest
 from pathlib import Path
 
-from static_extractors import backstage_reconcile
+from servicescout.static_extractors import backstage_reconcile
 
 
 SAMPLE_YAML = """\

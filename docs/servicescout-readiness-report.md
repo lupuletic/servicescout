@@ -9,10 +9,6 @@ pipeline and UI/MCP harness, with one deployment caveat: local image rebuilds
 in a package-filtered corporate network can fail unless a package mirror or
 allowed PyPI/npm access is configured.
 
-The active goal is **not marked complete** until a clean-image build is proven
-in an unrestricted or mirrored package environment. Everything else in the
-readiness phase has concrete evidence below.
-
 ## Completion Audit
 
 | Requirement | Evidence | Status |
@@ -56,17 +52,16 @@ Validated:
 - GitHub Actions workflow `.github/workflows/ci.yml` builds the Docker image
   from scratch on `ubuntu-latest`, starts dashboard/MCP/nginx with a fixture
   catalog, and curls both dashboard and MCP endpoints.
-- Repository Actions are enabled (`allowed_actions=all`), and the current
-  working branch `feat/evidence-grounding` exists on the remote. The CI gate
-  will run after these local changes are committed and pushed.
+- Repository Actions are expected to run the Docker and Compose smoke gate
+  after the release branch is pushed.
 - Local current-code dashboard on `127.0.0.1:8792` reports 12 extraction runs
   in Activity and 12 repos / 47 entities / 108 relations in Operator.
 - Local current-code MCP on `127.0.0.1:8793` uses the Kuzu backend and exposes
   8 tools.
 - Security review assumes internal/VPN-only access for now. The Compose edge
   now binds to localhost by default, nginx emits basic browser hardening
-  headers, and the runbook calls out that the unauthenticated dashboard trigger
-  can use mounted repo/cloud/LLM credentials.
+  headers, and the runbook calls out that the dashboard/API trigger can use
+  mounted repo/cloud/LLM credentials.
 
 Build caveat:
 
@@ -96,8 +91,9 @@ docker compose --env-file .env.online-boutique.example --profile edge up -d
 
 - Private-estate runs should start as controlled indexing with audit gates,
   not an unattended all-org crawl.
-- The dashboard and MCP have no built-in auth yet. Keep localhost/SSH tunnel
-  access or deploy behind VPN/firewall/SSO before exposing the nginx edge.
+- The dashboard and MCP intentionally have no app-level auth in this alpha.
+  Keep localhost/SSH tunnel access or deploy behind VPN/firewall/SSO before
+  exposing the nginx edge.
 - Domain and ownership quality still depends on source evidence, descriptors,
   CODEOWNERS, or workspace seeds where code alone is ambiguous.
 - Docker builds in package-filtered networks require an approved package mirror,

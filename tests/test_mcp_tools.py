@@ -1,4 +1,4 @@
-"""Tests for the new MCP tools (Tier 2 #4):
+"""Tests for the MCP tools:
   - servicescout_glossary(term)
   - servicescout_owners(entity)
 
@@ -137,7 +137,7 @@ def _build_tools() -> dict[str, Any]:
     """Build the MCP server against the fake backend and return the
     decorated tool functions keyed by name.
     """
-    import mcp_server
+    from servicescout import mcp_server
 
     backend = FakeBackend(_fake_catalog())
     mcp = mcp_server.build_server(
