@@ -58,6 +58,41 @@ def _confidence_weight(c: str | None) -> float:
     return CONFIDENCE_WEIGHT.get(c, CONFIDENCE_WEIGHT[None])
 
 
+def _search_terms(query: str) -> list[str]:
+    terms = [t.lower() for t in re.split(r"[^A-Za-z0-9_-]+", query) if len(t) > 2]
+    expanded = set(terms)
+    if any(t.startswith("async") for t in terms):
+        expanded.update({"async", "asynchronous", "asynchronously", "message", "messages", "queue", "broker"})
+    if any(t in {"message", "messages", "queue", "queues", "topic", "topics", "broker", "brokers"} for t in terms):
+        expanded.update({"message", "messages", "queue", "queues", "topic", "topics", "broker", "publish", "consume"})
+    return sorted(expanded)
+
+
+def _exact_term_boost(entity: dict[str, Any], terms: list[str]) -> float:
+    if not terms:
+        return 0.0
+    generic = {
+        "service", "services", "component", "components", "system", "systems",
+        "api", "apis", "resource", "resources", "provider", "providers",
+        "which", "what", "where", "does", "from", "into", "with", "uses",
+    }
+    wanted = {t.lower() for t in terms if t and t.lower() not in generic}
+    meta = entity.get("metadata", {}) or {}
+    spec = entity.get("spec", {}) or {}
+    annotations = meta.get("annotations", {}) or {}
+    candidates = [
+        meta.get("name", ""),
+        spec.get("technology", ""),
+        spec.get("host", ""),
+        spec.get("type", ""),
+        *list(annotations.get("aliases") or []),
+        *list(annotations.get("env_keys") or []),
+    ]
+    normalized = {str(value).lower() for value in candidates if value}
+    normalized.update({re.sub(r"[^a-z0-9]+", "", value) for value in normalized})
+    return 1.0 if wanted & normalized else 0.0
+
+
 # --------------------------------------------------------------------------- #
 # Abstract interface
 # --------------------------------------------------------------------------- #
@@ -253,7 +288,7 @@ class JSONBackend(Backend):
         self._maybe_reload()
         if not self._candidates:
             return []
-        terms = [t.lower() for t in re.split(r"[^A-Za-z0-9_-]+", query) if len(t) > 2]
+        terms = _search_terms(query)
         lex_scores = _idf_lexical_scores(self._haystacks, terms)
         vec_scores: dict[int, float] = {}
         if query_vector:
@@ -279,7 +314,7 @@ class JSONBackend(Backend):
             ent_conf = self._candidates[idx].get("confidence")
             if not _confidence_at_least(ent_conf, min_confidence):
                 continue
-            weighted[idx] = score * _confidence_weight(ent_conf)
+            weighted[idx] = (score * _confidence_weight(ent_conf)) + _exact_term_boost(self._candidates[idx], terms)
         scored = [(s, vec_scores.get(i, 0.0), lex_scores.get(i, 0.0), self._candidates[i])
                   for i, s in sorted(weighted.items(), key=lambda kv: -kv[1])]
         out = []
@@ -509,8 +544,14 @@ def _entity_haystack(entity: dict[str, Any]) -> str:
         " ".join(annotations.get("aliases") or []),
         annotations.get("tagline", "") or "",
         spec.get("type", ""),
+        spec.get("technology", ""),
+        spec.get("host", ""),
+        spec.get("access", ""),
         spec.get("system", ""),
         spec.get("category", "") or "",
+        " ".join(annotations.get("env_keys") or []),
+        annotations.get("datasource_url", "") or "",
+        annotations.get("messaging_pattern", "") or "",
         " ".join(spec.get("environments") or []),
     ]
     for attr in spec.get("domain_attributes") or []:

@@ -1,6 +1,8 @@
 # ServiceScout — full stack.
 #
 #   docker compose up -d              # mcp + dashboard (always-on)
+#   docker compose --profile edge up -d
+#                                      # expose dashboard + MCP through nginx
 #   docker compose run --rm crawler   # one-shot crawl
 #   docker compose run --rm reconcile # final LLM reconcile pass
 #
@@ -12,22 +14,45 @@
 #
 # Required env (in .env, see .env.example):
 #   WORKSPACE_ROOT, GOOGLE_CLOUD_PROJECT, plus LLM provider key.
+# Optional workspace selection:
+#   SERVICESCOUT_DATA_DIR, SERVICESCOUT_WORKSPACE_CONFIG.
+
+x-servicescout-env: &servicescout-env
+  HOST_UID: ${HOST_UID:-1000}
+  HOST_GID: ${HOST_GID:-1000}
+  GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+  GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-us-central1}
+  GOOGLE_APPLICATION_CREDENTIALS: /home/cg/.config/gcloud/application_default_credentials.json
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
 
 x-servicescout: &servicescout
   image: servicescout/servicescout:${SERVICESCOUT_VERSION:-latest}
   build:
     context: .
     dockerfile: Dockerfile
-  environment:
-    HOST_UID: ${HOST_UID:-1000}
-    HOST_GID: ${HOST_GID:-1000}
-    GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
-    GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-us-central1}
-    GOOGLE_APPLICATION_CREDENTIALS: /home/cg/.config/gcloud/application_default_credentials.json
-    OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    args:
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+      PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
+      PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+      PIP_NO_INDEX: ${PIP_NO_INDEX:-}
+      PIP_FIND_LINKS: ${PIP_FIND_LINKS:-/tmp/wheels}
+      NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-}
+  environment: *servicescout-env
 
 services:
+  edge:
+    image: nginx:1.27-alpine
+    profiles: ["edge"]
+    depends_on:
+      - dashboard
+      - mcp
+    ports:
+      - "${SERVICESCOUT_HTTP_BIND:-127.0.0.1:8080}:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: unless-stopped
+
   mcp:
     <<: *servicescout
     command: >
@@ -39,23 +64,39 @@ services:
       --host 0.0.0.0
       --port 8765
     ports:
-      - "127.0.0.1:8765:8765"
+      - "${SERVICESCOUT_MCP_BIND:-127.0.0.1:8765}:8765"
     volumes:
-      - ./data:/data
+      - ${SERVICESCOUT_DATA_DIR:-./data}:/data
       - ${HOME}/.config/gcloud:/home/cg/.config/gcloud:ro
     restart: unless-stopped
 
   dashboard:
     <<: *servicescout
+    environment:
+      <<: *servicescout-env
+      WORKSPACE_ROOT: /workspace
+      LLM_PROVIDER: ${LLM_PROVIDER:-codex}
+      LLM_MODEL: ${LLM_MODEL:-gpt-5.4-mini}
+      LLM_EFFORT: ${LLM_EFFORT:-medium}
+      CRAWL_TICK_BUDGET_USD: ${CRAWL_TICK_BUDGET_USD:-20}
+      SERVICESCOUT_WORKSPACE_CONFIG: /app/workspace.runtime.json
     command: >
       python dashboard.py
       --catalog /data/catalog.json
+      --extraction-log /data/extraction.jsonl
+      --decisions /data/triage_decisions.jsonl
       --host 0.0.0.0
       --port 8788
     ports:
-      - "127.0.0.1:8788:8788"
+      - "${SERVICESCOUT_DASHBOARD_BIND:-127.0.0.1:8788}:8788"
     volumes:
-      - ./data:/data
+      - ${SERVICESCOUT_DATA_DIR:-./data}:/data
+      - ${WORKSPACE_ROOT:?Set WORKSPACE_ROOT in .env}:/workspace
+      - ${SERVICESCOUT_WORKSPACE_CONFIG:-./workspace.json}:/app/workspace.runtime.json:ro
+      - ${HOME}/.config/gh:/home/cg/.config/gh:ro
+      - ${HOME}/.config/gcloud:/home/cg/.config/gcloud:ro
+      - ${HOME}/.codex:/home/cg/.codex:ro
+      - ${HOME}/.claude:/home/cg/.claude:ro
     restart: unless-stopped
 
   crawler:
@@ -64,6 +105,9 @@ services:
     command: >
       python crawler.py
       --root /workspace
+      --workspace /app/workspace.runtime.json
+      --catalog-dir /data/catalog
+      --catalog-output /data/catalog.json
       --provider ${LLM_PROVIDER:-codex}
       --model ${LLM_MODEL:-gpt-5.4-mini}
       --effort ${LLM_EFFORT:-high}
@@ -79,11 +123,46 @@ services:
       --stream-logs
     volumes:
       - ${WORKSPACE_ROOT:?Set WORKSPACE_ROOT in .env}:/workspace
-      - ./data:/data
+      - ${SERVICESCOUT_DATA_DIR:-./data}:/data
+      - ${SERVICESCOUT_WORKSPACE_CONFIG:-./workspace.json}:/app/workspace.runtime.json:ro
       - ${HOME}/.config/gh:/home/cg/.config/gh:ro
       - ${HOME}/.config/gcloud:/home/cg/.config/gcloud:ro
       - ${HOME}/.codex:/home/cg/.codex:ro
       - ${HOME}/.claude:/home/cg/.claude:ro
+
+  # Continuous-crawl scheduler (Epic #9 Tier 1 #2, Issue #1). Runs 24/7
+  # alongside mcp + dashboard. Default tick: every 6 hours. Each tick
+  # git-fetches every repo under WORKSPACE_ROOT, detects repos whose
+  # remote HEAD differs from the last extraction's SHA, and triggers
+  # crawler.py on that subset with a per-tick budget cap. Run logs
+  # land in data/crawl_runs/ for the dashboard's Activity page.
+  scheduler:
+    <<: *servicescout
+    profiles: ["scheduler"]
+    command: >
+      python scheduler.py
+      --workspace-root /workspace
+      --catalog-dir /data/catalog
+      --workspace /app/workspace.runtime.json
+      --run-log-dir /data/crawl_runs
+      --lock-path /data/crawl_lock
+      --interval-minutes ${CRAWL_INTERVAL_MINUTES:-360}
+      --budget-usd ${CRAWL_TICK_BUDGET_USD:-20}
+      --provider ${LLM_PROVIDER:-codex}
+      --model ${LLM_MODEL:-gpt-5.4-mini}
+      --effort ${LLM_EFFORT:-medium}
+      --crawler-arg --reconcile
+      --crawler-arg --embed
+      --crawler-arg --build-kuzu
+    volumes:
+      - ${WORKSPACE_ROOT:?Set WORKSPACE_ROOT in .env}:/workspace
+      - ${SERVICESCOUT_DATA_DIR:-./data}:/data
+      - ${SERVICESCOUT_WORKSPACE_CONFIG:-./workspace.json}:/app/workspace.runtime.json:ro
+      - ${HOME}/.config/gh:/home/cg/.config/gh:ro
+      - ${HOME}/.config/gcloud:/home/cg/.config/gcloud:ro
+      - ${HOME}/.codex:/home/cg/.codex:ro
+      - ${HOME}/.claude:/home/cg/.claude:ro
+    restart: unless-stopped
 
   reconcile:
     <<: *servicescout
@@ -95,6 +174,6 @@ services:
       --llm-provider ${LLM_PROVIDER:-codex}
       --llm-model ${LLM_MODEL:-gpt-5.4-mini}
     volumes:
-      - ./data:/data
+      - ${SERVICESCOUT_DATA_DIR:-./data}:/data
       - ${HOME}/.codex:/home/cg/.codex:ro
       - ${HOME}/.claude:/home/cg/.claude:ro

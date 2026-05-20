@@ -54,8 +54,14 @@ def _entity_haystack(entity: dict[str, Any]) -> str:
         " ".join(annotations.get("aliases") or []),
         annotations.get("tagline", "") or "",
         spec.get("type", ""),
+        spec.get("technology", ""),
+        spec.get("host", ""),
+        spec.get("access", ""),
         spec.get("system", ""),
         spec.get("category", "") or "",
+        " ".join(annotations.get("env_keys") or []),
+        annotations.get("datasource_url", "") or "",
+        annotations.get("messaging_pattern", "") or "",
         " ".join(spec.get("environments") or []),
     ]
     for attr in spec.get("domain_attributes") or []:

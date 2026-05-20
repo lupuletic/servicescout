@@ -3,14 +3,37 @@ import useSWR from "swr";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, ExternalLink } from "lucide-react";
 import { type EntityRecord } from "@/lib/api";
-import { KindBadge, PageHeader } from "@/components/ui";
+import { ConfidenceBadge, KindBadge, PageHeader } from "@/components/ui";
 import { MiniGraph } from "@/components/MiniGraph";
 import { cn } from "@/lib/cn";
 
 type EntityFull = EntityRecord & {
-  metadata: any;
-  spec: any;
-  evidence: any[];
+  metadata: {
+    name?: string;
+    description?: string;
+    tags?: string[];
+    annotations?: {
+      tagline?: string;
+      source_repos?: string[];
+      aliases?: string[];
+      capability_sheet?: string;
+    };
+  };
+  spec: {
+    type?: string;
+    runtime?: string;
+    lifecycle?: string;
+    system?: string;
+    domain?: string;
+    category?: string;
+    owner?: string;
+    subcomponentOf?: string;
+    environments?: string[];
+    domain_attributes?: Array<{ attribute: string; values?: string[]; meaning?: string }>;
+    glossary?: Array<{ term: string; definition: string }>;
+  };
+  evidence: Array<{ path: string; line: number; snippet: string }>;
+  confidence?: string;
 };
 
 type TabKey = "overview" | "relations" | "evidence";
@@ -59,6 +82,7 @@ export function EntityPage() {
       <div className="flex items-center gap-1 px-6 border-b border-border bg-bg-elevated/40">
         <div className="flex items-center gap-2.5 mr-4">
           <KindBadge kind={data.kind} />
+          <ConfidenceBadge confidence={data.confidence} />
           <span className="text-xs text-fg-dim font-mono">{data.ref}</span>
         </div>
         {TABS.map((t) => (
@@ -127,7 +151,7 @@ function OverviewTab({ entity, centerRef }: { entity: EntityFull; centerRef: str
       {domainAttributes.length > 0 && (
         <Card title="Domain attributes">
           <div className="space-y-2">
-            {domainAttributes.slice(0, 12).map((a: any) => (
+            {domainAttributes.slice(0, 12).map((a) => (
               <div key={a.attribute} className="rounded border border-border bg-bg p-3 text-sm">
                 <div className="font-mono text-fg">{a.attribute}</div>
                 <div className="text-xs text-fg-dim mt-1">
@@ -143,7 +167,7 @@ function OverviewTab({ entity, centerRef }: { entity: EntityFull; centerRef: str
       {glossary.length > 0 && (
         <Card title="Glossary">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2 text-sm">
-            {glossary.slice(0, 20).map((g: any) => (
+            {glossary.slice(0, 20).map((g) => (
               <div key={g.term}>
                 <span className="font-medium text-fg">{g.term}</span>
                 <span className="text-fg-muted"> — {g.definition}</span>

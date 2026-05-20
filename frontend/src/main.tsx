@@ -7,7 +7,8 @@ import { GraphPage } from "@/pages/GraphPage";
 import { EntitiesPage } from "@/pages/EntitiesPage";
 import { EntityPage } from "@/pages/EntityPage";
 import { TriagePage } from "@/pages/TriagePage";
-import { CrawlPage } from "@/pages/CrawlPage";
+import { ActivityPage } from "@/pages/ActivityPage";
+import { OperatorPage } from "@/pages/OperatorPage";
 import "@react-sigma/core/lib/style.css";
 import "./index.css";
 
@@ -26,7 +27,8 @@ createRoot(document.getElementById("root")!).render(
             <Route path="/entities" element={<EntitiesPage />} />
             <Route path="/entity/:ref" element={<EntityPage />} />
             <Route path="/triage" element={<TriagePage />} />
-            <Route path="/crawl" element={<CrawlPage />} />
+            <Route path="/activity" element={<ActivityPage />} />
+            <Route path="/operator" element={<OperatorPage />} />
           </Routes>
         </AppShell>
       </BrowserRouter>

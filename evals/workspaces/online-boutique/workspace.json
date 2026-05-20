@@ -1,0 +1,11 @@
+{
+  "name": "online-boutique",
+  "description": "GoogleCloudPlatform microservices-demo / Online Boutique public benchmark workspace.",
+  "repos": [
+    {
+      "id": "GoogleCloudPlatform/microservices-demo",
+      "url": "https://github.com/GoogleCloudPlatform/microservices-demo.git",
+      "local_name": "microservices-demo"
+    }
+  ]
+}

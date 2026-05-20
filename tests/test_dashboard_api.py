@@ -1,0 +1,210 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from fastapi.testclient import TestClient
+
+import dashboard
+
+
+def _write_catalog(root: Path) -> Path:
+    catalog_path = root / "catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "summary": {"entities": 2, "relations": 2, "repos_indexed": 1},
+                "entities": [
+                    {
+                        "kind": "Component",
+                        "metadata": {"name": "orders", "annotations": {"source_repos": ["acme/orders"]}},
+                        "spec": {"owner": "platform"},
+                        "confidence": "high",
+                    },
+                    {
+                        "kind": "Component",
+                        "metadata": {"name": "legacy", "annotations": {"source_repos": ["acme/legacy"]}},
+                        "spec": {"owner": "platform"},
+                        "confidence": "review",
+                    },
+                ],
+                "relations": [
+                    {"from": "Component:orders", "to": "Component:legacy", "type": "dependsOn", "confidence": "high"},
+                    {"from": "Component:legacy", "to": "Component:orders", "type": "dependsOn", "confidence": "low"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    repo_dir = root / "catalog"
+    repo_dir.mkdir()
+    (repo_dir / "orders.json").write_text(
+        json.dumps(
+            {
+                "_meta": {
+                    "extracted_at": "2026-05-18T10:00:00+00:00",
+                    "provider": "codex",
+                    "model": "gpt-5.4-mini",
+                    "run": {
+                        "status": "ok",
+                        "duration_seconds": 12.5,
+                        "cost": {"estimated_usd": 0.42},
+                    },
+                    "validation_errors": [],
+                    "evidence_quarantined": 1,
+                },
+                "repo": {"id": "acme/orders"},
+                "components": [],
+                "apis": [],
+                "resources": [],
+                "dependencies": [
+                    {
+                        "source": "orders",
+                        "target": "payments",
+                        "kind": "consumesApi",
+                        "confidence": "review",
+                        "evidence": [
+                            {"path": "src/orders.py", "line": 12, "snippet": "payments.charge(order)"}
+                        ],
+                        "_cross_check": {
+                            "verdict": "disconfirmed",
+                            "evidence_total": 1,
+                            "evidence_matched": 0,
+                            "evidence_partial": 0,
+                            "evidence_missing": 1,
+                            "evidence_invalid_path": 0,
+                        },
+                        "_cross_check_ast": {"verdict": "unsupported"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return catalog_path
+
+
+class DashboardApiTests(unittest.TestCase):
+    def test_confidence_filters_entities_and_graph(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = dashboard.create_app(
+                catalog_path=_write_catalog(root),
+                extraction_log=root / "extractions.jsonl",
+                decisions_path=root / "decisions.jsonl",
+            )
+            client = TestClient(app)
+
+            entities = client.get("/api/entities", params={"confidence": "high"}).json()
+            self.assertEqual([e["ref"] for e in entities["entities"]], ["Component:orders"])
+
+            graph = client.get(
+                "/api/graph",
+                params=[("kind", "Component"), ("edge_type", "dependsOn"), ("confidence", "high")],
+            ).json()
+            self.assertEqual(graph["edge_total"], 1)
+            self.assertEqual(graph["edges"][0]["confidence"], "high")
+
+    def test_operator_summary_reads_repo_run_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = dashboard.create_app(
+                catalog_path=_write_catalog(root),
+                extraction_log=root / "extractions.jsonl",
+                decisions_path=root / "decisions.jsonl",
+            )
+            client = TestClient(app)
+
+            payload = client.get("/api/operator/summary").json()
+            self.assertEqual(payload["catalog"]["repos_indexed"], 1)
+            self.assertEqual(payload["cost_trend"][0]["cost"], 0.42)
+            self.assertEqual(payload["verifier"]["evidence_quarantined"], 1)
+            self.assertEqual(payload["verifier"]["entity_confidence"]["review"], 1)
+
+    def test_activity_falls_back_to_extraction_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = dashboard.create_app(
+                catalog_path=_write_catalog(root),
+                extraction_log=root / "extractions.jsonl",
+                decisions_path=root / "decisions.jsonl",
+            )
+            client = TestClient(app)
+
+            runs = client.get("/api/crawl/runs").json()
+            self.assertEqual(runs["source"], "extractions")
+            self.assertEqual(runs["total"], 1)
+            self.assertEqual(runs["runs"][0]["run_id"], "extraction-orders")
+            self.assertEqual(runs["runs"][0]["trigger"], "extraction")
+            self.assertEqual(runs["runs"][0]["cost_usd"], 0.42)
+
+            status = client.get("/api/crawl/status").json()
+            self.assertEqual(status["last_run"]["run_id"], "extraction-orders")
+
+            detail = client.get("/api/crawl/runs/extraction-orders").json()
+            self.assertEqual(detail["trigger"], "extraction")
+            self.assertEqual(detail["repos_changed"][0]["repo"], "orders")
+            self.assertEqual(detail["events"][0]["event"], "repo_extracted")
+
+    def test_trigger_requires_mounted_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = dashboard.create_app(
+                catalog_path=_write_catalog(root),
+                extraction_log=root / "extractions.jsonl",
+                decisions_path=root / "decisions.jsonl",
+            )
+            client = TestClient(app)
+
+            with mock.patch.dict("os.environ", {"WORKSPACE_ROOT": str(root / "missing")}, clear=False):
+                response = client.post("/api/crawl/trigger")
+
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.json()["error"], "workspace_root_missing")
+
+    def test_disconfirmed_fact_queue_and_decisions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = dashboard.create_app(
+                catalog_path=_write_catalog(root),
+                extraction_log=root / "extractions.jsonl",
+                decisions_path=root / "decisions.jsonl",
+            )
+            client = TestClient(app)
+
+            payload = client.get("/api/triage/facts").json()
+            self.assertEqual(payload["count"], 1)
+            self.assertEqual(payload["facts"][0]["id"], "acme/orders:dependencies:0")
+            self.assertEqual(payload["facts"][0]["combined_verdict"], "disconfirmed")
+
+            response = client.post(
+                "/api/triage/facts/decide",
+                data={
+                    "fact_id": "acme/orders:dependencies:0",
+                    "action": "assign_owner",
+                    "owner": "platform",
+                    "due_date": "2026-05-30",
+                    "reviewer": "ops@example.com",
+                    "reason": "Payments owner to verify",
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            assigned = client.get("/api/triage/facts").json()
+            self.assertEqual(assigned["assigned"], 1)
+            self.assertEqual(assigned["facts"][0]["owner"], "platform")
+
+            client.post(
+                "/api/triage/facts/decide",
+                data={
+                    "fact_id": "acme/orders:dependencies:0",
+                    "action": "mark_corrected",
+                    "reviewer": "ops@example.com",
+                },
+            )
+            closed = client.get("/api/triage/facts").json()
+            self.assertEqual(closed["count"], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

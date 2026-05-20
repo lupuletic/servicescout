@@ -46,12 +46,22 @@ cp .env.example .env  # fill in WORKSPACE_ROOT, GOOGLE_CLOUD_PROJECT
 docker compose up -d mcp dashboard
 ```
 
+Open the operator UI at [`http://127.0.0.1:8788`](http://127.0.0.1:8788).
+
+Workspace state is selected by env vars:
+
+- `WORKSPACE_ROOT`: mounted source checkout root.
+- `SERVICESCOUT_WORKSPACE_CONFIG`: org/exclusion config used by crawler/scheduler.
+- `SERVICESCOUT_DATA_DIR`: persistent catalog, Kuzu DB, run logs, and decisions.
+
+Keeping `SERVICESCOUT_DATA_DIR` different per workspace is what prevents an
+eval crawl from overwriting your real catalog.
+
 **2. Crawl your GitHub orgs to build the catalog:**
 
 ```bash
 cp workspace.json.example workspace.json && $EDITOR workspace.json   # add your orgs
 docker compose run --rm crawler                                       # extracts + embeds
-python build_kuzu.py                                                  # populates the Kuzu index
 ```
 
 The crawler is auto-convergent: it clones repos referenced by the catalog,
@@ -89,6 +99,108 @@ Restart the agent. Ask: *"trace the login flow end-to-end"* and watch it
 call `servicescout_search` → `servicescout_trace` → clone repos → answer
 with citations.
 
+### Remote one-box setup
+
+For a new VM or workstation where you want the full product behind one HTTP
+port, use the bundled nginx edge profile:
+
+```bash
+git clone https://github.com/lupuletic/servicescout.git
+cd servicescout
+cp .env.example .env
+$EDITOR .env                 # set WORKSPACE_ROOT, credentials, SERVICESCOUT_HTTP_BIND
+cp workspace.json.example workspace.json
+$EDITOR workspace.json       # add orgs / exclusions
+docker compose --profile scheduler --profile edge up -d --build
+```
+
+That starts a self-contained Compose network:
+
+- `edge` nginx exposes `${SERVICESCOUT_HTTP_BIND:-127.0.0.1:8080}`.
+- `dashboard` serves the React operator UI and API.
+- `mcp` serves streamable HTTP MCP at `/mcp`.
+- `scheduler` keeps the catalog fresh and writes run logs for Activity.
+- `${SERVICESCOUT_DATA_DIR:-./data}` is the persistent catalog/Kuzu/run-log
+  volume.
+
+After the stack is up:
+
+```bash
+docker compose run --rm crawler
+```
+
+Then open `http://<host>:<port>/` for the UI or point agents at
+`http://<host>:<port>/mcp`. Put TLS/auth in front with your normal load
+balancer or reverse proxy; the bundled nginx is intentionally a small internal
+edge, not an identity provider.
+
+### Switch between workspaces and public evals
+
+The repo includes a pinned Weaveworks sock-shop eval workspace under
+`evals/workspace` and an isolated catalog under `evals/data`. You can run the
+same dashboard/MCP stack against it without touching your main catalog:
+
+```bash
+make eval-setup WORKSPACE=sock-shop
+make eval-extract WORKSPACE=sock-shop
+python build_kuzu.py --catalog evals/data/catalog.json --db evals/data/catalog.kuzu
+docker compose --env-file .env.socks-shop.example up -d mcp dashboard
+open http://127.0.0.1:8790
+python evals/runner.py --workspace sock-shop
+```
+
+Watch extraction progress in the terminal: every repo prints
+`==> extracting microservices-demo/<repo>` and ends with an `EXTRACTOR_RESULT`
+line containing status, duration, estimated cost, and output path.
+
+For a one-port remote-style sock-shop stack:
+
+```bash
+docker compose --env-file .env.socks-shop.example --profile edge up -d --build
+open http://127.0.0.1:8081
+```
+
+The second public benchmark is Google Online Boutique / `microservices-demo`.
+It is isolated under `evals/workspaces/online-boutique`:
+
+```bash
+make eval-setup WORKSPACE=online-boutique
+make eval-extract WORKSPACE=online-boutique
+make eval-kuzu WORKSPACE=online-boutique
+make eval-run WORKSPACE=online-boutique
+make eval-audit WORKSPACE=online-boutique
+docker compose --env-file .env.online-boutique.example up -d mcp dashboard
+open http://127.0.0.1:8792
+```
+
+For a one-port remote-style Online Boutique stack:
+
+```bash
+docker compose --env-file .env.online-boutique.example --profile edge up -d --build
+open http://127.0.0.1:8082
+```
+
+To switch back to your main/private workspace, use your normal `.env` or a
+copied `.env.main` based on `.env.main.example`:
+
+```bash
+docker compose --env-file .env.main up -d mcp dashboard
+```
+
+The two workspaces stay separate as long as these pairs stay separate:
+
+| Workspace | Source root | Data root | Workspace config |
+| --- | --- | --- | --- |
+| Main/private | `WORKSPACE_ROOT=/Users/.../work` | `SERVICESCOUT_DATA_DIR=./data` | `SERVICESCOUT_WORKSPACE_CONFIG=./workspace.json` |
+| sock-shop evals | `WORKSPACE_ROOT=./evals/workspace` | `SERVICESCOUT_DATA_DIR=./evals/data` | `SERVICESCOUT_WORKSPACE_CONFIG=./evals/workspace_orgs.json` |
+| online-boutique evals | `WORKSPACE_ROOT=./evals/workspaces/online-boutique/workspace` | `SERVICESCOUT_DATA_DIR=./evals/workspaces/online-boutique/data` | `SERVICESCOUT_WORKSPACE_CONFIG=./evals/workspaces/online-boutique/workspace_orgs.json` |
+
+The example env files also use different local ports:
+
+- Main/private: dashboard `127.0.0.1:8788`, MCP `127.0.0.1:8765`.
+- sock-shop: dashboard `127.0.0.1:8790`, MCP `127.0.0.1:8791`.
+- online-boutique: dashboard `127.0.0.1:8792`, MCP `127.0.0.1:8793`.
+
 ---
 
 ## What you get
@@ -110,7 +222,7 @@ with citations.
 
 ## MCP tool surface
 
-Six tools. Designed so an agent uses the first one for any new task and
+Eight tools. Designed so an agent uses the first one for any new task and
 rarely needs the operator tool.
 
 | Tool | Purpose |
@@ -120,10 +232,13 @@ rarely needs the operator tool.
 | `servicescout_neighbors(entity, direction="out"\|"in"\|"both", depth=1, edge_types=[...])` | One-step graph traversal. `direction="in"` answers "who depends on / consumes X". |
 | `servicescout_trace(start, end=None, max_hops=6, include_async=True)` | Multi-hop journey planner. Returns CANDIDATE hops; agent verifies each in code. |
 | `servicescout_evidence(source, target=None)` | File:line citations for an edge. |
+| `servicescout_glossary(term, limit=20)` | Vocabulary lookup across component capability sheets. |
+| `servicescout_owners(entity)` | Fast owner/lifecycle lookup without fetching the full entity. |
 | `servicescout_status()` | Read-only catalog state. |
 
-Write operations (rebuild / embed / reconcile / build-kuzu) are intentionally
-**not** exposed over MCP — they run from the CLI only.
+Write operations are intentionally **not** exposed over MCP. Operators can
+trigger crawls from the dashboard Activity page; maintenance jobs still run
+through Compose/CLI.
 
 ---
 
@@ -139,7 +254,7 @@ interface.
 | **JSON** | Zero-dependency fallback. Reads `data/catalog.json` into memory. Fine up to ~50k entities. | No setup — just point at `data/catalog.json`. |
 
 Select with `--backend kuzu|json|auto` (default `auto` — Kuzu when a
-database exists, JSON otherwise). The interface is the same six tools
+database exists, JSON otherwise). The interface is the same eight tools
 either way.
 
 ---
@@ -148,22 +263,27 @@ either way.
 
 A React + Sigma.js dashboard ships with the project at
 [`http://localhost:8788`](http://localhost:8788) (Docker) or via
-`python dashboard.py`. Four pages:
+`python dashboard.py`. Primary pages:
 
-- **Graph** — interactive force-directed layout of the catalog. Kind
-  filters, hover-to-highlight neighbourhood, click-to-inspect.
-- **Catalog** — searchable table of every entity, filterable by kind.
-- **Triage** — review unresolved external components and decide
-  merge / link / mark-external (the legacy POST handler is still wired).
-- **Crawl** — live progress with polling — entities, relations, spend,
-  recent extractions, crawler status.
+- **Explorer** — interactive force-directed layout of the catalog. Kind,
+  edge, and confidence filters, hover-to-highlight neighbourhood,
+  click-to-inspect.
+- **Catalog** — searchable entity table with facets for kind, owner,
+  lifecycle, runtime, environment, tag, type, and confidence.
+- **Activity** — scheduler status, extraction/crawl run history, drilldown
+  into each run, and trigger-now control.
+- **Operator** — cost trendline, verifier signal, staleness heatmap, and
+  stale repo queue.
+- **Triage** — disconfirmed verifier facts, owner assignment, terminal
+  decisions, external-component decisions, and decision log.
 
 Built with **Vite + React + SWR + react-router-dom + Sigma.js
 (graphology)** — no TanStack — and packaged into the same single
 Docker image (`Dockerfile` runs `npm run build` automatically). The
 FastAPI backend serves the built `frontend/dist/` and exposes
 `/api/state.json`, `/api/entities`, `/api/entity/:ref`, `/api/graph`,
-`/api/triage.json`.
+`/api/triage.json`, `/api/triage/facts`, `/api/crawl/*`, and
+`/api/operator/summary`.
 
 ---
 
@@ -193,7 +313,7 @@ names that appear as hostnames, config keys, or generated client classes).
 The embed step adds Gemini embeddings to each entity. The Kuzu build step
 loads the catalog into an embedded graph DB with a BM25 FTS index and an
 HNSW vector index. The MCP server fuses dense + lexical retrieval (RRF,
-k=60) and exposes six tools for agents to navigate the result.
+k=60) and exposes eight tools for agents to navigate the result.
 
 ---
 
@@ -207,9 +327,40 @@ k=60) and exposes six tools for agents to navigate the result.
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | one of | — | Credential for the harness. Skip if your CLI is already logged in. |
 | `GOOGLE_CLOUD_PROJECT` | optional | — | GCP project for Vertex AI embeddings. Empty disables embeddings (lexical-only fallback). |
 | `BUDGET_USD` | optional | `100` | Hard cost cap per crawl. |
+| `SERVICESCOUT_HTTP_BIND` | optional | `127.0.0.1:8080` | nginx edge bind address for remote Compose deployments. |
+| `CRAWL_INTERVAL_MINUTES` | optional | `360` | Continuous scheduler interval. |
+| `CRAWL_TICK_BUDGET_USD` | optional | `20` | Hard cost cap per scheduler tick. |
 
 See `.env.example` for the full list. The first-run wizard
 (`python init_wizard.py`) walks you through everything interactively.
+For the first controlled indexing run on a private estate, follow
+[`docs/controlled-indexing-runbook.md`](docs/controlled-indexing-runbook.md).
+
+### Corporate TLS / package mirrors
+
+Docker builds install Python and Node packages. In networks with TLS
+inspection or package-policy blocks, add local CA PEM files under `certs/`
+before building; the Dockerfile splits multi-certificate bundles and trusts
+each certificate. If your network blocks public package indexes entirely,
+set the usual Docker build environment or mirror variables (`PIP_INDEX_URL`,
+`PIP_EXTRA_INDEX_URL`, `PIP_TRUSTED_HOST`, `NPM_CONFIG_REGISTRY`, proxy
+variables) before running Compose. For fully offline or allowlisted builds,
+populate `vendor/wheels/` on a network that can reach your package source:
+
+```bash
+python -m pip download -r requirements.txt -d vendor/wheels
+PIP_NO_INDEX=1 docker compose build
+```
+
+Equivalent Make targets:
+
+```bash
+make wheelhouse
+make docker-build-offline WORKSPACE=online-boutique
+```
+
+The runtime stack can still be started from a pre-built image with
+`docker compose up -d --no-build mcp dashboard`.
 
 ---
 
@@ -221,8 +372,10 @@ agents. Expect rough edges in the operator path:
 
 - `crawler_state.json` is written but not yet read for resume — restart is
   full-recrawl.
-- MCP server binds `127.0.0.1` with no auth (fine for local agents; auth
-  for hosted deployments is on the roadmap).
+- MCP/dashboard have no built-in user auth and the dashboard can trigger
+  crawls using mounted repo/LLM credentials. Keep the default localhost bind
+  for SSH-tunnel use, or put the bundled nginx edge behind your normal VPN,
+  firewall, SSO proxy, or load balancer before binding to a public interface.
 - GitHub only — GitLab, Bitbucket, and GitHub Enterprise discovery are
   planned.
 

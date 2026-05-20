@@ -26,3 +26,6 @@ dist-ssr
 # --- Frontend build artifacts ---
 frontend/node_modules/
 frontend/dist/
+test-results/
+playwright-report/
+.playwright/

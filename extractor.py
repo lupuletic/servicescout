@@ -22,6 +22,13 @@ from pathlib import Path
 from typing import Any
 
 from repo_discovery import find_repos, load_workspace_config
+from static_extractors import (
+    backstage_reconcile,
+    calibrate,
+    code_shape,
+    correction,
+    snippet_verify,
+)
 
 
 HERE = Path(__file__).parent
@@ -40,6 +47,7 @@ This prompt is intentionally domain-agnostic — apply it to any kind of service
 
 Repository: {repo_id}
 Local path: {repo_path}
+{focus_instruction}
 
 Return JSON conforming to the supplied schema (Backstage-aligned). Every fact must include file/line
 evidence. Do not optimize for a specific ticket — extract reusable repo-level facts that help many
@@ -285,8 +293,87 @@ EVIDENCE RULES:
   - Every component, api, resource, and dependency MUST have ≥1 evidence item.
   - path must be relative to the repo root (not absolute, no `..`).
   - line is an integer ≥1.
-  - snippet is a SHORT extract (≤200 chars).
+  - snippet is a SHORT extract (≤200 chars). It MUST be a verbatim
+    substring of the cited file at the cited line (whitespace
+    normalisation is fine). Do NOT paraphrase, summarise, or compose
+    snippets from multiple lines: a deterministic post-extractor verifier
+    will open the file and check this exact substring is present, and
+    facts that fail this check get demoted to confidence=review.
+  - If a snippet you want to cite spans multiple lines, emit ONE evidence
+    item per line (each with its own line number and the verbatim text
+    of that line). A multi-line method signature → 2-3 evidence items,
+    not one paraphrased blob.
   - If you cannot prove a fact with evidence, omit it or mark confidence=review.
+
+ALIAS HYGIENE — what aliases ARE and what they are NOT:
+
+  Aliases live on `dependencies[].aliases` and `providers[].aliases`. They
+  collapse variant names for the SAME entity that an agent or human might
+  type into a search box and expect to land here. Typical aliases:
+  hostnames, config keys, marketing names, generated client identifiers,
+  short or qualified spellings of the canonical name.
+
+  Aliases are NOT:
+    - operation names of an API (those belong in apis[].operations[])
+    - endpoint paths, URL templates, route patterns (also apis[].operations[])
+    - method verbs, response codes, header names, MIME types
+    - per-payload event names that are not also service names
+    - lockfile entries, CI job names, build-tool target names
+    - generic UI / DOM / framework event names
+
+  Test: "if someone searched for this string, should they land on THIS
+  entity?" If yes → alias. If no → it belongs somewhere else
+  (operations[], glossary[], notes, or it should be dropped).
+
+ENTITY DISAMBIGUATION:
+
+  The five entity kinds are distinct categories. Pick the most specific
+  one each fact fits. If you find yourself emitting the same name in two
+  categories, that is a sign one of them is wrong.
+
+    Component   — a deployable / runnable unit OWNED by this repo.
+                  One Component per deployable artefact (a service, a
+                  worker, a cron job, a frontend, a CLI, a function).
+    API         — a surface that a Component EXPOSES, expressed as a
+                  named contract. `apis[].exposed_by` is the Component
+                  name; `apis[].operations[]` holds the methods or
+                  routes that contract carries.
+    Resource    — a stateful or messaging endpoint a Component USES or
+                  OWNS. Databases, queues, topics, streams, buckets,
+                  caches, search indices, config stores. The transport
+                  technology (Kafka, RabbitMQ, Postgres, S3) goes in
+                  the `technology` field — it is NEVER its own entity.
+    Provider    — a third-party SaaS the Component depends on at
+                  runtime. Examples by category live in the providers[]
+                  guidance below.
+    Dependency  — an edge from THIS Component to one of the entities
+                  above, carrying kind / protocol / evidence.
+
+CONFIGURABLE CONSTRUCTS — extracting the right parameter:
+
+  Many frameworks declare a queue / topic / route / DB / cron via a
+  configurable construct that takes multiple named parameters:
+
+    - an annotation / decorator with kwargs
+    - a fluent builder chain (.queue("X").factory("Y").concurrency(5))
+    - a struct / config block with named fields
+    - a function call with named arguments
+
+  When such a construct names a resource, only the parameter whose KEY
+  identifies the resource (commonly named: `destination`, `destinations`,
+  `queue`, `queues`, `topic`, `topics`, `subject`, `channel`, `address`,
+  `path`, `route`, `name`, or unambiguously the construct's positional
+  primary argument) carries the resource name.
+
+  Other parameters of the same construct (container factory, concurrency,
+  consumer group, retry policy, message converter, content type) are
+  CONFIGURATION, not resources. Do not emit them as Resource entities,
+  Component aliases, or dependency targets.
+
+  If the resource name is an externalised configuration placeholder
+  (e.g. `${{app.queue.name}}`, `%{{queue}}`, `{{{{ .Values.queue }}}}`), emit
+  the placeholder verbatim as the resource name AND mark confidence
+  medium or review — the actual value resolves at runtime.
 
 OUT OF SCOPE:
   - Lock files, package registries, generated symbols, screenshots, translation files.
@@ -351,9 +438,19 @@ def load_glossary(catalog_path: Path = DEFAULT_CATALOG, max_entries: int = GLOSS
 
 def build_prompt(repo: dict[str, Any], catalog_path: Path = DEFAULT_CATALOG) -> str:
     glossary = load_glossary(catalog_path)
+    focus_path = (repo.get("focus_path") or "").strip()
+    focus_instruction = ""
+    if focus_path:
+        focus_instruction = (
+            f"Focus path: {focus_path}\n"
+            "This is one extraction unit inside a larger repository. Extract only the deployable "
+            "unit under the focus path, but use root-level manifests, shared protos, and deployment "
+            "config in this repository when they prove that unit's APIs, resources, or dependencies."
+        )
     return PROMPT_TEMPLATE.format(
         repo_id=repo["id"],
         repo_path=repo["absolute_path"],
+        focus_instruction=focus_instruction,
         glossary=glossary,
     )
 
@@ -421,6 +518,26 @@ def _read_json_if_valid(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    """Greedy-scan for the last top-level JSON object in `text`. Used as a
+    fallback when a harness writes its structured output to stdout rather
+    than the file specified by --output-last-message.
+    """
+    if not text:
+        return None
+    end = len(text)
+    while True:
+        idx = text.rfind("{", 0, end)
+        if idx == -1:
+            return None
+        try:
+            obj = json.loads(text[idx:])
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError:
+            end = idx
+            continue
+
+
 def _summarize_codex_line(line: str) -> dict[str, Any] | None:
     line = line.strip()
     if not line:
@@ -448,11 +565,13 @@ def codex_extract(
     timeout_seconds: int,
     post_result_grace: int,
     stream_logs: bool,
+    catalog_path: Path,
+    scratch_dir: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     codex = shutil.which("codex")
     if not codex:
         raise SystemExit("codex CLI was not found on PATH")
-    work_dir = DEFAULT_OUTPUT_DIR / ".scratch"
+    work_dir = scratch_dir
     work_dir.mkdir(parents=True, exist_ok=True)
     schema_path = work_dir / f".{repo['name']}.schema.json"
     result_path = work_dir / f".{repo['name']}.result.json"
@@ -460,7 +579,7 @@ def codex_extract(
     if result_path.exists():
         result_path.unlink()
 
-    prompt = build_prompt(repo)
+    prompt = build_prompt(repo, catalog_path=catalog_path)
     cmd = [
         codex,
         "exec",
@@ -562,11 +681,12 @@ def claude_extract(
     model: str,
     effort: str,
     max_budget_usd: str | None,
+    catalog_path: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     claude = shutil.which("claude")
     if not claude:
         raise SystemExit("claude CLI was not found on PATH")
-    prompt = build_prompt(repo)
+    prompt = build_prompt(repo, catalog_path=catalog_path)
     cmd = [
         claude,
         "-p",
@@ -607,6 +727,136 @@ def claude_extract(
         "duration_seconds": round(time.monotonic() - started, 3),
         "returncode": 0,
         "cost": {"estimated_usd": raw.get("total_cost_usd") if isinstance(raw, dict) else None, "currency": "USD"},
+    }
+    return payload, run
+
+
+def codex_correct(
+    repo: dict[str, Any],
+    prompt: str,
+    model: str | None,
+    effort: str,
+    scratch_dir: Path,
+    timeout_seconds: int = 600,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Single targeted correction call to Codex with the correction schema.
+
+    Smaller / shorter than `codex_extract` — no stream-log handling, tighter
+    timeout, and the supplied prompt+schema instead of the main extraction
+    prompt and catalog schema. Used by the Phase A+B correction loop.
+    """
+    codex = shutil.which("codex")
+    if not codex:
+        raise SystemExit("codex CLI was not found on PATH")
+    work_dir = scratch_dir
+    work_dir.mkdir(parents=True, exist_ok=True)
+    schema_path = work_dir / f".{repo['name']}.correction.schema.json"
+    result_path = work_dir / f".{repo['name']}.correction.result.json"
+    schema_path.write_text(
+        json.dumps(correction.CORRECTION_SCHEMA, indent=2) + "\n", encoding="utf-8"
+    )
+    if result_path.exists():
+        result_path.unlink()
+    # NOTE: deliberately no --output-schema for the correction call.
+    # Codex's strict-JSON-schema mode rejects `additionalProperties: true`
+    # anywhere in the tree, but the correction `fact` field has to be
+    # an open shape because it spans every catalog category. The prompt
+    # constrains the response shape and `correction.parse_correction_response`
+    # validates+sanitises it post-hoc.
+    cmd = [
+        codex,
+        "exec",
+        "--ephemeral",
+        "-c",
+        f'model_reasoning_effort="{effort}"',
+        "--cd",
+        repo["absolute_path"],
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "--output-last-message",
+        str(result_path),
+    ]
+    if model:
+        cmd.extend(["--model", model])
+    cmd.append(prompt)
+    started = time.monotonic()
+    completed = subprocess.run(
+        cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout_seconds
+    )
+    payload = _read_json_if_valid(result_path)
+    if payload is None:
+        # Fall back: codex may have written the JSON to stdout instead of
+        # the result file. Try to parse the stdout's last JSON object.
+        payload = _extract_json_object(completed.stdout)
+    if payload is None:
+        stderr_tail = (completed.stderr or "")[-500:]
+        raise RuntimeError(
+            f"codex correction returned no usable JSON for {repo['id']} "
+            f"(rc={completed.returncode}); stderr tail: {stderr_tail}"
+        )
+    run = {
+        "provider": "codex",
+        "model": model or "default",
+        "effort": effort,
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "returncode": completed.returncode,
+        "kind": "correction",
+    }
+    return payload, run
+
+
+def claude_correct(
+    repo: dict[str, Any],
+    prompt: str,
+    model: str,
+    effort: str,
+    max_budget_usd: str | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Single targeted correction call to Claude with the correction schema."""
+    claude = shutil.which("claude")
+    if not claude:
+        raise SystemExit("claude CLI was not found on PATH")
+    cmd = [
+        claude,
+        "-p",
+        prompt,
+        "--output-format",
+        "json",
+        "--json-schema",
+        json.dumps(correction.CORRECTION_SCHEMA, separators=(",", ":")),
+        "--permission-mode",
+        "dontAsk",
+        "--model",
+        model,
+        "--effort",
+        effort,
+        "--allowedTools",
+        "Read,Grep,Glob,Bash(rg *)",
+        "--add-dir",
+        repo["absolute_path"],
+    ]
+    if max_budget_usd:
+        cmd.extend(["--max-budget-usd", max_budget_usd])
+    started = time.monotonic()
+    completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout[:1000]
+        raise RuntimeError(detail or f"claude correction exited with {completed.returncode}")
+    raw = json.loads(completed.stdout)
+    if isinstance(raw, dict) and isinstance(raw.get("structured_output"), dict):
+        payload = raw["structured_output"]
+    elif isinstance(raw, dict) and isinstance(raw.get("result"), str):
+        payload = json.loads(raw["result"])
+    else:
+        payload = raw
+    run = {
+        "provider": "claude",
+        "model": model,
+        "effort": effort,
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "returncode": 0,
+        "kind": "correction",
     }
     return payload, run
 
@@ -683,7 +933,7 @@ def confine_evidence_paths(payload: dict[str, Any], repo_root: Path) -> int:
 def write_output(output_dir: Path, payload: dict[str, Any]) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     repo_id = payload["repo"]["id"]
-    name = repo_id.split("/", 1)[-1]
+    name = repo_id.split("/", 1)[-1].replace("/", "__")
     path = output_dir / f"{name}.json"
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -691,11 +941,27 @@ def write_output(output_dir: Path, payload: dict[str, Any]) -> Path:
     return path
 
 
-def append_run_ledger(record: dict[str, Any]) -> Path:
-    RUNS_LEDGER.parent.mkdir(parents=True, exist_ok=True)
-    with RUNS_LEDGER.open("a", encoding="utf-8") as handle:
+def append_run_ledger(record: dict[str, Any], ledger_path: Path = RUNS_LEDGER) -> Path:
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    with ledger_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
-    return RUNS_LEDGER
+    return ledger_path
+
+
+def _correction_call(
+    repo: dict[str, Any],
+    prompt: str,
+    *,
+    provider: str,
+    model: str | None,
+    effort: str,
+    timeout_seconds: int,
+    max_budget_usd: str | None,
+    scratch_dir: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if provider == "claude":
+        return claude_correct(repo, prompt, model or "sonnet", effort, max_budget_usd)
+    return codex_correct(repo, prompt, model, effort, scratch_dir=scratch_dir, timeout_seconds=max(300, timeout_seconds // 2))
 
 
 def run_for_repo(
@@ -709,14 +975,87 @@ def run_for_repo(
     stream_logs: bool,
     max_budget_usd: str | None,
     output_dir: Path,
+    correction_rounds: int = 1,
 ) -> dict[str, Any]:
+    data_dir = output_dir.parent
+    catalog_path = data_dir / "catalog.json"
+    scratch_dir = output_dir / ".scratch"
+    ledger_path = data_dir / "extraction_runs.jsonl"
     if provider == "claude":
-        payload, run = claude_extract(repo, model or "sonnet", effort, max_budget_usd)
+        payload, run = claude_extract(repo, model or "sonnet", effort, max_budget_usd, catalog_path=catalog_path)
     else:
-        payload, run = codex_extract(repo, model, effort, timeout_seconds, post_result_grace, stream_logs)
+        payload, run = codex_extract(
+            repo, model, effort, timeout_seconds, post_result_grace, stream_logs,
+            catalog_path=catalog_path,
+            scratch_dir=scratch_dir,
+        )
     payload = normalize_payload(payload, repo)
-    quarantined = confine_evidence_paths(payload, Path(repo["absolute_path"]))
+    repo_root = Path(repo["absolute_path"])
+    quarantined = confine_evidence_paths(payload, repo_root)
     errors = validate_against_schema(payload)
+    cross_check = None
+    correction_runs: list[dict[str, Any]] = []
+    if not errors:
+        # Phase A (snippet substring) + Phase B (tree-sitter AST) cross-checks
+        # on the LLM's evidence. Phase A asks "is the snippet at the cited
+        # line?"; Phase B asks "does the cited line actually do what the
+        # edge claims it does?". The calibrator combines both verdicts into
+        # confidence changes on `dependencies` and `resources`, and annotates
+        # every fact with `_cross_check` (and `_cross_check_ast` for deps).
+        for round_idx in range(max(0, correction_rounds)):
+            report_a = snippet_verify.verify_payload(payload, repo_root)
+            report_b = code_shape.verify_payload(payload, repo_root)
+            problems = calibrate.collect_problems(payload, report_a, report_b)
+            if not problems:
+                break
+            try:
+                prompt = correction.build_correction_prompt(
+                    repo["id"], repo["absolute_path"], problems
+                )
+                raw, c_run = _correction_call(
+                    repo,
+                    prompt,
+                    provider=provider,
+                    model=model,
+                    effort=effort,
+                    timeout_seconds=timeout_seconds,
+                    max_budget_usd=max_budget_usd,
+                    scratch_dir=scratch_dir,
+                )
+                directives = correction.parse_correction_response(raw)
+                apply_summary = correction.apply_corrections(payload, directives)
+                # Re-quarantine in case corrections introduced bad paths.
+                quarantined += confine_evidence_paths(payload, repo_root)
+                round_errors = validate_against_schema(payload)
+                correction_runs.append(
+                    {
+                        "round": round_idx + 1,
+                        "problems_input": len(problems),
+                        "directives_returned": len(directives),
+                        "applied": apply_summary,
+                        "run": c_run,
+                        "post_correction_validation_errors": round_errors,
+                    }
+                )
+                if round_errors:
+                    errors = round_errors
+                    break
+            except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
+                correction_runs.append(
+                    {"round": round_idx + 1, "problems_input": len(problems), "error": str(exc)}
+                )
+                break
+
+        if not errors:
+            report_a = snippet_verify.verify_payload(payload, repo_root)
+            report_b = code_shape.verify_payload(payload, repo_root)
+            cross_check = calibrate.apply(payload, report_a, report_b)
+            # Bi-directional Backstage reconcile (Epic #9 Tier 4 #8):
+            # if the repo has a hand-maintained catalog-info.yaml, treat
+            # it as another evidence stream. Components where the LLM
+            # disagrees with the YAML get demoted to confidence=review.
+            # No-op when no Backstage YAML is present in the repo.
+            backstage_summary = backstage_reconcile.reconcile_payload(payload, repo_root)
     payload["_meta"] = {
         "provider": provider,
         "model": run["model"],
@@ -726,16 +1065,19 @@ def run_for_repo(
         "schema": "catalog-v1",
         "evidence_quarantined": quarantined,
         "validation_errors": errors,
+        "cross_check": cross_check,
+        "correction_runs": correction_runs,
+        "backstage_reconcile": locals().get("backstage_summary"),
         "run": run,
     }
     if errors:
-        target_dir = DEFAULT_QUARANTINE_DIR
+        target_dir = data_dir / "catalog_quarantine"
         target_dir.mkdir(parents=True, exist_ok=True)
         out = write_output(target_dir, payload)
-        append_run_ledger({"repo": repo["id"], "status": "quarantined", "errors": errors, **run})
+        append_run_ledger({"repo": repo["id"], "status": "quarantined", "errors": errors, **run}, ledger_path)
         return {"output": str(out), "status": "quarantined", "errors": errors, "run": run}
     out = write_output(output_dir, payload)
-    append_run_ledger({"repo": repo["id"], "status": "ok", **run})
+    append_run_ledger({"repo": repo["id"], "status": "ok", **run}, ledger_path)
     return {
         "output": str(out),
         "status": "ok",
@@ -760,11 +1102,18 @@ def main() -> int:
     parser.add_argument("--max-budget-usd", default=None)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--workspace", type=Path, default=HERE / "workspace.json")
+    parser.add_argument(
+        "--correction-rounds",
+        type=int,
+        default=1,
+        help="Phase A+B verifier correction rounds to run after extraction. "
+             "0 disables the correction loop; values >2 rarely help in practice.",
+    )
     args = parser.parse_args()
 
     root = args.root.resolve()
     workspace = load_workspace_config(args.workspace)
-    repos = find_repos(root, workspace["orgs"], workspace["excluded_repos"])
+    repos = find_repos(root, workspace["orgs"], workspace["excluded_repos"], workspace.get("repo_units") or [])
     selected = next((r for r in repos if args.repo in {r["id"], r["name"]}), None)
     if selected is None:
         raise SystemExit(f"Repo {args.repo!r} not found under {root}")
@@ -779,6 +1128,7 @@ def main() -> int:
         stream_logs=args.stream_logs,
         max_budget_usd=args.max_budget_usd,
         output_dir=args.output_dir if args.output_dir.is_absolute() else (HERE / args.output_dir),
+        correction_rounds=args.correction_rounds,
     )
     print("EXTRACTOR_RESULT " + json.dumps(result, sort_keys=True))
     return 0

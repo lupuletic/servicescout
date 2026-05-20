@@ -139,7 +139,7 @@ questions:
     agent:
       expected_repos: ["microservices-demo/front-end", "microservices-demo/orders", "microservices-demo/payment", "microservices-demo/shipping"]
       expected_keywords_any_of: ["orders", "payment", "shipping"]
-      canonical_answer: "front-end calls orders; orders calls payment (auth), then publishes a shipping task to RabbitMQ which shipping consumes."
+      canonical_answer: "front-end calls orders; orders calls payment and shipping over HTTP; shipping then publishes a shipping-task message to RabbitMQ."
 
   - id: sync-05
     category: sync-multihop
@@ -150,11 +150,11 @@ questions:
       neighbors:
         of: "Component:orders"
         direction: "out"
-        must_include_targets_any_of: ["Component:payment", "Component:shipping", "Resource:orders-db", "Resource:rabbitmq"]
+        must_include_targets_any_of: ["Component:payment", "Component:shipping", "Resource:orders-db"]
     agent:
       expected_repos: ["microservices-demo/orders"]
-      expected_keywords_any_of: ["payment", "shipping", "MongoDB", "RabbitMQ", "orders-db"]
-      canonical_answer: "orders depends on payment (HTTP), shipping (via RabbitMQ), MongoDB (orders-db), and RabbitMQ as a publisher."
+      expected_keywords_any_of: ["payment", "shipping", "MongoDB", "orders-db"]
+      canonical_answer: "orders directly depends on payment over HTTP, shipping over HTTP, and MongoDB orders-db. RabbitMQ is used downstream by shipping, not directly by orders."
 
   # ---------------------- async multi-hop (ServiceScout's differentiator) ----------------------
 
@@ -172,11 +172,11 @@ questions:
     agent:
       expected_repos: ["microservices-demo/orders", "microservices-demo/shipping", "microservices-demo/queue-master"]
       expected_keywords_any_of: ["RabbitMQ", "shipping-task", "consumer", "queue"]
-      canonical_answer: "orders publishes a shipping task to RabbitMQ; shipping consumes and processes it; queue-master observes queue depth."
+      canonical_answer: "orders calls shipping over HTTP; shipping publishes a shipping-task message to RabbitMQ; queue-master consumes shipping-task messages."
 
   - id: async-02
     category: async-multihop
-    question: "Which services consume messages from RabbitMQ in this system?"
+    question: "Which service consumes shipping-task messages from RabbitMQ in this system?"
     catalog:
       search_top_k: 5
       search_must_include_any_of: ["Resource:rabbitmq"]
@@ -184,22 +184,22 @@ questions:
         of: "Resource:rabbitmq"
         direction: "in"
         edge_types: ["consumesMessage"]
-        must_include_sources_any_of: ["Component:shipping", "Component:queue-master"]
+        must_include_sources_any_of: ["Component:queue-master"]
     agent:
-      expected_repos: ["microservices-demo/shipping", "microservices-demo/queue-master"]
-      expected_keywords_any_of: ["shipping", "queue-master", "RabbitMQ"]
-      canonical_answer: "shipping (processes shipping tasks) and queue-master (observability) consume from RabbitMQ."
+      expected_repos: ["microservices-demo/queue-master"]
+      expected_keywords_any_of: ["queue-master", "RabbitMQ", "shipping-task"]
+      canonical_answer: "queue-master consumes shipping-task messages from RabbitMQ. shipping publishes those messages."
 
   - id: async-03
     category: async-multihop
     question: "Which service publishes the shipping-task message, and which consumes it?"
     catalog:
       search_top_k: 5
-      search_must_include_any_of: ["Component:orders", "Component:shipping"]
+      search_must_include_any_of: ["Component:shipping", "Component:queue-master"]
     agent:
-      expected_repos: ["microservices-demo/orders", "microservices-demo/shipping"]
-      expected_keywords_any_of: ["orders publishes", "shipping consumes", "RabbitMQ"]
-      canonical_answer: "orders publishes shipping-task messages to RabbitMQ; shipping consumes them."
+      expected_repos: ["microservices-demo/shipping", "microservices-demo/queue-master"]
+      expected_keywords_any_of: ["shipping publishes", "queue-master consumes", "RabbitMQ"]
+      canonical_answer: "shipping publishes shipping-task messages to RabbitMQ; queue-master consumes them."
 
   # ---------------------- blast radius ----------------------
 
@@ -227,20 +227,28 @@ questions:
       neighbors:
         of: "Resource:rabbitmq"
         direction: "both"
-        must_include_neighbors_any_of: ["Component:orders", "Component:shipping", "Component:queue-master"]
+        must_include_neighbors_any_of: ["Component:shipping", "Component:queue-master"]
     agent:
       expected_repos: ["microservices-demo/orders", "microservices-demo/shipping", "microservices-demo/queue-master"]
       expected_keywords_any_of: ["RabbitMQ", "publish", "consume", "shipping", "queue-master"]
-      canonical_answer: "orders cannot publish shipping tasks; shipping has nothing to consume; queue-master loses its observability target. The synchronous flows (browse, login, add-to-cart, payment auth) keep working."
+      canonical_answer: "shipping cannot publish shipping-task messages, and queue-master has no broker/queue to consume from. Order placement can degrade indirectly because orders calls shipping before completing checkout."
 
   # ---------------------- structural (internal quality assertions) ----------------------
   #
   # These don't map to user questions — they're internal invariants the catalog
-  # should always satisfy. They closed real eval gaps after iter 2 and iter 2.1
-  # both shipped subtle structural bugs that no user-facing question caught:
-  # iter 2 had shipping marked as publisher (wrong direction); iter 1/2 had
-  # RabbitMQ duplicated as Provider; orders has never emitted its publish edge.
-  # No `agent:` block — these are catalog-only.
+  # should always satisfy.
+  #
+  # IMPORTANT (corrected in iter 4): the iter-3 originals for structural-02/03
+  # expected `shipping consumesMessage shipping-task` and
+  # `orders producesMessage shipping-task`. That was a mental-model assumption,
+  # not the actual sock-shop code at the pinned SHAs. The real architecture:
+  #   - shipping PUBLISHES to shipping-task via rabbitTemplate.convertAndSend
+  #     (ShippingController.java:43)
+  #   - queue-master CONSUMES shipping-task via SimpleMessageListenerContainer
+  #     + MessageListenerAdapter(shippingTaskHandler) (ShippingConsumerConfiguration.java)
+  #   - orders calls shipping via HTTP (asyncGetService.postResource), not via
+  #     the message queue
+  # The questions are corrected to match the actual code.
 
   - id: structural-01
     category: structural
@@ -254,20 +262,20 @@ questions:
 
   - id: structural-02
     category: structural
-    question: "Does the catalog correctly identify shipping as a consumer of shipping-task?"
+    question: "Does the catalog correctly identify queue-master as a consumer of shipping-task?"
     catalog:
       neighbors:
         of: "Resource:shipping-task"
         direction: "in"
         edge_types: ["consumesMessage"]
-        must_include_sources_any_of: ["Component:shipping"]
+        must_include_sources_any_of: ["Component:queue-master"]
 
   - id: structural-03
     category: structural
-    question: "Does the catalog capture orders publishing to shipping-task?"
+    question: "Does the catalog capture shipping publishing to shipping-task?"
     catalog:
       neighbors:
         of: "Resource:shipping-task"
         direction: "in"
         edge_types: ["producesMessage"]
-        must_include_sources_any_of: ["Component:orders"]
+        must_include_sources_any_of: ["Component:shipping"]

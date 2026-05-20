@@ -10,6 +10,13 @@ data/
 runs/
 cache/
 
+# Generated artefacts for named benchmark workspaces. Keep the workspace specs
+# committed, but leave cloned source, catalog databases, and run outputs local.
+workspaces/*/workspace/
+workspaces/*/data/
+workspaces/*/runs/
+workspaces/*/cache/
+
 # Local overrides
 *.local.*
 

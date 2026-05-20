@@ -50,6 +50,7 @@ from storage import (
     _edge_record,
     _kind_rank,
     _rrf,
+    _search_terms,
 )
 
 
@@ -233,7 +234,8 @@ class KuzuBackend(Backend):
             return []
         candidates: dict[str, dict[str, Any]] = {}
         # Lexical via FTS.
-        fts_query = _to_fts_query(query)
+        terms = _search_terms(query)
+        fts_query = _to_fts_query(query, terms)
         lex_rank: list[str] = []
         try:
             r = self._conn.execute(
@@ -280,15 +282,14 @@ class KuzuBackend(Backend):
         ranking_indices = [[ref_to_idx[r] for r in rl if r in ref_to_idx] for rl in rank_lists]
         fused = _rrf(ranking_indices)
         idx_to_ref = {i: r for r, i in ref_to_idx.items()}
-        from storage import _confidence_at_least, _confidence_weight, _hit_record  # local import to avoid cycle
+        from storage import _confidence_at_least, _confidence_weight, _exact_term_boost, _hit_record  # local import to avoid cycle
         weighted: dict[int, float] = {}
         for idx, score in fused.items():
             ent_conf = candidates[idx_to_ref[idx]]["ent"].get("confidence")
             if not _confidence_at_least(ent_conf, min_confidence):
                 continue
-            weighted[idx] = score * _confidence_weight(ent_conf)
+            weighted[idx] = (score * _confidence_weight(ent_conf)) + _exact_term_boost(candidates[idx_to_ref[idx]]["ent"], terms)
         scored = [(s, idx_to_ref[i], candidates[idx_to_ref[i]]) for i, s in sorted(weighted.items(), key=lambda kv: -kv[1])]
-        terms = [t.lower() for t in re.split(r"[^A-Za-z0-9_-]+", query) if len(t) > 2]
         out = []
         for rrf_score, ref, data in scored[:limit]:
             ent = data["ent"]
@@ -457,8 +458,8 @@ def _safe_json(s: str | None) -> Any:
         return None
 
 
-def _to_fts_query(query: str) -> str:
+def _to_fts_query(query: str, terms: list[str] | None = None) -> str:
     """Kuzu FTS expects whitespace-separated terms. Strip punctuation, keep
     alphanumeric tokens longer than 2 chars."""
-    terms = [t for t in re.split(r"[^A-Za-z0-9_-]+", query) if len(t) > 2]
+    terms = terms or [t for t in re.split(r"[^A-Za-z0-9_-]+", query) if len(t) > 2]
     return " ".join(terms) or query

@@ -7,3 +7,8 @@ fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 jinja2>=3.1.0
 questionary>=2.0.1
+# Note: previously included tree-sitter + per-language grammars for the
+# Phase B AST cross-check. Removed in the universal-extractor pivot —
+# Phase B now uses a language-agnostic code-shape heuristic, and the
+# semantic intent (edge kind, direction) is owned by the LLM. See
+# static_extractors/code_shape.py and ARCHITECTURE.md.

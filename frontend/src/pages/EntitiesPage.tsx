@@ -2,8 +2,9 @@ import { useState, useMemo } from "react";
 import useSWR from "swr";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { type EntityRecord } from "@/lib/api";
-import { Input, KindBadge, PageHeader } from "@/components/ui";
+import { ConfidenceBadge, Input, KindBadge, PageHeader } from "@/components/ui";
 import { cn } from "@/lib/cn";
+import { KIND_META, kindLabel } from "@/lib/catalogLabels";
 
 type FacetEntry = { value: string; count: number };
 type FacetsPayload = {
@@ -14,10 +15,11 @@ type FacetsPayload = {
   environment: FacetEntry[];
   tag: FacetEntry[];
   runtime: FacetEntry[];
+  confidence: FacetEntry[];
 };
 
 // URL params we sync. Each is a comma-separated list (kind=Component,Provider).
-const FACET_KEYS = ["kind", "type", "owner", "lifecycle", "environment", "tag", "runtime"] as const;
+const FACET_KEYS = ["kind", "type", "owner", "lifecycle", "environment", "tag", "runtime", "confidence"] as const;
 type FacetKey = (typeof FACET_KEYS)[number];
 
 function readSelection(sp: URLSearchParams, key: FacetKey): Set<string> {
@@ -32,7 +34,10 @@ export function EntitiesPage() {
   const navigate = useNavigate();
 
   const selections = useMemo<Record<FacetKey, Set<string>>>(() => {
-    return Object.fromEntries(FACET_KEYS.map((k) => [k, readSelection(sp, k)])) as any;
+    return FACET_KEYS.reduce((acc, key) => {
+      acc[key] = readSelection(sp, key);
+      return acc;
+    }, {} as Record<FacetKey, Set<string>>);
   }, [sp]);
 
   const { data: facets } = useSWR<FacetsPayload>("/api/facets");
@@ -42,7 +47,7 @@ export function EntitiesPage() {
     // kind is single-select (server only supports one); pick the first.
     const kindSel = Array.from(selections.kind);
     if (kindSel.length === 1) params.set("kind", kindSel[0]);
-    for (const key of ["owner", "lifecycle", "environment", "tag", "runtime"] as FacetKey[]) {
+    for (const key of ["owner", "lifecycle", "environment", "tag", "runtime", "confidence"] as FacetKey[]) {
       Array.from(selections[key]).forEach((v) => params.append(key, v));
     }
     if (query.trim()) params.set("query", query.trim());
@@ -55,7 +60,11 @@ export function EntitiesPage() {
   const toggle = (key: FacetKey, value: string) => {
     const next = new URLSearchParams(sp);
     const current = readSelection(sp, key);
-    current.has(value) ? current.delete(value) : current.add(value);
+    if (current.has(value)) {
+      current.delete(value);
+    } else {
+      current.add(value);
+    }
     if (current.size > 0) {
       next.set(key, Array.from(current).join(","));
     } else {
@@ -109,7 +118,16 @@ export function EntitiesPage() {
               Clear all filters
             </button>
           )}
-          <FacetGroup title="Kind"          entries={facets?.kind        || []} selected={selections.kind}        onToggle={(v) => toggle("kind", v)}        onClear={() => clearFacet("kind")} renderLabel={(v) => v} />
+          <FacetGroup
+            title="Entity type"
+            entries={facets?.kind || []}
+            selected={selections.kind}
+            onToggle={(v) => toggle("kind", v)}
+            onClear={() => clearFacet("kind")}
+            renderLabel={(v) => kindLabel(v, true)}
+            renderHint={(v) => KIND_META[v]?.description}
+          />
+          <FacetGroup title="Confidence"    entries={facets?.confidence  || []} selected={selections.confidence}  onToggle={(v) => toggle("confidence", v)}  onClear={() => clearFacet("confidence")} renderLabel={(v) => v} max={4} />
           <FacetGroup title="Lifecycle"     entries={facets?.lifecycle   || []} selected={selections.lifecycle}   onToggle={(v) => toggle("lifecycle", v)}   onClear={() => clearFacet("lifecycle")} renderLabel={(v) => v} />
           <FacetGroup title="Runtime"       entries={facets?.runtime     || []} selected={selections.runtime}     onToggle={(v) => toggle("runtime", v)}     onClear={() => clearFacet("runtime")} renderLabel={(v) => v} />
           <FacetGroup title="Environment"   entries={facets?.environment || []} selected={selections.environment} onToggle={(v) => toggle("environment", v)} onClear={() => clearFacet("environment")} renderLabel={(v) => v} />
@@ -126,8 +144,9 @@ export function EntitiesPage() {
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-bg-elevated text-xs uppercase tracking-wider text-fg-dim">
               <tr>
-                <th className="text-left px-6 py-2.5 font-medium">Kind</th>
+                <th className="text-left px-6 py-2.5 font-medium">Type</th>
                 <th className="text-left px-3 py-2.5 font-medium">Name</th>
+                <th className="text-left px-3 py-2.5 font-medium">Confidence</th>
                 <th className="text-left px-3 py-2.5 font-medium">Tagline</th>
                 <th className="text-left px-3 py-2.5 font-medium">Repo</th>
               </tr>
@@ -141,6 +160,7 @@ export function EntitiesPage() {
                 >
                   <td className="px-6 py-2.5"><KindBadge kind={e.kind} /></td>
                   <td className="px-3 py-2.5 font-medium text-fg">{e.name}</td>
+                  <td className="px-3 py-2.5"><ConfidenceBadge confidence={e.confidence} /></td>
                   <td className="px-3 py-2.5 text-fg-muted truncate max-w-xl">{e.tagline || e.description || ""}</td>
                   <td className="px-3 py-2.5 text-fg-dim text-xs font-mono">{e.source_repos?.[0] || ""}</td>
                 </tr>
@@ -160,6 +180,7 @@ function FacetGroup({
   onToggle,
   onClear,
   renderLabel,
+  renderHint,
   max = 8,
 }: {
   title: string;
@@ -168,6 +189,7 @@ function FacetGroup({
   onToggle: (v: string) => void;
   onClear: () => void;
   renderLabel: (v: string) => string;
+  renderHint?: (v: string) => string | undefined;
   max?: number;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -189,13 +211,20 @@ function FacetGroup({
               <button
                 onClick={() => onToggle(e.value)}
                 className={cn(
-                  "w-full flex items-center justify-between px-2 py-1 rounded text-xs transition-colors",
+                  "w-full flex items-start justify-between gap-2 px-2 py-1.5 rounded text-xs transition-colors",
                   isOn
                     ? "bg-accent/15 text-fg border border-accent/30"
                     : "text-fg-muted hover:bg-bg hover:text-fg border border-transparent",
                 )}
               >
-                <span className="truncate">{renderLabel(e.value)}</span>
+                <span className="min-w-0 text-left">
+                  <span className="block truncate">{renderLabel(e.value)}</span>
+                  {renderHint?.(e.value) && (
+                    <span className="mt-0.5 block line-clamp-2 text-[10px] leading-3 text-fg-dim">
+                      {renderHint(e.value)}
+                    </span>
+                  )}
+                </span>
                 <span className="text-fg-dim ml-2 shrink-0">{e.count}</span>
               </button>
             </li>

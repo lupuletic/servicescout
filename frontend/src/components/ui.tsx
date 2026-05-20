@@ -4,6 +4,7 @@
 
 import { type ReactNode, type HTMLAttributes, type ButtonHTMLAttributes, type InputHTMLAttributes, forwardRef } from "react";
 import { cn } from "@/lib/cn";
+import { kindLabel } from "@/lib/catalogLabels";
 
 export const Card = ({ className, ...props }: HTMLAttributes<HTMLDivElement>) => (
   <div
@@ -64,6 +65,13 @@ const KIND_COLORS: Record<string, string> = {
   Group: "bg-group/15 text-group border-group/30",
 };
 
+const CONFIDENCE_COLORS: Record<string, string> = {
+  high: "bg-green-500/15 text-green-400 border-green-500/30",
+  medium: "bg-blue-500/15 text-blue-400 border-blue-500/30",
+  low: "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
+  review: "bg-red-500/15 text-red-400 border-red-500/30",
+};
+
 export function KindBadge({ kind, className }: { kind: string; className?: string }) {
   return (
     <span
@@ -73,7 +81,45 @@ export function KindBadge({ kind, className }: { kind: string; className?: strin
         className,
       )}
     >
-      {kind}
+      {kindLabel(kind)}
+    </span>
+  );
+}
+
+export function ConfidenceBadge({ confidence, className }: { confidence?: string; className?: string }) {
+  const value = confidence || "review";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider",
+        CONFIDENCE_COLORS[value] || "bg-bg-elevated text-fg-muted border-border",
+        className,
+      )}
+    >
+      {value}
+    </span>
+  );
+}
+
+const STATUS_COLORS: Record<string, string> = {
+  ok: "bg-green-500/15 text-green-400 border-green-500/30",
+  no_changes: "bg-blue-500/15 text-blue-400 border-blue-500/30",
+  tick_skipped_busy: "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
+  crawler_failed: "bg-red-500/15 text-red-400 border-red-500/30",
+  exception: "bg-red-500/15 text-red-400 border-red-500/30",
+  running: "bg-accent/15 text-accent border-accent/30",
+};
+
+export function StatusBadge({ status, className }: { status: string; className?: string }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider",
+        STATUS_COLORS[status] || "bg-bg text-fg-muted border-border",
+        className,
+      )}
+    >
+      {status.replaceAll("_", " ")}
     </span>
   );
 }

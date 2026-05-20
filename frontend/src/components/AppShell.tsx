@@ -1,13 +1,14 @@
 import { type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { Network, Boxes, ListChecks, Activity, ExternalLink } from "lucide-react";
+import { Network, Boxes, ListChecks, ExternalLink, Gauge, CalendarClock } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 const NAV = [
-  { to: "/", label: "Graph", icon: Network },
+  { to: "/", label: "Explorer", icon: Network },
   { to: "/entities", label: "Catalog", icon: Boxes },
+  { to: "/activity", label: "Activity", icon: CalendarClock },
+  { to: "/operator", label: "Operator", icon: Gauge },
   { to: "/triage", label: "Triage", icon: ListChecks },
-  { to: "/crawl", label: "Crawl", icon: Activity },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {

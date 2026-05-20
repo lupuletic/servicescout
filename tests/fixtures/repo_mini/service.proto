@@ -1,0 +1,6 @@
+syntax = "proto3";
+
+service GreeterService {
+  rpc SayHello(HelloRequest) returns (HelloReply);
+  rpc SayGoodbye(GoodbyeRequest) returns (GoodbyeReply);
+}

@@ -15,7 +15,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 
 GITHUB_REMOTE_RE = re.compile(r"github\.com[:/]([\w-]+)/([\w.-]+?)(?:\.git)?/?$")
@@ -58,14 +58,60 @@ def _gather_git_dirs(root: Path) -> list[Path]:
     return out
 
 
+def _normalise_repo_units(
+    root: Path,
+    repo_units: Iterable[dict[str, Any]],
+    org_filter: set[str] | None,
+    blocked: set[str],
+) -> list[dict[str, str]]:
+    repos: list[dict[str, str]] = []
+    for unit in repo_units:
+        repo_id = str(unit.get("id") or "").strip()
+        rel_path = str(unit.get("path") or "").strip()
+        if not repo_id or not rel_path:
+            continue
+        org = repo_id.split("/", 1)[0] if "/" in repo_id else ""
+        name = str(unit.get("name") or repo_id.rstrip("/").split("/")[-1])
+        if not org:
+            continue
+        if org_filter is not None and org not in org_filter:
+            continue
+        if repo_id in blocked or name in blocked:
+            continue
+        repo_path = (root / rel_path).resolve()
+        if not repo_path.exists():
+            continue
+        git_root = repo_path
+        while git_root != root and not (git_root / ".git").exists():
+            git_root = git_root.parent
+        remote = _run_git(git_root, "remote", "get-url", "origin") if (git_root / ".git").exists() else ""
+        repos.append({
+            "id": repo_id,
+            "name": name,
+            "local_name": name,
+            "org": org,
+            "path": str(repo_path.relative_to(root)),
+            "absolute_path": str(repo_path),
+            "remote": remote,
+            "commit": _run_git(git_root, "rev-parse", "--short=12", "HEAD") if (git_root / ".git").exists() else "",
+            "focus_path": str(unit.get("focus_path") or ""),
+        })
+    return repos
+
+
 def find_repos(
     root: Path,
     orgs: Iterable[str] | None = None,
     excluded: Iterable[str] | None = None,
+    repo_units: Iterable[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     root = root.resolve()
     org_filter = set(orgs) if orgs else None
     blocked = set(excluded or [])
+
+    explicit_units = list(repo_units or [])
+    if explicit_units:
+        return _normalise_repo_units(root, explicit_units, org_filter, blocked)
 
     repos: list[dict[str, str]] = []
     for repo_dir in _gather_git_dirs(root):
@@ -104,5 +150,6 @@ def load_workspace_config(config_path: Path) -> dict[str, object]:
     return {
         "orgs": list(payload.get("orgs", [])),
         "excluded_repos": list(payload.get("excluded_repos", [])),
+        "repo_units": list(payload.get("repo_units") or payload.get("extract_units") or []),
         "communication_discovery_role_suffixes": list(payload.get("communication_discovery_role_suffixes", [])),
     }

@@ -1,0 +1,195 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+jobs:
+  test-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run Python tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -q
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Run frontend e2e tests
+        working-directory: frontend
+        run: npm run test:e2e
+
+      - name: Build Docker image
+        run: docker build --pull -t servicescout/servicescout:ci .
+
+      - name: Prepare Compose smoke fixture
+        run: |
+          mkdir -p .ci/smoke-data .ci/smoke-workspace
+          cat > .ci/workspace.json <<'JSON'
+          {
+            "orgs": []
+          }
+          JSON
+          cat > .ci/smoke-data/catalog.json <<'JSON'
+          {
+            "summary": {
+              "entities": 2,
+              "relations": 1,
+              "repos_indexed": 1
+            },
+            "entities": [
+              {
+                "kind": "Component",
+                "metadata": {
+                  "name": "orders",
+                  "annotations": {
+                    "tagline": "Order orchestration service",
+                    "source_repos": ["acme/orders"]
+                  }
+                },
+                "spec": {
+                  "owner": "platform",
+                  "type": "service"
+                },
+                "confidence": "high",
+                "evidence": []
+              },
+              {
+                "kind": "API",
+                "metadata": {
+                  "name": "orders-http",
+                  "annotations": {
+                    "source_repos": ["acme/orders"]
+                  }
+                },
+                "spec": {
+                  "type": "openapi"
+                },
+                "confidence": "high",
+                "evidence": []
+              }
+            ],
+            "relations": [
+              {
+                "from": "Component:orders",
+                "to": "API:orders-http",
+                "type": "providesApi",
+                "confidence": "high",
+                "evidence": []
+              }
+            ]
+          }
+          JSON
+
+      - name: Start Compose stack
+        env:
+          SERVICESCOUT_VERSION: ci
+          WORKSPACE_ROOT: ./.ci/smoke-workspace
+          SERVICESCOUT_WORKSPACE_CONFIG: ./.ci/workspace.json
+          SERVICESCOUT_DATA_DIR: ./.ci/smoke-data
+          SERVICESCOUT_DASHBOARD_BIND: 127.0.0.1:18788
+          SERVICESCOUT_MCP_BIND: 127.0.0.1:18765
+          SERVICESCOUT_HTTP_BIND: 127.0.0.1:18080
+        run: |
+          docker compose -p servicescout-ci up -d --no-build mcp dashboard
+          docker compose -p servicescout-ci --profile edge up -d --no-build edge
+
+      - name: Smoke dashboard, MCP, and nginx edge
+        run: |
+          python - <<'PY'
+          import json
+          import time
+          import urllib.error
+          import urllib.request
+
+          def get_json(url, *, data=None):
+              body = None
+              headers = {}
+              if data is not None:
+                  body = json.dumps(data).encode()
+                  headers["Content-Type"] = "application/json"
+                  headers["Accept"] = "text/event-stream, application/json"
+              req = urllib.request.Request(url, data=body, headers=headers)
+              with urllib.request.urlopen(req, timeout=5) as resp:
+                  return json.loads(resp.read().decode())
+
+          def retry(label, fn):
+              last = None
+              for _ in range(40):
+                  try:
+                      return fn()
+                  except Exception as exc:  # noqa: BLE001
+                      last = exc
+                      time.sleep(1)
+              raise SystemExit(f"{label} did not become ready: {last}")
+
+          state = retry("dashboard", lambda: get_json("http://127.0.0.1:18788/api/state.json"))
+          assert state["summary"]["entities"] == 2, state
+
+          edge = retry("edge", lambda: get_json("http://127.0.0.1:18080/api/state.json"))
+          assert edge["summary"]["relations"] == 1, edge
+
+          init = {
+              "jsonrpc": "2.0",
+              "id": 1,
+              "method": "initialize",
+              "params": {
+                  "protocolVersion": "2025-03-26",
+                  "capabilities": {},
+                  "clientInfo": {"name": "ci", "version": "1"},
+              },
+          }
+          mcp = retry("mcp", lambda: get_json("http://127.0.0.1:18765/mcp", data=init))
+          assert mcp["result"]["serverInfo"]["name"] == "ServiceScout", mcp
+
+          tools = get_json("http://127.0.0.1:18080/mcp", data={
+              "jsonrpc": "2.0",
+              "id": 2,
+              "method": "tools/list",
+              "params": {},
+          })
+          names = {tool["name"] for tool in tools["result"]["tools"]}
+          assert "servicescout_search" in names, tools
+          PY
+
+      - name: Dump Compose logs on failure
+        if: failure()
+        run: docker compose -p servicescout-ci logs --no-color
+
+      - name: Stop Compose stack
+        if: always()
+        run: docker compose -p servicescout-ci --profile edge down -v

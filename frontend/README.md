@@ -1,73 +1,46 @@
-# React + TypeScript + Vite
+# ServiceScout Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Operator UI for the ServiceScout catalog. The production build is served by
+`dashboard.py` from `frontend/dist`; local development uses Vite and proxies
+API calls to the FastAPI dashboard backend.
 
-Currently, two official plugins are available:
+## Local Development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+# from repo root
+.venv/bin/python dashboard.py --catalog data/catalog.json --host 127.0.0.1 --port 8788
+npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Open `http://127.0.0.1:5173/`.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Production Build
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm --prefix frontend run lint
+npm --prefix frontend run build
 ```
+
+The Docker image runs the same build and packages the static files into the
+single ServiceScout image.
+
+## Browser Tests
+
+```bash
+npm --prefix frontend exec playwright install chromium
+npm --prefix frontend run test:e2e
+```
+
+The e2e suite starts a Vite server on `127.0.0.1:5174` and mocks the dashboard
+API so the operator workflows can be checked without a live catalog.
+
+## Product Surfaces
+
+- `Explorer`: Sigma graph, kind filters, edge filters, confidence filters,
+  and entity drilldown.
+- `Catalog`: faceted entity table with confidence as a first-class filter.
+- `Activity`: scheduler status, run history, tick drilldown, and trigger-now.
+- `Operator`: cost trendline, verifier signal, staleness heatmap, and stale
+  repo queue.
+- `Triage`: verifier fact queue, owner assignment, terminal fact decisions,
+  external-component decisions, and decision log.

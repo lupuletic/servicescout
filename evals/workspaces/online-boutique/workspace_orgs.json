@@ -1,0 +1,78 @@
+{
+  "orgs": ["GoogleCloudPlatform"],
+  "excluded_repos": [],
+  "repo_units": [
+    {
+      "id": "GoogleCloudPlatform/microservices-demo/adservice",
+      "name": "adservice",
+      "path": "microservices-demo",
+      "focus_path": "src/adservice"
+    },
+    {
+      "id": "GoogleCloudPlatform/microservices-demo/cartservice",
+      "name": "cartservice",
+      "path": "microservices-demo",
+      "focus_path": "src/cartservice"
+    },
+    {
+      "id": "GoogleCloudPlatform/microservices-demo/checkoutservice",
+      "name": "checkoutservice",
+      "path": "microservices-demo",
+      "focus_path": "src/checkoutservice"
+    },
+    {
+      "id": "GoogleCloudPlatform/microservices-demo/currencyservice",
+      "name": "currencyservice",
+      "path": "microservices-demo",
+      "focus_path": "src/currencyservice"
+    },
+    {
+      "id": "GoogleCloudPlatform/microservices-demo/emailservice",
+      "name": "emailservice",
+      "path": "microservices-demo",
+      "focus_path": "src/emailservice"
+    },
+    {
+      "id": "GoogleCloudPlatform/microservices-demo/frontend",
+      "name": "frontend",
+      "path": "microservices-demo",
+      "focus_path": "src/frontend"
+    },
+    {
+      "id": "GoogleCloudPlatform/microservices-demo/loadgenerator",
+      "name": "loadgenerator",
+      "path": "microservices-demo",
+      "focus_path": "src/loadgenerator"
+    },
+    {
+      "id": "GoogleCloudPlatform/microservices-demo/paymentservice",
+      "name": "paymentservice",
+      "path": "microservices-demo",
+      "focus_path": "src/paymentservice"
+    },
+    {
+      "id": "GoogleCloudPlatform/microservices-demo/productcatalogservice",
+      "name": "productcatalogservice",
+      "path": "microservices-demo",
+      "focus_path": "src/productcatalogservice"
+    },
+    {
+      "id": "GoogleCloudPlatform/microservices-demo/recommendationservice",
+      "name": "recommendationservice",
+      "path": "microservices-demo",
+      "focus_path": "src/recommendationservice"
+    },
+    {
+      "id": "GoogleCloudPlatform/microservices-demo/shippingservice",
+      "name": "shippingservice",
+      "path": "microservices-demo",
+      "focus_path": "src/shippingservice"
+    },
+    {
+      "id": "GoogleCloudPlatform/microservices-demo/shoppingassistantservice",
+      "name": "shoppingassistantservice",
+      "path": "microservices-demo",
+      "focus_path": "src/shoppingassistantservice"
+    }
+  ]
+}
