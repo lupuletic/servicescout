@@ -79,7 +79,17 @@ export type CrawlRunsPayload = {
 
 export type CrawlStatusPayload = {
   lock: { held: boolean; pid?: number; host?: string; acquired_at?: string; stale_or_corrupt?: boolean };
-  scheduler?: { running: boolean; pid: number | null; uptime?: string };
+  scheduler?: {
+    running: boolean;
+    pid: number | null;
+    uptime?: string;
+    managed?: boolean;
+    source?: "dashboard" | "external" | "stopped";
+    interval_minutes?: number;
+    budget_usd?: number;
+    log_path?: string | null;
+    log_tail?: string[];
+  };
   crawler?: { running: boolean; pid: number | null; uptime?: string };
   last_run?: CrawlRunSummary | null;
   interval_minutes: number;

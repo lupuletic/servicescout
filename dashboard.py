@@ -27,6 +27,7 @@ import datetime as dt
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -121,6 +122,87 @@ def tail_file(path: Path, limit: int = 40) -> list[str]:
     except OSError:
         return []
     return text.splitlines()[-limit:]
+
+
+def pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def scheduler_control_paths(data_dir: Path) -> dict[str, Path]:
+    return {
+        "pid": data_dir / "scheduler_daemon.pid",
+        "settings": data_dir / "scheduler_settings.json",
+        "log": data_dir / "scheduler_daemon.log",
+    }
+
+
+def read_scheduler_settings(data_dir: Path) -> dict[str, Any]:
+    paths = scheduler_control_paths(data_dir)
+    settings: dict[str, Any] = {
+        "interval_minutes": int(os.environ.get("CRAWL_INTERVAL_MINUTES") or 360),
+        "budget_usd": float(os.environ.get("CRAWL_TICK_BUDGET_USD") or os.environ.get("BUDGET_USD") or 20.0),
+    }
+    try:
+        if paths["settings"].is_file():
+            stored = json.loads(paths["settings"].read_text(encoding="utf-8"))
+            if isinstance(stored.get("interval_minutes"), int) and stored["interval_minutes"] >= 1:
+                settings["interval_minutes"] = int(stored["interval_minutes"])
+            if isinstance(stored.get("budget_usd"), (int, float)) and stored["budget_usd"] > 0:
+                settings["budget_usd"] = float(stored["budget_usd"])
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        pass
+    return settings
+
+
+def write_scheduler_settings(data_dir: Path, *, interval_minutes: int, budget_usd: float) -> None:
+    paths = scheduler_control_paths(data_dir)
+    paths["settings"].parent.mkdir(parents=True, exist_ok=True)
+    paths["settings"].write_text(
+        json.dumps({
+            "interval_minutes": interval_minutes,
+            "budget_usd": budget_usd,
+            "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        }, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def managed_scheduler_status(data_dir: Path) -> dict[str, Any]:
+    paths = scheduler_control_paths(data_dir)
+    settings = read_scheduler_settings(data_dir)
+    pid: int | None = None
+    if paths["pid"].is_file():
+        try:
+            pid = int(paths["pid"].read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            pid = None
+    running = bool(pid and pid_alive(pid))
+    if paths["pid"].is_file() and not running:
+        try:
+            paths["pid"].unlink()
+        except OSError:
+            pass
+    uptime = None
+    if running and pid:
+        try:
+            ps = subprocess.run(["ps", "-o", "etime=", "-p", str(pid)], text=True, capture_output=True, check=False, timeout=3)
+            uptime = ps.stdout.strip() or None
+        except (OSError, subprocess.SubprocessError):
+            uptime = None
+    return {
+        "managed": paths["pid"].is_file() or paths["settings"].is_file(),
+        "running": running,
+        "pid": pid if running else None,
+        "uptime": uptime,
+        "interval_minutes": settings["interval_minutes"],
+        "budget_usd": settings["budget_usd"],
+        "log_path": str(paths["log"]) if paths["log"].is_file() else None,
+        "log_tail": tail_file(paths["log"], 60),
+    }
 
 
 def latest_crawl_log() -> tuple[Path | None, list[str]]:
@@ -466,6 +548,37 @@ def _entity_brief(entity: dict[str, Any]) -> dict[str, Any]:
 
 def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path) -> FastAPI:
     app = FastAPI(title="ServiceScout dashboard")
+
+    def scheduler_command(*, interval_minutes: int, budget_usd: float, trigger: str | None = None, force_repo: str | None = None) -> list[str]:
+        data_dir = catalog_path.parent.resolve()
+        workspace_root = Path(os.environ.get("WORKSPACE_ROOT") or "/workspace").resolve()
+        workspace_config = os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json")
+        provider = os.environ.get("LLM_PROVIDER") or "codex"
+        effort = os.environ.get("LLM_EFFORT") or "medium"
+        model = os.environ.get("LLM_MODEL")
+        catalog_dir = _repo_record_dir(data_dir)
+        cmd = [
+            sys.executable, str(HERE / "scheduler.py"),
+            "--workspace-root", str(workspace_root),
+            "--catalog-dir", str(catalog_dir),
+            "--workspace", workspace_config,
+            "--run-log-dir", str(data_dir / "crawl_runs"),
+            "--lock-path", str(data_dir / "crawl_lock"),
+            "--interval-minutes", str(interval_minutes),
+            "--budget-usd", str(budget_usd),
+            "--provider", provider,
+            "--effort", effort,
+            "--crawler-arg=--reconcile",
+            "--crawler-arg=--embed",
+            "--crawler-arg=--build-kuzu",
+        ]
+        if trigger:
+            cmd.extend(["--once", "--trigger", trigger])
+        if force_repo:
+            cmd.extend(["--force-repos", force_repo])
+        if model:
+            cmd.extend(["--model", model])
+        return cmd
 
     @app.get("/api/state.json")
     def api_state() -> JSONResponse:
@@ -1011,6 +1124,20 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         lock_path = (catalog_path.parent / "crawl_lock").resolve()
         lock_info = _read_lock(lock_path)
         trigger_log = (catalog_path.parent / "crawl_trigger.log").resolve()
+        data_dir = catalog_path.parent.resolve()
+        managed = managed_scheduler_status(data_dir)
+        external_scheduler = scheduler_status()
+        if managed.get("running"):
+            scheduler_payload = {**managed, "source": "dashboard"}
+        elif external_scheduler.get("running"):
+            scheduler_payload = {
+                **managed,
+                **external_scheduler,
+                "source": "external",
+                "managed": False,
+            }
+        else:
+            scheduler_payload = {**managed, "source": "stopped"}
         run_log_dir = (catalog_path.parent / "crawl_runs").resolve()
         last_run = None
         if run_log_dir.is_dir():
@@ -1033,16 +1160,85 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 last_run = extraction_runs[0]
         return JSONResponse({
             "lock": lock_info,
-            "scheduler": scheduler_status(),
+            "scheduler": scheduler_payload,
             "crawler": crawler_status(),
             "last_run": last_run,
-            "interval_minutes": int(os.environ.get("CRAWL_INTERVAL_MINUTES") or 360),
-            "budget_usd": float(os.environ.get("CRAWL_TICK_BUDGET_USD") or 20.0),
+            "interval_minutes": int(scheduler_payload.get("interval_minutes") or 360),
+            "budget_usd": float(scheduler_payload.get("budget_usd") or 20.0),
             "workspace_root": os.environ.get("WORKSPACE_ROOT") or "",
             "workspace_config": os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json"),
             "active_log_path": str(trigger_log) if trigger_log.is_file() else None,
             "active_log_tail": tail_file(trigger_log),
         })
+
+    @app.post("/api/crawl/scheduler/start")
+    def start_scheduler(
+        interval_minutes: int = Form(360),
+        budget_usd: float = Form(20.0),
+    ) -> JSONResponse:
+        """Start or update the dashboard-managed scheduler daemon."""
+        data_dir = catalog_path.parent.resolve()
+        interval_minutes = max(1, min(int(interval_minutes), 10080))
+        budget_usd = max(0.01, min(float(budget_usd), 10000.0))
+
+        managed = managed_scheduler_status(data_dir)
+        managed_was_running = bool(managed.get("running"))
+        external = scheduler_status() if not managed_was_running else {"running": False, "pid": None}
+        if external.get("running"):
+            return JSONResponse({
+                "error": "external_scheduler_running",
+                "scheduler": external,
+                "detail": "A scheduler process is already running outside the dashboard controller.",
+            }, status_code=409)
+
+        workspace_root = Path(os.environ.get("WORKSPACE_ROOT") or "/workspace").resolve()
+        if not workspace_root.is_dir():
+            return JSONResponse({
+                "error": "workspace_root_missing",
+                "workspace_root": str(workspace_root),
+                "setup_hint": "Set WORKSPACE_ROOT and mount it into the dashboard container.",
+            }, status_code=400)
+
+        paths = scheduler_control_paths(data_dir)
+        write_scheduler_settings(data_dir, interval_minutes=interval_minutes, budget_usd=budget_usd)
+        if managed.get("running"):
+            try:
+                os.kill(int(managed["pid"]), signal.SIGTERM)
+            except (OSError, TypeError, ValueError):
+                pass
+            try:
+                paths["pid"].unlink()
+            except OSError:
+                pass
+        paths["log"].parent.mkdir(parents=True, exist_ok=True)
+        cmd = scheduler_command(interval_minutes=interval_minutes, budget_usd=budget_usd)
+        try:
+            with paths["log"].open("ab") as fh:
+                proc = subprocess.Popen(cmd, cwd=str(HERE), stdout=fh, stderr=subprocess.STDOUT)
+            paths["pid"].write_text(str(proc.pid), encoding="utf-8")
+        except OSError as exc:
+            return JSONResponse({"error": "scheduler_start_failed", "detail": str(exc)}, status_code=500)
+        return JSONResponse({"status": "started", "scheduler": managed_scheduler_status(data_dir)}, status_code=202)
+
+    @app.post("/api/crawl/scheduler/stop")
+    def stop_scheduler() -> JSONResponse:
+        """Pause the dashboard-managed scheduler daemon."""
+        data_dir = catalog_path.parent.resolve()
+        paths = scheduler_control_paths(data_dir)
+        managed = managed_scheduler_status(data_dir)
+        pid = managed.get("pid")
+        if pid:
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+            except OSError:
+                pass
+        try:
+            if paths["pid"].exists():
+                paths["pid"].unlink()
+        except OSError:
+            pass
+        stopped = managed_scheduler_status(data_dir)
+        return JSONResponse({"status": "stopped", "scheduler": stopped})
 
     @app.post("/api/crawl/trigger")
     def trigger_crawl() -> JSONResponse:
@@ -1066,31 +1262,13 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 "setup_hint": "Set WORKSPACE_ROOT and mount it into the dashboard container.",
             }, status_code=400)
 
-        budget = os.environ.get("CRAWL_TICK_BUDGET_USD") or os.environ.get("BUDGET_USD") or "20"
-        provider = os.environ.get("LLM_PROVIDER") or "codex"
-        effort = os.environ.get("LLM_EFFORT") or "medium"
-        model = os.environ.get("LLM_MODEL")
-        workspace_config = os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json")
+        settings = read_scheduler_settings(data_dir)
         log_path = data_dir / "crawl_trigger.log"
-        catalog_dir = _repo_record_dir(data_dir)
-        cmd = [
-            sys.executable, str(HERE / "scheduler.py"),
-            "--once",
-            "--workspace-root", str(workspace_root),
-            "--catalog-dir", str(catalog_dir),
-            "--workspace", workspace_config,
-            "--run-log-dir", str(data_dir / "crawl_runs"),
-            "--lock-path", str(lock_path),
-            "--budget-usd", budget,
-            "--provider", provider,
-            "--effort", effort,
-            "--trigger", "manual",
-            "--crawler-arg", "--reconcile",
-            "--crawler-arg", "--embed",
-            "--crawler-arg", "--build-kuzu",
-        ]
-        if model:
-            cmd.extend(["--model", model])
+        cmd = scheduler_command(
+            interval_minutes=int(settings.get("interval_minutes") or 360),
+            budget_usd=float(settings.get("budget_usd") or 20.0),
+            trigger="manual",
+        )
         log_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with log_path.open("ab") as fh:
@@ -1126,32 +1304,14 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 "setup_hint": "Set WORKSPACE_ROOT and mount it into the dashboard container.",
             }, status_code=400)
 
-        budget = os.environ.get("CRAWL_TICK_BUDGET_USD") or os.environ.get("BUDGET_USD") or "20"
-        provider = os.environ.get("LLM_PROVIDER") or "codex"
-        effort = os.environ.get("LLM_EFFORT") or "medium"
-        model = os.environ.get("LLM_MODEL")
-        workspace_config = os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json")
-        catalog_dir = _repo_record_dir(data_dir)
+        settings = read_scheduler_settings(data_dir)
         log_path = data_dir / "crawl_trigger.log"
-        cmd = [
-            sys.executable, str(HERE / "scheduler.py"),
-            "--once",
-            "--workspace-root", str(workspace_root),
-            "--catalog-dir", str(catalog_dir),
-            "--workspace", workspace_config,
-            "--run-log-dir", str(data_dir / "crawl_runs"),
-            "--lock-path", str(lock_path),
-            "--budget-usd", budget,
-            "--provider", provider,
-            "--effort", effort,
-            "--trigger", "manual-reindex",
-            "--force-repos", repo,
-            "--crawler-arg", "--reconcile",
-            "--crawler-arg", "--embed",
-            "--crawler-arg", "--build-kuzu",
-        ]
-        if model:
-            cmd.extend(["--model", model])
+        cmd = scheduler_command(
+            interval_minutes=int(settings.get("interval_minutes") or 360),
+            budget_usd=float(settings.get("budget_usd") or 20.0),
+            trigger="manual-reindex",
+            force_repo=repo,
+        )
         log_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with log_path.open("ab") as fh:

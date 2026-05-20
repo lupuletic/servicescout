@@ -163,6 +163,63 @@ class DashboardApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 400)
             self.assertEqual(response.json()["error"], "workspace_root_missing")
 
+    def test_scheduler_start_persists_settings_and_launches_managed_daemon(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            app = dashboard.create_app(
+                catalog_path=_write_catalog(root),
+                extraction_log=root / "extractions.jsonl",
+                decisions_path=root / "decisions.jsonl",
+            )
+            client = TestClient(app)
+
+            with mock.patch.dict("os.environ", {"WORKSPACE_ROOT": str(workspace)}, clear=False), \
+                 mock.patch("dashboard.scheduler_status", return_value={"running": False, "pid": None}), \
+                 mock.patch("dashboard.pid_alive", side_effect=lambda pid: pid == 1234), \
+                 mock.patch("dashboard.subprocess.run") as run, \
+                 mock.patch("dashboard.subprocess.Popen") as popen:
+                run.return_value = mock.Mock(stdout="00:01\n", stderr="", returncode=0)
+                popen.return_value.pid = 1234
+                response = client.post(
+                    "/api/crawl/scheduler/start",
+                    data={"interval_minutes": "45", "budget_usd": "7.5"},
+                )
+
+            self.assertEqual(response.status_code, 202)
+            payload = response.json()
+            self.assertEqual(payload["scheduler"]["pid"], 1234)
+            self.assertTrue(payload["scheduler"]["running"])
+            self.assertEqual(payload["scheduler"]["interval_minutes"], 45)
+            self.assertEqual(payload["scheduler"]["budget_usd"], 7.5)
+            cmd = popen.call_args[0][0]
+            self.assertIn("--interval-minutes", cmd)
+            self.assertIn("45", cmd)
+            self.assertIn("--budget-usd", cmd)
+            self.assertIn("7.5", cmd)
+            self.assertIn("--crawler-arg=--reconcile", cmd)
+            self.assertIn("--crawler-arg=--build-kuzu", cmd)
+
+    def test_scheduler_stop_only_pauses_dashboard_managed_daemon(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = dashboard.create_app(
+                catalog_path=_write_catalog(root),
+                extraction_log=root / "extractions.jsonl",
+                decisions_path=root / "decisions.jsonl",
+            )
+            client = TestClient(app)
+            (root / "scheduler_daemon.pid").write_text("1234", encoding="utf-8")
+
+            with mock.patch("dashboard.pid_alive", return_value=True), \
+                 mock.patch("dashboard.os.kill") as kill:
+                response = client.post("/api/crawl/scheduler/stop")
+
+            self.assertEqual(response.status_code, 200)
+            kill.assert_called_once_with(1234, dashboard.signal.SIGTERM)
+            self.assertFalse((root / "scheduler_daemon.pid").exists())
+
     def test_disconfirmed_fact_queue_and_decisions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

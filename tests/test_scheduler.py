@@ -68,17 +68,20 @@ class LastSHATests(unittest.TestCase):
             (catalog / "alpha.json").write_text(
                 json.dumps({"_meta": {"commit": "deadbeef"}}), encoding="utf-8"
             )
-            self.assertEqual(scheduler.last_extracted_sha(catalog, "alpha"), "deadbeef")
+            self.assertEqual(
+                scheduler.last_extracted_sha(catalog, {"name": "alpha", "id": "acme/alpha"}),
+                "deadbeef",
+            )
 
     def test_returns_none_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertIsNone(scheduler.last_extracted_sha(Path(tmp), "missing"))
+            self.assertIsNone(scheduler.last_extracted_sha(Path(tmp), {"name": "missing", "id": "acme/missing"}))
 
     def test_returns_none_on_corrupt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             catalog = Path(tmp)
             (catalog / "broken.json").write_text("{ not json", encoding="utf-8")
-            self.assertIsNone(scheduler.last_extracted_sha(catalog, "broken"))
+            self.assertIsNone(scheduler.last_extracted_sha(catalog, {"name": "broken", "id": "acme/broken"}))
 
     def test_handles_no_meta_section(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -86,7 +89,24 @@ class LastSHATests(unittest.TestCase):
             (catalog / "nometa.json").write_text(
                 json.dumps({"components": []}), encoding="utf-8"
             )
-            self.assertIsNone(scheduler.last_extracted_sha(catalog, "nometa"))
+            self.assertIsNone(scheduler.last_extracted_sha(catalog, {"name": "nometa", "id": "acme/nometa"}))
+
+    def test_uses_repo_unit_record_name_for_monorepos(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog = Path(tmp)
+            (catalog / "microservices-demo__checkoutservice.json").write_text(
+                json.dumps({"_meta": {"commit": "cafebabe"}}), encoding="utf-8"
+            )
+            self.assertEqual(
+                scheduler.last_extracted_sha(
+                    catalog,
+                    {
+                        "name": "checkoutservice",
+                        "id": "GoogleCloudPlatform/microservices-demo/checkoutservice",
+                    },
+                ),
+                "cafebabe",
+            )
 
 
 class WriteRunLogTests(unittest.TestCase):
