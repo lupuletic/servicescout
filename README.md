@@ -465,8 +465,7 @@ path:
   crawls using mounted repo/LLM credentials. Keep the default localhost bind
   for SSH-tunnel use, or put the bundled nginx edge behind your normal VPN,
   firewall, SSO proxy, or load balancer before binding to a public interface.
-- GitHub only — GitLab, Bitbucket, and GitHub Enterprise discovery are
-  planned.
+- GitHub only — other source-control hosts are out of scope for now.
 
 Issues and PRs welcome.
 
@@ -474,21 +473,13 @@ Issues and PRs welcome.
 
 ## Roadmap
 
-- **Embedding providers.** Today: Gemini (Vertex AI). Planned: OpenAI,
-  Voyage, Cohere, Sentence-Transformers, and local models behind a single
-  pluggable provider interface.
-- **Extraction harnesses.** Today: `codex` and `claude` CLIs. Planned:
-  Cursor agent mode, Cline, Continue, and direct OpenAI / Anthropic API
-  invocation for headless Docker/VM environments without mounted CLI login
-  state.
-- **Source-control hosts.** Today: GitHub. Planned: GitLab, Bitbucket,
-  GitHub Enterprise.
-- **Runtime correlation.** OpenTelemetry / Datadog / service-mesh
-  integrations to enrich the catalog with live topology.
-- **Continuous crawl hardening.** Deleted-repo tombstoning, entity-level
-  crawl provenance in the UI, trigger auth, and incremental LLM session
-  resume/savings.
-- **Hosted MCP** with auth, for orgs that want a managed deployment.
+ServiceScout is built around pluggable interfaces — `harnesses/` for
+extraction, the embedding-provider hook (today: Gemini / Vertex AI), and the
+storage `Backend`. Those are the intended extension points, and contributions
+are welcome.
+
+It is **GitHub-only by design**; support for other source-control hosts
+(GitLab, Bitbucket, GitHub Enterprise) is not currently planned.
 
 ---
 
