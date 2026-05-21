@@ -74,6 +74,14 @@ or Grep tool. Useful search terms:
   HTTP/REST:    RestTemplate, WebClient, FeignClient, HttpClient, requests, axios, fetch, httpx,
                 baseUrl, baseURL, RestClient, @FeignClient, OpenFeign
   GraphQL:      graphql, GraphQLClient, useQuery, useMutation, gql`, ApolloClient, urql
+  gRPC (OUTBOUND client calls — high-miss area, grep these explicitly):
+                Go: NewXxxClient(, XxxClient (generated iface), *_grpc.pb.go, grpc.Dial,
+                Java: XxxGrpc, XxxBlockingStub, XxxStub, XxxFutureStub, ManagedChannelBuilder.forAddress,
+                Python: XxxStub( from *_pb2_grpc, import *_pb2 / *_pb2_grpc, grpc.insecure_channel,
+                Node/other: loadPackageDefinition, new <pkg>.<Service>(, credentials.createInsecure,
+                cross-cutting: an `import`/copy of ANOTHER service's .proto.
+                NOTE: RegisterXxxServer / a server implementation is INCOMING — that is an API
+                this repo PROVIDES (apis[]), not a dependency.
   Messaging:    publish, subscribe, producer, consumer, broker, queue, topic, stream,
                 exchange, routingKey, consumerGroup, deadLetter, dlq, outbox, inbox,
                 @KafkaListener, KafkaTemplate, kafka, kinesis, EventHub, EventBridge,
@@ -267,6 +275,25 @@ OUTPUT GUIDANCE BY ENTITY:
   (`component`, `api`, `resource`, `provider`, `external`, `unknown`). When the target is a
   third-party SaaS / cloud / payment / identity provider, set `target_kind=provider` and make
   sure the same provider also appears in the `providers[]` array.
+
+  DEPENDENCY-EDGE COMPLETENESS — do this BEFORE emitting. Missed outbound edges
+  are the most common extraction failure, especially for gRPC services:
+    1. ENUMERATE FIRST, classify later. Grep the repo for every outbound-call
+       signal class (gRPC client stubs, HTTP/REST/GraphQL clients, message
+       producers/consumers, datastore clients — use the discovery patterns above)
+       and list each hit as a raw row (file:line + matched symbol) BEFORE deciding
+       what is an edge. Do not filter while listing.
+    2. GROUND every edge in a real call site. Each dependency MUST cite a call-site
+       symbol with file:line. Never emit an edge from a comment, config key,
+       README, manifest name, or prior knowledge of the service alone — if you
+       cannot find the call site in this repo's code, drop it.
+    3. SELF-CHECK before emitting. If this repo constructs N distinct service
+       clients/stubs, you should have ≈N consumesApi/dependsOn edges; if you have
+       fewer, you missed some — re-grep and add them. Services that orchestrate or
+       front other services (e.g. checkout / gateway / BFF / frontend) typically
+       call SEVERAL services. "No outbound dependencies" is acceptable ONLY for a
+       true leaf/library, and only after you have grepped every signal class
+       repo-wide. Do not stop early because the result "looks complete".
 
 * providers[]: third-party services this repo depends on — distinct from `resources[]` (which
   are owned dependencies like the repo's own DB). Examples: payment processors (Stripe, Adyen,
