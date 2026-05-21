@@ -74,6 +74,7 @@ def repo_total_cost(catalog_dir: Path) -> float:
 def run_extractor(
     repo: dict[str, Any],
     *,
+    root: Path,
     provider: str,
     model: str | None,
     effort: str,
@@ -87,8 +88,11 @@ def run_extractor(
         "-m",
         "servicescout.extractor",
         repo["name"],
+        # Resolve against the workspace root, not the focus-path parent — repo_units
+        # (monorepo per-service) declare paths relative to the workspace root, so the
+        # extractor must re-resolve from there. For normal repos this is the same dir.
         "--root",
-        str(Path(repo["absolute_path"]).parent),
+        str(root),
         "--provider",
         provider,
         "--effort",
@@ -535,6 +539,7 @@ def crawl(
                 executor.submit(
                     run_extractor,
                     repo,
+                    root=root,
                     provider=provider,
                     model=model,
                     effort=effort,

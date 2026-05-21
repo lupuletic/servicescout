@@ -27,13 +27,17 @@ can explore without an API key or a crawl:
 ```bash
 git clone https://github.com/lupuletic/servicescout.git
 cd servicescout
-make demo            # first run builds the image, then serves the bundled catalog
+make demo                              # sock-shop (default)
+make demo WORKSPACE=online-boutique    # Google Online Boutique
 ```
 
+(First run builds the image, then serves the bundled catalog.)
+
 Open [`http://127.0.0.1:8788`](http://127.0.0.1:8788); stop with `make demo-down`.
-This indexes nothing of your own — it just loads
-[`examples/sock-shop-catalog.json`](examples/sock-shop-catalog.json). To build a
-catalog from real repos, follow the Quickstart.
+This indexes nothing of your own — it loads a pre-extracted catalog
+([`examples/sock-shop-catalog.json`](examples/sock-shop-catalog.json) or
+[`examples/online-boutique-catalog.json`](examples/online-boutique-catalog.json)).
+To build a catalog from real repos, follow the Quickstart.
 
 ---
 
