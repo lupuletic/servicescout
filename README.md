@@ -41,6 +41,26 @@ To build a catalog from real repos, follow the Quickstart.
 
 ---
 
+## What it looks like
+
+A live catalog of the public Online Boutique demo (`make demo WORKSPACE=online-boutique`):
+
+**Explorer** — the service-flow graph; select any node for its tagline, source
+repo, and `file:line` evidence.
+
+![ServiceScout Explorer: service graph with the selected-service inspector](docs/readme-assets/explorer.png)
+
+**Entity view** — a service's capability sheet, dependency neighbourhood, and an
+Evidence tab that ties every fact back to source.
+
+![ServiceScout entity view: capability sheet and dependency neighbourhood](docs/readme-assets/entity-overview.png)
+
+**Activity** — extraction run history with per-run cost and duration.
+
+![ServiceScout Activity: extraction runs with cost and duration](docs/readme-assets/activity.png)
+
+---
+
 ## Quickstart
 
 **1. Run the server (Docker, HTTP streamable on `:8765`):**
