@@ -8,9 +8,11 @@ AUDIT_MD := docs/$(WORKSPACE)-catalog-audit.md
 .PHONY: eval-setup eval-extract eval-kuzu eval-run eval-report eval-audit stack stack-edge stack-crawl wheelhouse docker-build docker-build-offline demo demo-down
 
 # Zero-cost instant demo: serve a bundled, pre-extracted catalog (no LLM call,
-# no credentials). Defaults to sock-shop; `make demo WORKSPACE=online-boutique`
-# serves the Google Online Boutique. First run builds the image.
-DEMO_CATALOG = examples/$(WORKSPACE)-catalog.json
+# no credentials). Defaults to the Google Online Boutique;
+# `make demo DEMO_WORKSPACE=sock-shop` serves the Weaveworks sock-shop. First
+# run builds the image. (Separate from the eval WORKSPACE, which stays sock-shop.)
+DEMO_WORKSPACE ?= online-boutique
+DEMO_CATALOG = examples/$(DEMO_WORKSPACE)-catalog.json
 DEMO_ENV = WORKSPACE_ROOT=$(PWD)/.demo-data SERVICESCOUT_DATA_DIR=./.demo-data \
 	SERVICESCOUT_WORKSPACE_CONFIG=./workspace.json.example
 
@@ -20,7 +22,7 @@ demo:
 	cp $(DEMO_CATALOG) .demo-data/catalog.json
 	$(DEMO_ENV) docker compose up -d mcp dashboard
 	@echo ""
-	@echo "Demo running with the bundled $(WORKSPACE) catalog (no LLM, no auth):"
+	@echo "Demo running with the bundled $(DEMO_WORKSPACE) catalog (no LLM, no auth):"
 	@echo "  Dashboard: http://127.0.0.1:8788"
 	@echo "  MCP:       http://127.0.0.1:8765/mcp"
 	@echo "Stop with: make demo-down"

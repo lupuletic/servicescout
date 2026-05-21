@@ -21,14 +21,14 @@ and answers with file:line citations from real code.
 ## Instant demo (no LLM, no credentials)
 
 Want to see the dashboard and MCP tools right now? A small, pre-extracted
-catalog of the public Weaveworks **sock-shop** demo ships in the repo, so you
+catalog of the public **Google Online Boutique** demo ships in the repo, so you
 can explore without an API key or a crawl:
 
 ```bash
 git clone https://github.com/lupuletic/servicescout.git
 cd servicescout
-make demo                              # sock-shop (default)
-make demo WORKSPACE=online-boutique    # Google Online Boutique
+make demo                              # Google Online Boutique (default)
+make demo DEMO_WORKSPACE=sock-shop     # Weaveworks sock-shop
 ```
 
 (First run builds the image, then serves the bundled catalog.)
@@ -43,7 +43,7 @@ To build a catalog from real repos, follow the Quickstart.
 
 ## What it looks like
 
-A live catalog of the public Online Boutique demo (`make demo WORKSPACE=online-boutique`):
+A live catalog of the public Online Boutique demo (`make demo`):
 
 **Explorer** — the service-flow graph; select any node for its tagline, source
 repo, and `file:line` evidence.
