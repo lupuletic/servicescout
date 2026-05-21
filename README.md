@@ -27,13 +27,37 @@ can explore without an API key or a crawl:
 ```bash
 git clone https://github.com/lupuletic/servicescout.git
 cd servicescout
-make demo            # first run builds the image, then serves the bundled catalog
+make demo                              # sock-shop (default)
+make demo WORKSPACE=online-boutique    # Google Online Boutique
 ```
 
+(First run builds the image, then serves the bundled catalog.)
+
 Open [`http://127.0.0.1:8788`](http://127.0.0.1:8788); stop with `make demo-down`.
-This indexes nothing of your own — it just loads
-[`examples/sock-shop-catalog.json`](examples/sock-shop-catalog.json). To build a
-catalog from real repos, follow the Quickstart.
+This indexes nothing of your own — it loads a pre-extracted catalog
+([`examples/sock-shop-catalog.json`](examples/sock-shop-catalog.json) or
+[`examples/online-boutique-catalog.json`](examples/online-boutique-catalog.json)).
+To build a catalog from real repos, follow the Quickstart.
+
+---
+
+## What it looks like
+
+A live catalog of the public Online Boutique demo (`make demo WORKSPACE=online-boutique`):
+
+**Explorer** — the service-flow graph; select any node for its tagline, source
+repo, and `file:line` evidence.
+
+![ServiceScout Explorer: service graph with the selected-service inspector](docs/readme-assets/explorer.png)
+
+**Entity view** — a service's capability sheet, dependency neighbourhood, and an
+Evidence tab that ties every fact back to source.
+
+![ServiceScout entity view: capability sheet and dependency neighbourhood](docs/readme-assets/entity-overview.png)
+
+**Activity** — extraction run history with per-run cost and duration.
+
+![ServiceScout Activity: extraction runs with cost and duration](docs/readme-assets/activity.png)
 
 ---
 
