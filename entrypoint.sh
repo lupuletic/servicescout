@@ -10,13 +10,16 @@ set -e
 # Codex keeps mutable session / app-server state in its home dir. Compose mounts
 # ~/.codex read-only for safety, which makes `codex exec` fail with
 # "failed to initialize in-process app-server client: Read-only file system".
-# If the mounted home is read-only, copy it to a writable location and point
-# codex at it via CODEX_HOME — preserving auth while restoring writability.
+# Copy just the small auth/config into a writable CODEX_HOME and point codex at
+# it — codex recreates session/log state there. We copy only auth.json/config.toml
+# (not the whole dir, which can be GBs of session history).
 if [[ -d "$HOME/.codex" && ! -w "$HOME/.codex" ]]; then
-  if cp -a "$HOME/.codex" "$HOME/.codex-rw" 2>/dev/null; then
-    chmod -R u+w "$HOME/.codex-rw" 2>/dev/null || true
-    export CODEX_HOME="$HOME/.codex-rw"
-  fi
+  rw="$HOME/.codex-rw"
+  mkdir -p "$rw"
+  for f in auth.json config.toml; do
+    [[ -f "$HOME/.codex/$f" ]] && cp "$HOME/.codex/$f" "$rw/$f" 2>/dev/null || true
+  done
+  export CODEX_HOME="$rw"
 fi
 
 if [[ -n "${HOST_UID:-}" && -n "${HOST_GID:-}" ]]; then
