@@ -1,0 +1,53 @@
+{
+  "name": "online-boutique-gold-architecture",
+  "description": "Source-true dependency graph for GoogleCloudPlatform/microservices-demo, hand-verified against the cloned source (not the README diagram). This is the authoritative measuring stick for extraction accuracy: every edge is grounded in an actual call site, and three edges absent from the README diagram are included because the source proves them.",
+  "source_repo_root": "GoogleCloudPlatform/microservices-demo",
+  "verified_against": "evals/workspaces/online-boutique/workspace/microservices-demo (src/)",
+  "verified_on": "2026-05-22",
+  "scoring": {
+    "edge_identity": "directed (from, to) pair on canonical service names; relation type must be in accepted_*_types",
+    "accepted_service_relation_types": ["communicatesWith", "consumesApi", "dependsOn"],
+    "accepted_resource_relation_types": ["readsResource", "writesResource", "dependsOn"],
+    "name_normalization": "lowercase; a catalog component matches a gold component when the gold name is a suffix/token of the catalog name (handles e.g. 'googlecloudplatform-microservices-demo-frontend' -> 'frontend')",
+    "scope": "core edges only; optional_excluded entries are neither rewarded nor penalized"
+  },
+  "components": [
+    {"name": "frontend", "language": "go", "role": "http storefront / web server"},
+    {"name": "cartservice", "language": "c#", "role": "shopping cart, redis-backed"},
+    {"name": "productcatalogservice", "language": "go", "role": "product catalog + search"},
+    {"name": "currencyservice", "language": "node.js", "role": "currency conversion"},
+    {"name": "paymentservice", "language": "node.js", "role": "mock card charging"},
+    {"name": "shippingservice", "language": "go", "role": "shipping quote + ship order"},
+    {"name": "emailservice", "language": "python", "role": "order confirmation email"},
+    {"name": "checkoutservice", "language": "go", "role": "checkout orchestrator"},
+    {"name": "recommendationservice", "language": "python", "role": "product recommendations"},
+    {"name": "adservice", "language": "java", "role": "contextual text ads"},
+    {"name": "loadgenerator", "language": "python", "role": "locust load-test traffic"}
+  ],
+  "edges": [
+    {"from": "loadgenerator", "to": "frontend", "kind": "service", "protocol": "http", "evidence": "src/loadgenerator/locustfile.py:90", "symbol": "WebsiteUser(FastHttpUser)", "in_readme_diagram": true},
+
+    {"from": "frontend", "to": "adservice", "kind": "service", "protocol": "grpc", "evidence": "src/frontend/rpc.go:123", "symbol": "NewAdServiceClient.GetAds", "in_readme_diagram": true},
+    {"from": "frontend", "to": "cartservice", "kind": "service", "protocol": "grpc", "evidence": "src/frontend/rpc.go:58", "symbol": "NewCartServiceClient.GetCart/AddItem/EmptyCart", "in_readme_diagram": true},
+    {"from": "frontend", "to": "checkoutservice", "kind": "service", "protocol": "grpc", "evidence": "src/frontend/handlers.go:354", "symbol": "NewCheckoutServiceClient.PlaceOrder", "in_readme_diagram": true},
+    {"from": "frontend", "to": "currencyservice", "kind": "service", "protocol": "grpc", "evidence": "src/frontend/rpc.go:31", "symbol": "NewCurrencyServiceClient.GetSupportedCurrencies/Convert", "in_readme_diagram": false, "note": "Undocumented in the README diagram; proven only by source. A README-only extractor will MISS this."},
+    {"from": "frontend", "to": "productcatalogservice", "kind": "service", "protocol": "grpc", "evidence": "src/frontend/rpc.go:46", "symbol": "NewProductCatalogServiceClient.ListProducts/GetProduct", "in_readme_diagram": true},
+    {"from": "frontend", "to": "recommendationservice", "kind": "service", "protocol": "grpc", "evidence": "src/frontend/rpc.go:100", "symbol": "NewRecommendationServiceClient.ListRecommendations", "in_readme_diagram": true},
+    {"from": "frontend", "to": "shippingservice", "kind": "service", "protocol": "grpc", "evidence": "src/frontend/rpc.go:88", "symbol": "NewShippingServiceClient.GetQuote", "in_readme_diagram": false, "note": "Undocumented in the README diagram; proven only by source. A README-only extractor will MISS this."},
+
+    {"from": "checkoutservice", "to": "cartservice", "kind": "service", "protocol": "grpc", "evidence": "src/checkoutservice/main.go:325", "symbol": "NewCartServiceClient.GetCart/EmptyCart", "in_readme_diagram": true},
+    {"from": "checkoutservice", "to": "currencyservice", "kind": "service", "protocol": "grpc", "evidence": "src/checkoutservice/main.go:360", "symbol": "NewCurrencyServiceClient.Convert", "in_readme_diagram": true},
+    {"from": "checkoutservice", "to": "emailservice", "kind": "service", "protocol": "grpc", "evidence": "src/checkoutservice/main.go:380", "symbol": "NewEmailServiceClient.SendOrderConfirmation", "in_readme_diagram": true},
+    {"from": "checkoutservice", "to": "paymentservice", "kind": "service", "protocol": "grpc", "evidence": "src/checkoutservice/main.go:370", "symbol": "NewPaymentServiceClient.Charge", "in_readme_diagram": true},
+    {"from": "checkoutservice", "to": "productcatalogservice", "kind": "service", "protocol": "grpc", "evidence": "src/checkoutservice/main.go:341", "symbol": "NewProductCatalogServiceClient.GetProduct", "in_readme_diagram": true},
+    {"from": "checkoutservice", "to": "shippingservice", "kind": "service", "protocol": "grpc", "evidence": "src/checkoutservice/main.go:314", "symbol": "NewShippingServiceClient.GetQuote/ShipOrder", "in_readme_diagram": true},
+
+    {"from": "recommendationservice", "to": "productcatalogservice", "kind": "service", "protocol": "grpc", "evidence": "src/recommendationservice/recommendation_server.py:73", "symbol": "ProductCatalogServiceStub.ListProducts", "in_readme_diagram": false, "note": "Undocumented in the README diagram; proven only by source. A README-only extractor will MISS this."},
+
+    {"from": "cartservice", "to": "redis-cart", "kind": "resource", "protocol": "redis", "evidence": "src/cartservice/src/cartstore/RedisCartStore.cs", "symbol": "RedisCartStore (default backend, Startup.cs:40)", "access": ["read", "write"], "in_readme_diagram": true}
+  ],
+  "optional_excluded": [
+    {"subject": "shoppingassistantservice", "reason": "Optional Gemini/AlloyDB assistant gated by ENABLE_ASSISTANT; not part of the base architecture. Its outbound deps (AlloyDB vector store, Vertex/Gemini) are external."},
+    {"subject": "cartservice -> spanner / alloydb", "reason": "Alternative cart backends switched by SPANNER_*/ALLOYDB_* config (Startup.cs:44,49). Redis is the default; the alternates are not exercised in the default deployment."}
+  ]
+}
