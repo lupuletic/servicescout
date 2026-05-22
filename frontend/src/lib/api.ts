@@ -67,6 +67,7 @@ export type CrawlRunSummary = {
   repos_changed_count: number;
   budget_usd?: number;
   cost_usd?: number;
+  catalog_cost_usd?: number;
   duration_seconds?: number;
   crawler_returncode?: number | null;
 };
@@ -103,7 +104,16 @@ export type CrawlStatusPayload = {
 
 export type CrawlRunDetail = CrawlRunSummary & {
   workspace_root?: string;
-  repos_changed?: Array<{ repo: string; path?: string; reason?: string; remote_sha?: string; extracted_sha?: string | null }>;
+  repos_changed?: Array<{
+    repo: string;
+    path?: string;
+    reason?: string;
+    status?: string;
+    duration_seconds?: number;
+    cost_usd?: number;
+    remote_sha?: string;
+    extracted_sha?: string | null;
+  }>;
   events?: Array<Record<string, unknown>>;
   crawler_stdout_tail?: string;
   crawler_stderr_tail?: string;

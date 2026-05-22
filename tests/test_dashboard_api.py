@@ -147,6 +147,48 @@ class DashboardApiTests(unittest.TestCase):
             self.assertEqual(detail["repos_changed"][0]["repo"], "orders")
             self.assertEqual(detail["events"][0]["event"], "repo_extracted")
 
+    def test_activity_run_summaries_include_run_cost_and_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "crawl_runs"
+            run_dir.mkdir()
+            (run_dir / "20260522T100000Z-test.json").write_text(
+                json.dumps({
+                    "run_id": "20260522T100000Z-test",
+                    "trigger": "cli",
+                    "status": "running",
+                    "started_at": "2026-05-22T10:00:00+00:00",
+                    "pid": 999999,
+                    "repos_checked": 8,
+                    "repos_changed": [{"repo": "acme/orders", "status": "ok"}],
+                    "budget_usd": 25.0,
+                    "cost_usd": 1.25,
+                    "catalog_cost_usd": 12.5,
+                }),
+                encoding="utf-8",
+            )
+            app = dashboard.create_app(
+                catalog_path=_write_catalog(root),
+                extraction_log=root / "extractions.jsonl",
+                decisions_path=root / "decisions.jsonl",
+            )
+            client = TestClient(app)
+
+            with mock.patch("servicescout.dashboard.pid_alive", return_value=False):
+                run = client.get("/api/crawl/runs").json()["runs"][0]
+                status = client.get("/api/crawl/status").json()
+                detail = client.get("/api/crawl/runs/20260522T100000Z-test").json()
+
+            self.assertEqual(run["status"], "abandoned")
+            self.assertEqual(run["repos_checked"], 8)
+            self.assertEqual(run["budget_usd"], 25.0)
+            self.assertEqual(run["cost_usd"], 1.25)
+            self.assertEqual(run["catalog_cost_usd"], 12.5)
+            self.assertEqual(detail["status"], "abandoned")
+            self.assertEqual(status["last_run"]["repos_checked"], 8)
+            self.assertEqual(status["last_run"]["status"], "abandoned")
+            self.assertEqual(status["last_run"]["cost_usd"], 1.25)
+
     def test_trigger_requires_mounted_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

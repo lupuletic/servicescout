@@ -376,6 +376,19 @@ def latest_activity_log(data_dir: Path, limit: int = 40) -> tuple[Path | None, l
     return None, []
 
 
+def normalise_activity_run_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    """Mark a previously interrupted crawler run as no longer active."""
+    if doc.get("status") != "running":
+        return doc
+    try:
+        pid = int(doc.get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    if pid and not pid_alive(pid):
+        return {**doc, "status": "abandoned"}
+    return doc
+
+
 # ---------- catalog helpers ----------
 
 def cumulative_spend(extraction_log: Path) -> float:
@@ -1220,7 +1233,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         entries: list[dict[str, Any]] = []
         for path in sorted(run_log_dir.glob("*.json"), reverse=True):
             try:
-                doc = json.loads(path.read_text(encoding="utf-8"))
+                doc = normalise_activity_run_doc(json.loads(path.read_text(encoding="utf-8")))
             except (OSError, json.JSONDecodeError):
                 continue
             entries.append({
@@ -1232,6 +1245,8 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 "repos_checked": doc.get("repos_checked"),
                 "repos_changed_count": len(doc.get("repos_changed") or []),
                 "budget_usd": doc.get("budget_usd"),
+                "cost_usd": doc.get("cost_usd"),
+                "catalog_cost_usd": doc.get("catalog_cost_usd"),
                 "crawler_returncode": doc.get("crawler_returncode"),
             })
             if len(entries) >= limit:
@@ -1265,7 +1280,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 return JSONResponse(detail)
             return JSONResponse({"error": "not_found", "run_id": safe}, status_code=404)
         try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
+            doc = normalise_activity_run_doc(json.loads(path.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError):
             return JSONResponse({"error": "corrupt"}, status_code=500)
         return JSONResponse(doc)
@@ -1301,13 +1316,17 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             paths = sorted(run_log_dir.glob("*.json"), reverse=True)
             if paths:
                 try:
-                    doc = json.loads(paths[0].read_text(encoding="utf-8"))
+                    doc = normalise_activity_run_doc(json.loads(paths[0].read_text(encoding="utf-8")))
                     last_run = {
                         "run_id": doc.get("run_id"),
                         "status": doc.get("status"),
                         "started_at": doc.get("started_at"),
                         "finished_at": doc.get("finished_at"),
+                        "repos_checked": doc.get("repos_checked"),
                         "repos_changed_count": len(doc.get("repos_changed") or []),
+                        "budget_usd": doc.get("budget_usd"),
+                        "cost_usd": doc.get("cost_usd"),
+                        "catalog_cost_usd": doc.get("catalog_cost_usd"),
                     }
                 except (OSError, json.JSONDecodeError):
                     pass

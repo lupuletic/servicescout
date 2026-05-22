@@ -168,5 +168,38 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertEqual(config["batch_size"], 16)
 
 
+class ActivityRunTests(unittest.TestCase):
+    def test_repo_done_records_operator_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            activity = crawler.ActivityRun(
+                run_log_dir=root / "runs",
+                lock_path=root / "crawl.lock",
+                trigger="test",
+                workspace_root=root,
+                workspace_path=root / "workspace.json",
+                budget_usd=10.0,
+            )
+
+            activity.append({"event": "crawl_start", "workspace_repos": 3})
+            activity.append({
+                "event": "repo_done",
+                "repo": "acme/orders",
+                "status": "ok",
+                "duration_seconds": 12.5,
+                "returncode": 0,
+                "cost_usd": 0.42,
+            })
+            activity.append({"event": "crawl_done", "spent": 2.0, "run_spent": 0.42})
+
+            doc = json.loads(activity.path.read_text(encoding="utf-8"))
+            self.assertEqual(doc["repos_checked"], 3)
+            self.assertEqual(doc["cost_usd"], 0.42)
+            self.assertEqual(doc["catalog_cost_usd"], 2.0)
+            self.assertEqual(doc["repos_changed"][0]["repo"], "acme/orders")
+            self.assertEqual(doc["repos_changed"][0]["duration_seconds"], 12.5)
+            self.assertEqual(doc["repos_changed"][0]["cost_usd"], 0.42)
+
+
 if __name__ == "__main__":
     unittest.main()

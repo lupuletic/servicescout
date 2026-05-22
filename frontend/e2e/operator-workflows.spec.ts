@@ -233,10 +233,12 @@ test("explorer and catalog expose confidence as an operator filter", async ({ pa
 test("activity can inspect a scheduler tick and trigger a crawl", async ({ page }) => {
   await page.goto("/activity");
   await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
-  await expect(page.getByText("Manual trigger only").first()).toBeVisible();
-  await expect(page.getByText("Configured Interval")).toBeVisible();
-  await expect(page.getByText("Only applies after automation starts")).toBeVisible();
+  await expect(page.getByText("Status", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("Progress", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("Spend", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("Run progress")).toBeVisible();
   await expect(page.getByText("Automation", { exact: true })).toBeVisible();
+  await expect(page.getByText("Crawler limits", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Interval (min)")).toHaveValue("360");
   await expect(page.getByLabel("Budget ($)")).toHaveValue("20");
   const runButton = page.getByRole("button").filter({ hasText: "20260519T100000Z-abc123" });
@@ -300,8 +302,8 @@ test("activity shows extraction runs before scheduler history exists", async ({ 
   }));
 
   await page.goto("/activity");
-  await expect(page.getByText("extraction runs")).toBeVisible();
   await expect(page.getByText("repos extracted")).toBeVisible();
+  await expect(page.getByText("Spend", { exact: true }).first()).toBeVisible();
   const runTable = page.locator("section").filter({ hasText: "Started" });
   await expect(runTable.getByText("Cost", { exact: true })).toBeVisible();
   await expect(runTable.getByText("$0.31")).toBeVisible();

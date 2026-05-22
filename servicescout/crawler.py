@@ -182,12 +182,19 @@ class ActivityRun:
         elif name == "repo_done":
             repo = event.get("repo")
             if repo:
+                cost = event.get("cost_usd")
                 changed = self._doc.setdefault("repos_changed", [])
-                changed.append({
+                entry = {
                     "repo": repo,
                     "status": event.get("status"),
                     "reason": "crawler_extraction",
-                })
+                    "duration_seconds": event.get("duration_seconds"),
+                    "returncode": event.get("returncode"),
+                    "error": event.get("error"),
+                }
+                if isinstance(cost, (int, float)):
+                    entry["cost_usd"] = float(cost)
+                changed.append({key: value for key, value in entry.items() if value is not None})
         elif name == "build_catalog_done":
             self._doc["catalog_summary"] = {
                 key: value
@@ -196,8 +203,11 @@ class ActivityRun:
             }
         elif name == "crawl_done":
             spent = event.get("spent")
+            run_spent = event.get("run_spent")
             if isinstance(spent, (int, float)):
-                self._doc["cost_usd"] = float(spent)
+                self._doc["catalog_cost_usd"] = float(spent)
+            if isinstance(run_spent, (int, float)):
+                self._doc["cost_usd"] = float(run_spent)
 
     def _write_locked(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -870,6 +880,8 @@ def crawl(
     attempted_this_run: set[str] = set()
     skipped_after_attempt: dict[str, str] = {}
     applied_runtime_config: tuple[int, int, str] | None = None
+    initial_total_cost = repo_total_cost(catalog_dir)
+    state["initial_total_cost_usd"] = initial_total_cost
 
     batches_done = 0
     while batches_done < max_batches:
@@ -941,8 +953,11 @@ def crawl(
             continue
 
         current_total = repo_total_cost(catalog_dir)
-        if current_total >= budget_usd:
-            emit({"event": "budget_exhausted", "spent": current_total, "budget": budget_usd})
+        run_spent = max(current_total - initial_total_cost, 0.0)
+        state["total_cost_usd"] = current_total
+        state["run_cost_usd"] = run_spent
+        if run_spent >= budget_usd:
+            emit({"event": "budget_exhausted", "spent": current_total, "run_spent": run_spent, "budget": budget_usd})
             break
 
         batch = stale[:current_batch_size]
@@ -957,6 +972,8 @@ def crawl(
             "batch_size": current_batch_size,
             "stale_remaining": len(stale),
             "spent_so_far": current_total,
+            "run_spent_so_far": run_spent,
+            "budget_usd": budget_usd,
         })
         results: list[dict[str, Any]] = []
         with ThreadPoolExecutor(max_workers=current_parallelism) as executor:
@@ -982,7 +999,17 @@ def crawl(
                 except Exception as exc:  # noqa: BLE001
                     result = {"repo": repo["id"], "status": "error", "error": str(exc)}
                 results.append(result)
-                emit({"event": "repo_done", "repo": result["repo"], "status": result.get("status")})
+                cost = ((result.get("cost") or {}).get("estimated_usd")
+                        if isinstance(result.get("cost"), dict) else None)
+                emit({
+                    "event": "repo_done",
+                    "repo": result["repo"],
+                    "status": result.get("status"),
+                    "duration_seconds": result.get("duration_seconds"),
+                    "returncode": result.get("returncode"),
+                    "cost_usd": cost,
+                    "error": result.get("error"),
+                })
 
         state["batches"].append({"results": results, "completed_at": dt.datetime.now(dt.timezone.utc).isoformat()})
         write_state(state_path, state)
@@ -1019,8 +1046,9 @@ def crawl(
 
     state["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
     state["total_cost_usd"] = repo_total_cost(catalog_dir)
+    state["run_cost_usd"] = max(state["total_cost_usd"] - initial_total_cost, 0.0)
     write_state(state_path, state)
-    emit({"event": "crawl_done", "spent": state["total_cost_usd"]})
+    emit({"event": "crawl_done", "spent": state["total_cost_usd"], "run_spent": state["run_cost_usd"]})
     return state
 
 
@@ -1136,7 +1164,7 @@ def main() -> int:
             resume=args.resume,
         )
         if activity is not None:
-            activity.finish("ok", cost_usd=state.get("total_cost_usd"))
+            activity.finish("ok", cost_usd=state.get("run_cost_usd"))
     except SystemExit as exc:
         if activity is not None:
             activity.finish("error", returncode=exc.code if isinstance(exc.code, int) else 1)

@@ -105,6 +105,7 @@ const STATUS_COLORS: Record<string, string> = {
   ok: "bg-green-500/15 text-green-400 border-green-500/30",
   no_changes: "bg-blue-500/15 text-blue-400 border-blue-500/30",
   tick_skipped_busy: "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
+  abandoned: "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
   crawler_failed: "bg-red-500/15 text-red-400 border-red-500/30",
   exception: "bg-red-500/15 text-red-400 border-red-500/30",
   running: "bg-accent/15 text-accent border-accent/30",

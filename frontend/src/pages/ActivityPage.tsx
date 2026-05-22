@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import { AlertCircle, CheckCircle2, Clock3, GitBranch, Loader2, Pause, Play, RefreshCw, RotateCw, Settings2, XCircle } from "lucide-react";
 import { type CrawlRunDetail, type CrawlRunsPayload, type CrawlStatusPayload } from "@/lib/api";
 import { Button, Card, CardTitle, CardValue, Input, PageHeader, StatusBadge } from "@/components/ui";
 import { cn } from "@/lib/cn";
 
+type ChangedRepo = NonNullable<CrawlRunDetail["repos_changed"]>[number];
+
 function StatusGlyph({ status, className }: { status?: string; className?: string }) {
   if (status === "ok" || status === "no_changes") return <CheckCircle2 size={14} className={className} />;
   if (status === "crawler_failed" || status === "exception") return <XCircle size={14} className={className} />;
-  if (status === "tick_skipped_busy") return <Clock3 size={14} className={className} />;
+  if (status === "tick_skipped_busy" || status === "abandoned") return <Clock3 size={14} className={className} />;
   return <AlertCircle size={14} className={className} />;
 }
 
@@ -25,8 +27,14 @@ function formatDate(value?: string | null) {
 function duration(start?: string, finish?: string) {
   if (!start || !finish) return "-";
   const seconds = Math.max((new Date(finish).getTime() - new Date(start).getTime()) / 1000, 0);
+  return formatSeconds(seconds);
+}
+
+function formatSeconds(seconds?: number | null) {
+  if (seconds == null) return "-";
   if (seconds < 60) return `${Math.round(seconds)}s`;
-  return `${Math.round(seconds / 60)}m`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  return `${(seconds / 3600).toFixed(1)}h`;
 }
 
 function fmtMoney(value?: number | null) {
@@ -34,11 +42,136 @@ function fmtMoney(value?: number | null) {
   return `$${value.toFixed(value >= 10 ? 0 : 2)}`;
 }
 
+function numeric(value: unknown) {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function formatInterval(minutes?: number) {
   if (!minutes) return "-";
   if (minutes < 60) return `${minutes}m`;
   const hours = minutes / 60;
   return Number.isInteger(hours) ? `${minutes}m (${hours}h)` : `${minutes}m`;
+}
+
+function parseJson(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function shortRepo(value?: unknown) {
+  const text = String(value || "");
+  return text.includes("/") ? text.split("/").pop() || text : text;
+}
+
+function eventTimestamp(event: Record<string, unknown>) {
+  return typeof event.ts === "string" ? event.ts : null;
+}
+
+function formatEvent(event: Record<string, unknown>) {
+  const name = String(event.event || "event");
+  const repo = typeof event.repo === "string" ? event.repo : "";
+  if (name === "batch_start") {
+    return `Batch started: ${event.n || "-"} repos, ${event.parallelism || "-"} workers, ${event.stale_remaining || "-"} waiting`;
+  }
+  if (name === "runtime_config_applied") {
+    return `Runtime limits applied: ${event.parallelism || "-"} workers, batch ${event.batch_size || "-"}`;
+  }
+  if (name === "extractor_process_start") {
+    return `${shortRepo(repo)} started`;
+  }
+  if (name === "extractor_process_exit") {
+    const durationSeconds = numeric(event.duration_seconds);
+    const durationText = durationSeconds == null ? "" : ` in ${formatSeconds(durationSeconds)}`;
+    return `${shortRepo(repo)} finished ${event.status || "unknown"}${durationText}`;
+  }
+  if (name === "repo_done") {
+    const durationSeconds = numeric(event.duration_seconds);
+    const cost = numeric(event.cost_usd);
+    const suffix = [
+      durationSeconds == null ? null : formatSeconds(durationSeconds),
+      cost == null ? null : fmtMoney(cost),
+    ].filter(Boolean).join(" · ");
+    return `${shortRepo(repo)} ${event.status || "done"}${suffix ? ` · ${suffix}` : ""}`;
+  }
+  if (name === "extractor_heartbeat") {
+    const elapsedSeconds = numeric(event.elapsed_seconds);
+    return `${shortRepo(repo)} running${elapsedSeconds == null ? "" : ` for ${formatSeconds(elapsedSeconds)}`}`;
+  }
+  if (name === "extractor_child_event") {
+    const inner = parseJson(event.line);
+    if (inner?.event === "turn_completed") {
+      return `${shortRepo(repo)} agent turn completed`;
+    }
+    if (inner?.event === "item_completed" || inner?.event === "item_started") {
+      return `${shortRepo(repo)} ${String(inner.item_type || "item").replace(/_/g, " ")} ${inner.status || ""}`.trim();
+    }
+    return `${shortRepo(repo)} agent event`;
+  }
+  return repo ? `${shortRepo(repo)} ${name.replace(/_/g, " ")}` : name.replace(/_/g, " ");
+}
+
+function formatLogLine(line: string) {
+  const parsed = parseJson(line);
+  return parsed ? formatEvent(parsed) : line;
+}
+
+function repoEventMetadata(events: Array<Record<string, unknown>>) {
+  const metadata = new Map<string, Partial<ChangedRepo>>();
+  for (const event of events) {
+    const name = String(event.event || "");
+    if (name !== "extractor_process_exit" && name !== "repo_done") continue;
+    const repo = typeof event.repo === "string" ? event.repo : "";
+    if (!repo) continue;
+    const existing = metadata.get(repo) || {};
+    const durationSeconds = numeric(event.duration_seconds);
+    const costUsd = numeric(event.cost_usd);
+    metadata.set(repo, {
+      ...existing,
+      status: typeof event.status === "string" ? event.status : existing.status,
+      duration_seconds: durationSeconds ?? existing.duration_seconds,
+      cost_usd: costUsd ?? existing.cost_usd,
+    });
+  }
+  return metadata;
+}
+
+function withRepoMetadata(repos: ChangedRepo[], events: Array<Record<string, unknown>>) {
+  const metadata = repoEventMetadata(events);
+  return repos.map((repo) => ({ ...metadata.get(repo.repo), ...repo }));
+}
+
+function summariseRun(detail?: CrawlRunDetail) {
+  const events = detail?.events || [];
+  const repos = withRepoMetadata(detail?.repos_changed || [], events);
+  const active = new Map<string, Record<string, unknown>>();
+  let latestBatch: Record<string, unknown> | null = null;
+  for (const event of events) {
+    const name = String(event.event || "");
+    const repo = typeof event.repo === "string" ? event.repo : "";
+    if (name === "batch_start") latestBatch = event;
+    if ((name === "extractor_process_start" || name === "extractor_heartbeat") && repo) active.set(repo, event);
+    if ((name === "extractor_process_exit" || name === "repo_done") && repo) active.delete(repo);
+  }
+  const failures = repos.filter((repo) => repo.status && repo.status !== "ok").length;
+  const ok = repos.filter((repo) => repo.status === "ok").length;
+  const totalDuration = repos.reduce((sum, repo) => sum + (repo.duration_seconds || 0), 0);
+  const activeRepos = [...active.keys()].slice(-12).reverse();
+  return {
+    checked: detail?.repos_checked,
+    completed: repos.length || detail?.repos_changed_count || 0,
+    ok,
+    failures,
+    activeRepos,
+    activeCount: active.size,
+    latestBatch,
+    avgDurationSeconds: repos.length ? totalDuration / repos.length : null,
+  };
 }
 
 export function ActivityPage() {
@@ -49,26 +182,18 @@ export function ActivityPage() {
   const [triggering, setTriggering] = useState(false);
   const [automationAction, setAutomationAction] = useState<"start" | "stop" | null>(null);
   const [runtimeAction, setRuntimeAction] = useState(false);
-  const [intervalInput, setIntervalInput] = useState("360");
-  const [budgetInput, setBudgetInput] = useState("20");
-  const [parallelismInput, setParallelismInput] = useState("8");
-  const [batchSizeInput, setBatchSizeInput] = useState("24");
+  const [intervalInput, setIntervalInput] = useState<string | null>(null);
+  const [budgetInput, setBudgetInput] = useState<string | null>(null);
+  const [parallelismInput, setParallelismInput] = useState<string | null>(null);
+  const [batchSizeInput, setBatchSizeInput] = useState<string | null>(null);
   const selected = selectedRun || runs?.runs?.[0]?.run_id || null;
-  const { data: detail } = useSWR<CrawlRunDetail>(selected ? `/api/crawl/runs/${selected}` : null);
+  const { data: detail } = useSWR<CrawlRunDetail>(selected ? `/api/crawl/runs/${selected}` : null, { refreshInterval: 3000 });
   const schedulerInterval = status?.scheduler?.interval_minutes ?? status?.interval_minutes;
   const schedulerBudget = status?.scheduler?.budget_usd ?? status?.budget_usd;
-
-  useEffect(() => {
-    if (automationAction) return;
-    if (schedulerInterval != null) setIntervalInput(String(schedulerInterval));
-    if (schedulerBudget != null) setBudgetInput(String(schedulerBudget));
-  }, [automationAction, schedulerBudget, schedulerInterval]);
-
-  useEffect(() => {
-    if (runtimeAction) return;
-    if (status?.crawler_runtime?.parallelism != null) setParallelismInput(String(status.crawler_runtime.parallelism));
-    if (status?.crawler_runtime?.batch_size != null) setBatchSizeInput(String(status.crawler_runtime.batch_size));
-  }, [runtimeAction, status?.crawler_runtime?.batch_size, status?.crawler_runtime?.parallelism]);
+  const intervalValue = intervalInput ?? String(schedulerInterval ?? 360);
+  const budgetValue = budgetInput ?? String(schedulerBudget ?? 20);
+  const parallelismValue = parallelismInput ?? String(status?.crawler_runtime?.parallelism ?? 8);
+  const batchSizeValue = batchSizeInput ?? String(status?.crawler_runtime?.batch_size ?? 24);
 
   const triggerNow = async () => {
     setTriggering(true);
@@ -97,8 +222,8 @@ export function ActivityPage() {
     setAutomationAction("start");
     try {
       const body = new FormData();
-      body.append("interval_minutes", intervalInput);
-      body.append("budget_usd", budgetInput);
+      body.append("interval_minutes", intervalValue);
+      body.append("budget_usd", budgetValue);
       const response = await fetch("/api/crawl/scheduler/start", { method: "POST", body });
       if (!response.ok && response.status !== 202) {
         const payload = await response.json().catch(() => ({}));
@@ -131,8 +256,8 @@ export function ActivityPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          parallelism: Number(parallelismInput),
-          batch_size: Number(batchSizeInput),
+          parallelism: Number(parallelismValue),
+          batch_size: Number(batchSizeValue),
         }),
       });
       if (!response.ok) {
@@ -149,7 +274,6 @@ export function ActivityPage() {
     () => (runs?.runs || []).reduce((sum, run) => sum + (run.repos_changed_count || 0), 0),
     [runs],
   );
-  const recentRunsLabel = runs?.source === "extractions" ? "extraction runs" : "listed in Activity";
   const changedLabel = runs?.source === "extractions" ? "repos extracted" : "recent window";
   const schedulerRunning = Boolean(status?.scheduler?.running);
   const crawlerRunning = Boolean(status?.crawler?.running);
@@ -159,6 +283,22 @@ export function ActivityPage() {
   const interval = formatInterval(schedulerInterval);
   const logPath = status?.scheduler?.log_path || status?.active_log_path;
   const logTail = status?.scheduler?.log_tail?.length ? status.scheduler.log_tail : (status?.active_log_tail || []);
+  const runStats = useMemo(() => summariseRun(detail), [detail]);
+  const runChecked = runStats.checked ?? status?.last_run?.repos_checked;
+  const runCompleted = runStats.completed || status?.last_run?.repos_changed_count || 0;
+  const runProgress = runChecked ? Math.min(100, Math.round((runCompleted / runChecked) * 100)) : null;
+  const runBudget = detail?.budget_usd ?? status?.last_run?.budget_usd ?? schedulerBudget;
+  const runCost = detail?.cost_usd ?? status?.last_run?.cost_usd;
+  const runSpendSoFar = numeric(runStats.latestBatch?.run_spent_so_far);
+  const catalogSpend = numeric(runStats.latestBatch?.spent_so_far) ?? detail?.catalog_cost_usd ?? status?.last_run?.catalog_cost_usd;
+  const spendValue = runCost ?? runSpendSoFar ?? catalogSpend;
+  const spendHint = runCost != null
+    ? `final run spend${runBudget != null ? ` of $${runBudget}` : ""}`
+    : runSpendSoFar != null
+      ? `this run so far${runBudget != null ? ` of $${runBudget}` : ""}`
+      : catalogSpend != null
+        ? `${fmtMoney(catalogSpend)} catalog spend`
+        : "cost appears after extraction";
   const pageDescription = workRunning
     ? "A crawl or re-index is running"
     : schedulerRunning
@@ -186,165 +326,174 @@ export function ActivityPage() {
         <div className="min-w-0 overflow-auto p-4 sm:p-6 space-y-5">
           <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
             <Card>
-              <CardTitle>Scheduler</CardTitle>
-              <CardValue>{schedulerRunning ? "On" : "Manual"}</CardValue>
+              <CardTitle>Status</CardTitle>
+              <CardValue>{workRunning ? "Running" : schedulerRunning ? "Scheduled" : "Idle"}</CardValue>
               <div className="text-xs text-fg-dim mt-1">
-                {schedulerRunning ? `${schedulerManaged ? "managed" : "external"} · PID ${status?.scheduler?.pid} · ${status?.scheduler?.uptime || "running"}` : "Ready for manual trigger"}
+                {status?.crawler?.pid ? `crawler PID ${status.crawler.pid}` : schedulerRunning ? `${schedulerManaged ? "managed" : "external"} scheduler` : "Ready for trigger"}
               </div>
             </Card>
             <Card>
-              <CardTitle>Current Work</CardTitle>
-              <CardValue>{workRunning ? "Running" : "Idle"}</CardValue>
+              <CardTitle>Progress</CardTitle>
+              <CardValue>{runChecked ? `${runCompleted}/${runChecked}` : runCompleted || "-"}</CardValue>
               <div className="text-xs text-fg-dim mt-1">
-                {status?.lock?.pid
-                  ? `lock PID ${status.lock.pid}`
-                  : status?.crawler?.pid
-                    ? `crawler PID ${status.crawler.pid}`
-                    : "Ready for trigger"}
+                {runProgress != null ? `${runProgress}% of checked repos` : "Waiting for run detail"}
               </div>
             </Card>
             <Card>
-              <CardTitle>Recent Runs</CardTitle>
-              <CardValue>{runs?.total ?? "-"}</CardValue>
-              <div className="text-xs text-fg-dim mt-1">{recentRunsLabel}</div>
+              <CardTitle>Active</CardTitle>
+              <CardValue>{runStats.activeCount || (crawlerRunning ? "..." : 0)}</CardValue>
+              <div className="text-xs text-fg-dim mt-1">
+                {status?.crawler_runtime ? `${status.crawler_runtime.parallelism} worker limit · batch ${status.crawler_runtime.batch_size}` : "worker pool"}
+              </div>
             </Card>
             <Card>
-              <CardTitle>Tick Budget</CardTitle>
-              <CardValue>${schedulerBudget?.toFixed(0) ?? "-"}</CardValue>
-              <div className="text-xs text-fg-dim mt-1">per scheduled/manual run</div>
+              <CardTitle>Spend</CardTitle>
+              <CardValue>{fmtMoney(spendValue)}</CardValue>
+              <div className="text-xs text-fg-dim mt-1">{spendHint}</div>
             </Card>
+            <Card>
+              <CardTitle>Failures</CardTitle>
+              <CardValue>{runStats.failures}</CardValue>
+              <div className="text-xs text-fg-dim mt-1">
+                {runStats.ok ? `${runStats.ok} ok` : "No completed successes yet"}
+              </div>
+            </Card>
+          </div>
+          <div className="rounded-lg border border-border bg-bg-elevated px-4 py-3">
+            <div className="flex items-center justify-between gap-3 text-xs uppercase tracking-wider text-fg-dim">
+              <span>Run progress</span>
+              <span>{runProgress != null ? `${runProgress}%` : "waiting for run detail"}</span>
+            </div>
+            <div className="mt-2 h-2 overflow-hidden rounded bg-bg">
+              <div
+                className="h-full rounded bg-accent transition-all"
+                style={{ width: `${runProgress ?? 0}%` }}
+              />
+            </div>
           </div>
 
           <section className="rounded-lg border border-border bg-bg-elevated overflow-hidden">
-            <div className="grid grid-cols-1 lg:grid-cols-[190px_180px_minmax(0,1fr)] border-b border-border">
-              <div className="border-b border-border px-4 py-3 lg:border-b-0 lg:border-r">
-                <div className="text-xs uppercase tracking-wider text-fg-dim">Run Mode</div>
-                <div className="mt-1 text-sm text-fg">
-                  {schedulerRunning ? (schedulerManaged ? "Managed automation" : "External scheduler") : "Manual trigger only"}
-                </div>
-                <div className="mt-0.5 text-xs text-fg-dim">
-                  {schedulerRunning ? "Runs continue until paused" : "Use Trigger now or enable automation"}
-                </div>
-              </div>
-              <div className="border-b border-border px-4 py-3 lg:border-b-0 lg:border-r">
-                <div className="text-xs uppercase tracking-wider text-fg-dim">Configured Interval</div>
-                <div className="mt-1 text-sm text-fg">{interval}</div>
-                <div className="mt-0.5 text-xs text-fg-dim">
-                  {schedulerRunning ? "Next ticks use this cadence" : "Only applies after automation starts"}
-                </div>
-              </div>
-              <div className="px-4 py-3">
+            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_260px] gap-4 border-b border-border px-4 py-3">
+              <div className="min-w-0">
                 <div className="text-xs uppercase tracking-wider text-fg-dim">Workspace</div>
                 <div className="mt-1 truncate font-mono text-xs text-fg-muted">{status?.workspace_root || "-"}</div>
                 <div className="mt-0.5 truncate font-mono text-xs text-fg-dim">{status?.workspace_config || "-"}</div>
               </div>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <div className="text-xs uppercase tracking-wider text-fg-dim">Mode</div>
+                  <div className="mt-1 text-fg">{schedulerRunning ? (schedulerManaged ? "Scheduled" : "External") : "Manual"}</div>
+                </div>
+                <div>
+                  <div className="text-xs uppercase tracking-wider text-fg-dim">Interval</div>
+                  <div className="mt-1 text-fg">{interval}</div>
+                </div>
+              </div>
             </div>
-            <div className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_auto] gap-4 border-b border-border px-4 py-3">
-              <div>
+            <div className="grid grid-cols-1 2xl:grid-cols-2 border-b border-border">
+              <div className="border-b border-border px-4 py-3 2xl:border-b-0 2xl:border-r">
                 <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-fg-dim">
                   <Settings2 size={13} /> Automation
                 </div>
-                <div className="mt-1 text-sm text-fg-muted">
+                <div className="mt-1 min-h-8 text-sm text-fg-muted">
                   {schedulerRunning
                     ? schedulerManaged
                       ? `Enabled every ${interval}. Update values to restart the scheduler with a new cadence.`
                       : "A scheduler is running outside the dashboard. Stop that process before switching to managed control."
                     : "Enable scheduled crawls here, or keep using manual trigger for one-off runs."}
                 </div>
-              </div>
-              <div className="flex flex-wrap items-end gap-2 2xl:justify-end">
-                <label className="block w-[120px]">
-                  <span className="mb-1 block text-xs text-fg-dim">Interval (min)</span>
-                  <Input
-                    id="scheduler-interval"
-                    type="number"
-                    min={1}
-                    max={10080}
-                    value={intervalInput}
+                <div className="mt-3 flex flex-wrap items-end gap-2">
+                  <label className="block w-[120px]">
+                    <span className="mb-1 block text-xs text-fg-dim">Interval (min)</span>
+                    <Input
+                      id="scheduler-interval"
+                      type="number"
+                      min={1}
+                      max={10080}
+                      value={intervalValue}
+                      disabled={schedulerSource === "external" || automationAction !== null}
+                      onChange={(event) => setIntervalInput(event.target.value)}
+                    />
+                  </label>
+                  <label className="block w-[120px]">
+                    <span className="mb-1 block text-xs text-fg-dim">Budget ($)</span>
+                    <Input
+                      id="scheduler-budget"
+                      type="number"
+                      min={0.01}
+                      step={0.01}
+                      value={budgetValue}
+                      disabled={schedulerSource === "external" || automationAction !== null}
+                      onChange={(event) => setBudgetInput(event.target.value)}
+                    />
+                  </label>
+                  <Button
+                    onClick={startAutomation}
                     disabled={schedulerSource === "external" || automationAction !== null}
-                    onChange={(event) => setIntervalInput(event.target.value)}
-                  />
-                </label>
-                <label className="block w-[120px]">
-                  <span className="mb-1 block text-xs text-fg-dim">Budget ($)</span>
-                  <Input
-                    id="scheduler-budget"
-                    type="number"
-                    min={0.01}
-                    step={0.01}
-                    value={budgetInput}
-                    disabled={schedulerSource === "external" || automationAction !== null}
-                    onChange={(event) => setBudgetInput(event.target.value)}
-                  />
-                </label>
-                <Button
-                  onClick={startAutomation}
-                  disabled={schedulerSource === "external" || automationAction !== null}
-                  className="h-9"
-                >
-                  {automationAction === "start" ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-                  {schedulerRunning ? "Update" : "Enable"}
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={stopAutomation}
-                  disabled={!schedulerManaged || automationAction !== null}
-                  className="h-9"
-                >
-                  {automationAction === "stop" ? <Loader2 size={14} className="animate-spin" /> : <Pause size={14} />}
-                  Pause
-                </Button>
+                    className="h-9"
+                  >
+                    {automationAction === "start" ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+                    {schedulerRunning ? "Update" : "Enable"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={stopAutomation}
+                    disabled={!schedulerManaged || automationAction !== null}
+                    className="h-9"
+                  >
+                    {automationAction === "stop" ? <Loader2 size={14} className="animate-spin" /> : <Pause size={14} />}
+                    Pause
+                  </Button>
+                </div>
               </div>
-            </div>
-            <div className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_auto] gap-4 border-b border-border px-4 py-3">
-              <div>
+              <div className="px-4 py-3">
                 <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-fg-dim">
                   <Settings2 size={13} /> Crawler limits
                 </div>
-                <div className="mt-1 text-sm text-fg-muted">
+                <div className="mt-1 min-h-8 text-sm text-fg-muted">
                   Applies before the next batch. Current source: {status?.crawler_runtime?.source || "default"}.
                 </div>
-              </div>
-              <div className="flex flex-wrap items-end gap-2 2xl:justify-end">
-                <label className="block w-[120px]">
-                  <span className="mb-1 block text-xs text-fg-dim">Parallelism</span>
-                  <Input
-                    id="crawler-parallelism"
-                    type="number"
-                    min={1}
-                    max={64}
-                    value={parallelismInput}
+                <div className="mt-3 flex flex-wrap items-end gap-2">
+                  <label className="block w-[120px]">
+                    <span className="mb-1 block text-xs text-fg-dim">Parallelism</span>
+                    <Input
+                      id="crawler-parallelism"
+                      type="number"
+                      min={1}
+                      max={64}
+                      value={parallelismValue}
+                      disabled={runtimeAction}
+                      onChange={(event) => setParallelismInput(event.target.value)}
+                    />
+                  </label>
+                  <label className="block w-[120px]">
+                    <span className="mb-1 block text-xs text-fg-dim">Batch size</span>
+                    <Input
+                      id="crawler-batch-size"
+                      type="number"
+                      min={1}
+                      max={500}
+                      value={batchSizeValue}
+                      disabled={runtimeAction}
+                      onChange={(event) => setBatchSizeInput(event.target.value)}
+                    />
+                  </label>
+                  <Button
+                    variant="outline"
+                    onClick={updateCrawlerRuntime}
                     disabled={runtimeAction}
-                    onChange={(event) => setParallelismInput(event.target.value)}
-                  />
-                </label>
-                <label className="block w-[120px]">
-                  <span className="mb-1 block text-xs text-fg-dim">Batch size</span>
-                  <Input
-                    id="crawler-batch-size"
-                    type="number"
-                    min={1}
-                    max={500}
-                    value={batchSizeInput}
-                    disabled={runtimeAction}
-                    onChange={(event) => setBatchSizeInput(event.target.value)}
-                  />
-                </label>
-                <Button
-                  variant="outline"
-                  onClick={updateCrawlerRuntime}
-                  disabled={runtimeAction}
-                  className="h-9"
-                >
-                  {runtimeAction ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                  Apply
-                </Button>
+                    className="h-9"
+                  >
+                    {runtimeAction ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                    Apply
+                  </Button>
+                </div>
               </div>
             </div>
             <div className="px-4 py-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-fg-dim">Live Output</div>
+                  <div className="text-xs uppercase tracking-wider text-fg-dim">Live events</div>
                   <div className="text-xs text-fg-dim">{logPath || "No scheduler or trigger log yet"}</div>
                 </div>
                 {status?.crawler?.running && (
@@ -354,9 +503,14 @@ export function ActivityPage() {
                 )}
               </div>
               {logTail.length > 0 ? (
-                <pre className="mt-3 max-h-40 overflow-auto rounded border border-border bg-bg p-3 text-xs text-fg-muted whitespace-pre-wrap">
-                  {logTail.join("\n")}
-                </pre>
+                <div className="mt-3 max-h-48 overflow-auto rounded border border-border bg-bg">
+                  {logTail.slice(-12).reverse().map((line, index) => (
+                    <div key={index} className="border-b border-border px-3 py-2 last:border-b-0">
+                      <div className="text-sm text-fg-muted">{formatLogLine(line)}</div>
+                      <div className="mt-0.5 truncate font-mono text-[11px] text-fg-dim">{line}</div>
+                    </div>
+                  ))}
+                </div>
               ) : (
                 <div className="mt-3 rounded border border-border bg-bg px-3 py-2 text-sm text-fg-muted">
                   Trigger a crawl to see scheduler and crawler events here.
@@ -366,7 +520,7 @@ export function ActivityPage() {
           </section>
 
           <div className="text-xs text-fg-dim">
-            Recent run table: {totalChanged} {changedLabel}. Select a row to inspect events, cost, changed repos, and re-index actions.
+            Recent run table: {totalChanged} {changedLabel}. Select a row to inspect progress, failures, recent completions, and live events.
           </div>
 
           <section className="rounded-lg border border-border bg-bg-elevated overflow-hidden">
@@ -376,7 +530,7 @@ export function ActivityPage() {
                   <div>Started</div>
                   <div>Run</div>
                   <div>Status</div>
-                  <div>Changed</div>
+                  <div>Done</div>
                   <div className="text-right">Cost</div>
                   <div className="text-right">Duration</div>
                 </div>
@@ -425,13 +579,17 @@ export function ActivityPage() {
 }
 
 function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReindexRepo: (repo: string) => void }) {
-  const changedRepos = detail.repos_changed || [];
-  const visibleChangedRepos = changedRepos.slice(-30).reverse();
   const events = detail.events || [];
-  const visibleEvents = events.slice(-80).reverse();
+  const changedRepos = withRepoMetadata(detail.repos_changed || [], events);
+  const visibleChangedRepos = changedRepos.slice(-20).reverse();
+  const visibleEvents = events.slice(-40).reverse();
+  const stats = summariseRun(detail);
+  const failures = changedRepos.filter((repo) => repo.status && repo.status !== "ok").slice(-12).reverse();
+  const currentRunSpend = detail.cost_usd ?? numeric(stats.latestBatch?.run_spent_so_far);
+  const batchCatalogSpend = numeric(stats.latestBatch?.spent_so_far);
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)] gap-5 p-6 text-sm">
+    <div className="grid h-full min-h-0 grid-rows-[auto_auto_auto_minmax(0,1fr)] gap-5 p-6 text-sm">
       <div>
         <div className="flex items-center gap-2">
           <StatusGlyph status={detail.status} className="text-fg-muted" />
@@ -445,16 +603,63 @@ function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReinde
 
       <div className="grid grid-cols-2 gap-2">
         <MiniMetric label="Checked" value={detail.repos_checked ?? "-"} />
-        <MiniMetric label="Changed" value={detail.repos_changed?.length ?? detail.repos_changed_count ?? "-"} />
-        <MiniMetric label={detail.trigger === "extraction" ? "Cost" : "Budget"} value={detail.trigger === "extraction" ? fmtMoney(detail.cost_usd) : detail.budget_usd != null ? `$${detail.budget_usd}` : "-"} />
-        <MiniMetric label="Return" value={detail.crawler_returncode ?? "-"} />
+        <MiniMetric label="Completed" value={stats.completed || detail.repos_changed_count || "-"} />
+        <MiniMetric label="Active" value={stats.activeCount} />
+        <MiniMetric label="Spend" value={fmtMoney(currentRunSpend)} />
       </div>
 
       <div className="min-h-0 overflow-auto pr-1 space-y-5">
+        {stats.latestBatch && (
+          <section className="rounded border border-border bg-bg px-3 py-2">
+            <div className="text-xs uppercase tracking-wider text-fg-dim">Current batch</div>
+            <div className="mt-1 grid grid-cols-3 gap-2 text-sm text-fg-muted">
+              <div><span className="text-fg">{String(stats.latestBatch.n || "-")}</span> repos</div>
+              <div><span className="text-fg">{String(stats.latestBatch.parallelism || "-")}</span> workers</div>
+              <div><span className="text-fg">{String(stats.latestBatch.stale_remaining || "-")}</span> queued</div>
+            </div>
+            <div className="mt-2 text-xs text-fg-dim">
+              {currentRunSpend != null ? `${fmtMoney(currentRunSpend)} spent this run` : "Run spend pending"}
+              {detail.budget_usd != null ? ` · $${detail.budget_usd} budget` : ""}
+              {batchCatalogSpend != null ? ` · ${fmtMoney(batchCatalogSpend)} catalog spend` : ""}
+            </div>
+          </section>
+        )}
+
+        {stats.activeRepos.length > 0 && (
+          <section>
+            <h3 className="text-xs uppercase tracking-wider text-fg-dim mb-2">Active repos</h3>
+            <div className="space-y-1">
+              {stats.activeRepos.map((repo) => (
+                <div key={repo} className="rounded border border-border bg-bg px-3 py-2">
+                  <div className="font-mono text-xs text-fg truncate">{repo}</div>
+                  <div className="mt-1 text-xs text-fg-dim">extracting now</div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {failures.length > 0 && (
+          <section>
+            <h3 className="text-xs uppercase tracking-wider text-fg-dim mb-2">Needs attention</h3>
+            <div className="space-y-1">
+              {failures.map((repo, index) => (
+                <div key={`${repo.repo}-${index}`} className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2">
+                  <div className="flex items-center gap-2 text-fg">
+                    <XCircle size={13} className="text-red-400" />
+                    <span className="font-mono text-xs truncate">{repo.repo}</span>
+                  </div>
+                  <div className="mt-1 text-xs text-fg-dim">{repo.status || "failed"}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         {changedRepos.length > 0 && (
           <section>
             <div className="mb-2 flex items-center justify-between gap-3">
-              <h3 className="text-xs uppercase tracking-wider text-fg-dim">Changed repos</h3>
+              <h3 className="text-xs uppercase tracking-wider text-fg-dim">Recent completions</h3>
               {changedRepos.length > visibleChangedRepos.length && (
                 <span className="text-xs text-fg-dim">Latest {visibleChangedRepos.length} of {changedRepos.length}</span>
               )}
@@ -465,6 +670,7 @@ function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReinde
                   <div className="flex items-center gap-2 text-fg">
                     <GitBranch size={13} className="text-fg-dim" />
                     <span className="font-mono text-xs truncate">{repo.repo}</span>
+                    <StatusBadge status={repo.status || "done"} />
                     <button
                       type="button"
                       onClick={() => onReindexRepo(repo.repo)}
@@ -473,7 +679,13 @@ function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReinde
                       <RotateCw size={11} /> Re-index
                     </button>
                   </div>
-                  <div className="mt-1 text-xs text-fg-dim">{repo.reason || "changed"}</div>
+                  <div className="mt-1 text-xs text-fg-dim">
+                    {[
+                      repo.reason || "crawler extraction",
+                      repo.duration_seconds ? formatSeconds(repo.duration_seconds) : null,
+                      repo.cost_usd != null ? fmtMoney(repo.cost_usd) : null,
+                    ].filter(Boolean).join(" · ")}
+                  </div>
                 </div>
               ))}
             </div>
@@ -483,7 +695,7 @@ function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReinde
         {events.length > 0 && (
           <section>
             <div className="mb-2 flex items-center justify-between gap-3">
-              <h3 className="text-xs uppercase tracking-wider text-fg-dim">Timeline</h3>
+              <h3 className="text-xs uppercase tracking-wider text-fg-dim">Event stream</h3>
               {events.length > visibleEvents.length && (
                 <span className="text-xs text-fg-dim">Latest {visibleEvents.length} of {events.length}</span>
               )}
@@ -491,8 +703,8 @@ function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReinde
             <ol className="max-h-80 space-y-2 overflow-auto pr-1">
               {visibleEvents.map((event, index) => (
                 <li key={index} className="rounded border border-border bg-bg px-3 py-2">
-                  <div className="font-mono text-xs text-fg">{String(event.event || "event")}</div>
-                  <div className="mt-1 text-xs text-fg-dim truncate">{JSON.stringify(event)}</div>
+                  <div className="text-sm text-fg">{formatEvent(event)}</div>
+                  <div className="mt-1 text-xs text-fg-dim">{formatDate(eventTimestamp(event))}</div>
                 </li>
               ))}
             </ol>
