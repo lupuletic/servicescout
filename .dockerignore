@@ -17,3 +17,18 @@ __pycache__/
 .DS_Store
 data/catalog_v2_logs/
 FUTURE.md
+
+# Secrets & local runtime config: compose injects env at runtime and mounts the
+# workspace config, so the image needs none of these. Excluding them keeps
+# credentials out of local builds AND any published image. (.env.*.example stay
+# in the repo for host-side `--env-file`, but are never needed inside the image.)
+.env
+.env.*
+workspace.json
+workspace.runtime.json
+*.pem
+*.key
+*.p12
+id_rsa*
+.codex/
+.claude/
