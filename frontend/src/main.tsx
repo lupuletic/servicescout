@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { SWRConfig } from "swr";
 import { AppShell } from "@/components/AppShell";
-import { GraphPage } from "@/pages/GraphPage";
+import { HomeGate } from "@/components/HomeGate";
 import { EntitiesPage } from "@/pages/EntitiesPage";
 import { EntityPage } from "@/pages/EntityPage";
 import { TriagePage } from "@/pages/TriagePage";
@@ -24,7 +24,7 @@ createRoot(document.getElementById("root")!).render(
       <BrowserRouter>
         <AppShell>
           <Routes>
-            <Route path="/" element={<GraphPage />} />
+            <Route path="/" element={<HomeGate />} />
             <Route path="/entities" element={<EntitiesPage />} />
             <Route path="/entity/:ref" element={<EntityPage />} />
             <Route path="/triage" element={<TriagePage />} />

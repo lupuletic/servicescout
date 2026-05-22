@@ -79,6 +79,18 @@ def _workspace_config_path() -> Path:
     return Path(os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json"))
 
 
+def _audit(data_dir: Path, action: str, **fields: Any) -> None:
+    """Append-only audit trail for mutating actions (config changes, token
+    storage, crawl triggers). Records the *fact* and a before->after diff, never
+    the secret itself. Actor identity slots in once the dashboard has auth."""
+    record = {
+        "ts": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "action": action,
+        **fields,
+    }
+    append_jsonl(data_dir / "audit.jsonl", record)
+
+
 HERE = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG = HERE / "data" / "catalog.json"
 DEFAULT_EXTRACTION_LOG = HERE / "data" / "extraction_runs.jsonl"
@@ -1316,6 +1328,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 proc = subprocess.Popen(cmd, cwd=str(HERE), stdout=fh, stderr=subprocess.STDOUT)
         except OSError as exc:
             return JSONResponse({"error": "trigger_failed", "detail": str(exc)}, status_code=500)
+        _audit(data_dir, "crawl_triggered", trigger="manual", pid=proc.pid)
         return JSONResponse({
             "status": "accepted",
             "pid": proc.pid,
@@ -1359,6 +1372,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 proc = subprocess.Popen(cmd, cwd=str(HERE), stdout=fh, stderr=subprocess.STDOUT)
         except OSError as exc:
             return JSONResponse({"error": "trigger_failed", "detail": str(exc)}, status_code=500)
+        _audit(data_dir, "crawl_triggered_repo", trigger="manual-reindex", repo=repo, pid=proc.pid)
         return JSONResponse({
             "status": "accepted",
             "pid": proc.pid,
@@ -1453,14 +1467,14 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
 
     @app.post("/api/workspace/config")
     def save_workspace_config(body: WorkspaceConfigBody) -> JSONResponse:
+        cfg_path = _workspace_config_path()
+        before = load_workspace_config(cfg_path)
         scope = dict(body.scope or {})
         if body.discover is not None:
             scope["discover"] = bool(body.discover)
         if body.max_discovery_rounds is not None:
             scope["max_discovery_rounds"] = int(body.max_discovery_rounds)
-        saved = write_workspace_config(
-            _workspace_config_path(), orgs=body.orgs, seeds=body.seeds, scope=scope,
-        )
+        saved = write_workspace_config(cfg_path, orgs=body.orgs, seeds=body.seeds, scope=scope)
         data_dir = catalog_path.parent.resolve()
         if body.budget_usd is not None and body.budget_usd > 0:
             settings = read_scheduler_settings(data_dir)
@@ -1470,11 +1484,23 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 budget_usd=float(body.budget_usd),
             )
         token_stored = _persist_github_token(body.token) if body.token else False
+        _audit(
+            data_dir, "workspace_config_saved",
+            before={"orgs": before.get("orgs"), "seeds": before.get("seeds"), "scope": before.get("scope")},
+            after={"orgs": saved.get("orgs"), "seeds": saved.get("seeds"), "scope": saved.get("scope")},
+            budget_usd=body.budget_usd,
+            token_stored=token_stored,  # the fact, never the token
+        )
         return JSONResponse({
             "saved": {"orgs": saved.get("orgs"), "seeds": saved.get("seeds"), "scope": saved.get("scope")},
-            "config_path": str(_workspace_config_path()),
+            "config_path": str(cfg_path),
             "token_stored": token_stored,
         })
+
+    @app.get("/api/audit")
+    def audit_log(limit: int = Query(default=50, ge=1, le=500)) -> JSONResponse:
+        records = read_jsonl(catalog_path.parent.resolve() / "audit.jsonl")
+        return JSONResponse({"entries": records[-limit:][::-1], "count": len(records)})
 
     # ---- frontend (React SPA) ----
     if FRONTEND_DIST.exists() and (FRONTEND_DIST / "index.html").exists():

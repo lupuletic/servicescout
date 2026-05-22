@@ -13,13 +13,14 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 
+// Onboarding is intentionally NOT a primary nav item — it's the first-run
+// empty state and the "+ New crawl" action (header), not a place you live in.
 const NAV = [
   { to: "/", label: "Explorer", icon: Network },
   { to: "/entities", label: "Catalog", icon: Boxes },
   { to: "/activity", label: "Activity", icon: CalendarClock },
   { to: "/operator", label: "Operator", icon: Gauge },
   { to: "/triage", label: "Triage", icon: ListChecks },
-  { to: "/onboard", label: "Onboard", icon: Rocket },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -47,14 +48,22 @@ export function AppShell({ children }: { children: ReactNode }) {
           <span className="font-semibold tracking-tight text-fg">ServiceScout</span>
           <span className="text-fg-dim text-xs ml-1">v0 · alpha</span>
         </div>
-        <a
-          href="https://github.com/lupuletic/servicescout"
-          target="_blank"
-          rel="noreferrer"
-          className="flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg transition-colors"
-        >
-          GitHub <ExternalLink size={13} />
-        </a>
+        <div className="flex items-center gap-4">
+          <Link
+            to="/onboard"
+            className="flex items-center gap-1.5 rounded-md border border-accent/40 px-2.5 py-1 text-sm text-fg hover:bg-accent/15 transition-colors"
+          >
+            <Rocket size={14} /> New crawl
+          </Link>
+          <a
+            href="https://github.com/lupuletic/servicescout"
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg transition-colors"
+          >
+            GitHub <ExternalLink size={13} />
+          </a>
+        </div>
       </header>
 
       {/* Sidebar */}

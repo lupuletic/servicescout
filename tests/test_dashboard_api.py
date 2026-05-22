@@ -319,6 +319,16 @@ class OnboardingApiTests(unittest.TestCase):
                 self.assertEqual(got["scope"], {"discover": True, "max_discovery_rounds": 4})
                 self.assertEqual(got["budget_usd"], 25)
 
+                # Audit trail records the config change with token_stored as a
+                # bool — and never the token itself.
+                audit = client.get("/api/audit").json()
+                self.assertGreaterEqual(audit["count"], 1)
+                entry = audit["entries"][0]
+                self.assertEqual(entry["action"], "workspace_config_saved")
+                self.assertTrue(entry["token_stored"])
+                self.assertEqual(entry["after"]["seeds"], ["acme/storefront", "acme/mobile"])
+                self.assertNotIn("ghp_secret", json.dumps(entry))  # the secret VALUE is never written
+
 
 if __name__ == "__main__":
     unittest.main()
