@@ -340,7 +340,7 @@ export function ActivityPage() {
           </section>
         </div>
 
-        <aside className="min-w-0 border-t border-border bg-bg-elevated overflow-auto xl:border-l xl:border-t-0">
+        <aside className="min-w-0 overflow-hidden border-t border-border bg-bg-elevated xl:border-l xl:border-t-0">
           {!detail && <div className="p-6 text-sm text-fg-muted">Select a run.</div>}
           {detail && <RunDetail detail={detail} onReindexRepo={triggerRepo} />}
         </aside>
@@ -350,8 +350,13 @@ export function ActivityPage() {
 }
 
 function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReindexRepo: (repo: string) => void }) {
+  const changedRepos = detail.repos_changed || [];
+  const visibleChangedRepos = changedRepos.slice(-30).reverse();
+  const events = detail.events || [];
+  const visibleEvents = events.slice(-80).reverse();
+
   return (
-    <div className="p-6 space-y-5 text-sm">
+    <div className="grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)] gap-5 p-6 text-sm">
       <div>
         <div className="flex items-center gap-2">
           <StatusGlyph status={detail.status} className="text-fg-muted" />
@@ -370,52 +375,64 @@ function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReinde
         <MiniMetric label="Return" value={detail.crawler_returncode ?? "-"} />
       </div>
 
-      {(detail.repos_changed || []).length > 0 && (
-        <section>
-          <h3 className="text-xs uppercase tracking-wider text-fg-dim mb-2">Changed repos</h3>
-          <div className="space-y-1">
-            {(detail.repos_changed || []).slice(0, 12).map((repo) => (
-              <div key={repo.repo} className="rounded border border-border bg-bg px-3 py-2">
-                <div className="flex items-center gap-2 text-fg">
-                  <GitBranch size={13} className="text-fg-dim" />
-                  <span className="font-mono text-xs truncate">{repo.repo}</span>
-                  <button
-                    type="button"
-                    onClick={() => onReindexRepo(repo.repo)}
-                    className="ml-auto inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px] text-fg-muted hover:text-fg"
-                  >
-                    <RotateCw size={11} /> Re-index
-                  </button>
+      <div className="min-h-0 overflow-auto pr-1 space-y-5">
+        {changedRepos.length > 0 && (
+          <section>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <h3 className="text-xs uppercase tracking-wider text-fg-dim">Changed repos</h3>
+              {changedRepos.length > visibleChangedRepos.length && (
+                <span className="text-xs text-fg-dim">Latest {visibleChangedRepos.length} of {changedRepos.length}</span>
+              )}
+            </div>
+            <div className="max-h-[42vh] space-y-1 overflow-auto pr-1">
+              {visibleChangedRepos.map((repo, index) => (
+                <div key={`${repo.repo}-${repo.reason || "changed"}-${index}`} className="rounded border border-border bg-bg px-3 py-2">
+                  <div className="flex items-center gap-2 text-fg">
+                    <GitBranch size={13} className="text-fg-dim" />
+                    <span className="font-mono text-xs truncate">{repo.repo}</span>
+                    <button
+                      type="button"
+                      onClick={() => onReindexRepo(repo.repo)}
+                      className="ml-auto inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px] text-fg-muted hover:text-fg"
+                    >
+                      <RotateCw size={11} /> Re-index
+                    </button>
+                  </div>
+                  <div className="mt-1 text-xs text-fg-dim">{repo.reason || "changed"}</div>
                 </div>
-                <div className="mt-1 text-xs text-fg-dim">{repo.reason || "changed"}</div>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
+              ))}
+            </div>
+          </section>
+        )}
 
-      {(detail.events || []).length > 0 && (
-        <section>
-          <h3 className="text-xs uppercase tracking-wider text-fg-dim mb-2">Timeline</h3>
-          <ol className="space-y-2">
-            {(detail.events || []).map((event, index) => (
-              <li key={index} className="rounded border border-border bg-bg px-3 py-2">
-                <div className="font-mono text-xs text-fg">{String(event.event || "event")}</div>
-                <div className="mt-1 text-xs text-fg-dim truncate">{JSON.stringify(event)}</div>
-              </li>
-            ))}
-          </ol>
-        </section>
-      )}
+        {events.length > 0 && (
+          <section>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <h3 className="text-xs uppercase tracking-wider text-fg-dim">Timeline</h3>
+              {events.length > visibleEvents.length && (
+                <span className="text-xs text-fg-dim">Latest {visibleEvents.length} of {events.length}</span>
+              )}
+            </div>
+            <ol className="max-h-80 space-y-2 overflow-auto pr-1">
+              {visibleEvents.map((event, index) => (
+                <li key={index} className="rounded border border-border bg-bg px-3 py-2">
+                  <div className="font-mono text-xs text-fg">{String(event.event || "event")}</div>
+                  <div className="mt-1 text-xs text-fg-dim truncate">{JSON.stringify(event)}</div>
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
 
-      {(detail.crawler_stdout_tail || detail.crawler_stderr_tail || detail.error) && (
-        <section>
-          <h3 className="text-xs uppercase tracking-wider text-fg-dim mb-2">Output</h3>
-          <pre className="max-h-72 overflow-auto rounded border border-border bg-bg p-3 text-xs text-fg-muted whitespace-pre-wrap">
-            {detail.error || detail.crawler_stderr_tail || detail.crawler_stdout_tail}
-          </pre>
-        </section>
-      )}
+        {(detail.crawler_stdout_tail || detail.crawler_stderr_tail || detail.error) && (
+          <section>
+            <h3 className="text-xs uppercase tracking-wider text-fg-dim mb-2">Output</h3>
+            <pre className="max-h-72 overflow-auto rounded border border-border bg-bg p-3 text-xs text-fg-muted whitespace-pre-wrap">
+              {detail.error || detail.crawler_stderr_tail || detail.crawler_stdout_tail}
+            </pre>
+          </section>
+        )}
+      </div>
     </div>
   );
 }
