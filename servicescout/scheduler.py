@@ -347,6 +347,7 @@ def run_tick(
             "--repos", *repo_names,
             "--provider", provider,
             "--effort", effort,
+            "--no-activity",
         ]
         if model:
             cmd.extend(["--model", model])

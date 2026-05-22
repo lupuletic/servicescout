@@ -74,7 +74,7 @@ export type CrawlRunSummary = {
 export type CrawlRunsPayload = {
   runs: CrawlRunSummary[];
   total: number;
-  source?: "scheduler" | "extractions";
+  source?: "activity" | "extractions";
 };
 
 export type CrawlStatusPayload = {

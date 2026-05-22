@@ -1,10 +1,10 @@
 """Crawler orchestration tests."""
 
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 
 from servicescout import crawler
@@ -85,11 +85,21 @@ class RunExtractorRootTests(unittest.TestCase):
     def _run(self, repo, root):
         captured = {}
 
-        def fake_run(cmd, **kwargs):
-            captured["cmd"] = cmd
-            return SimpleNamespace(stdout='EXTRACTOR_RESULT {"status": "ok"}\n', returncode=0)
+        class FakeProcess:
+            pid = 12345
+            returncode = 0
 
-        with mock.patch("servicescout.crawler.subprocess.run", side_effect=fake_run):
+            def __init__(self, output: str) -> None:
+                self.stdout = io.StringIO(output)
+
+            def poll(self) -> int:
+                return 0
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return FakeProcess('EXTRACTOR_RESULT {"status": "ok"}\n')
+
+        with mock.patch("servicescout.crawler.subprocess.Popen", side_effect=fake_popen):
             result = crawler.run_extractor(
                 repo,
                 root=root,

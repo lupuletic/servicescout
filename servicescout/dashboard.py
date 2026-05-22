@@ -150,7 +150,32 @@ def process_status(pattern: str) -> dict[str, Any]:
     pids = [int(p) for p in result.stdout.split() if p.strip().isdigit()]
     if not pids:
         return {"running": False, "pid": None, "uptime": None}
-    pid = pids[0]
+    candidates: list[tuple[int, str]] = []
+    for candidate in pids:
+        try:
+            ps_args = subprocess.run(
+                ["ps", "-o", "args=", "-p", str(candidate)],
+                text=True, capture_output=True, check=False, timeout=3,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        candidates.append((candidate, ps_args.stdout.strip()))
+    if not candidates:
+        return {"running": False, "pid": None, "uptime": None}
+    module_pattern = f"-m {pattern}"
+    preferred = [
+        candidate
+        for candidate in candidates
+        if (
+            candidate[1].split()
+            and Path(candidate[1].split()[0]).name.startswith("python")
+            and (
+                module_pattern in candidate[1]
+                or re.search(rf"(^|/){re.escape(pattern.rsplit('.', 1)[-1])}\.py(\s|$)", candidate[1])
+            )
+        )
+    ]
+    pid = (preferred or candidates)[0][0]
     try:
         ps = subprocess.run(["ps", "-o", "etime=", "-p", str(pid)], text=True, capture_output=True, check=False, timeout=3)
         etime = ps.stdout.strip()
@@ -272,6 +297,26 @@ def latest_crawl_log() -> tuple[Path | None, list[str]]:
         return newest, []
     lines = text.splitlines()
     return newest, lines[-20:]
+
+
+def latest_activity_log(data_dir: Path, limit: int = 40) -> tuple[Path | None, list[str]]:
+    run_log_dir = data_dir / "crawl_runs"
+    if not run_log_dir.is_dir():
+        return None, []
+    candidates = sorted(run_log_dir.glob("*.json"), reverse=True)
+    for path in candidates:
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        events = doc.get("events") or []
+        lines = [
+            json.dumps(event, sort_keys=True)
+            for event in events[-limit:]
+            if isinstance(event, dict)
+        ]
+        return path, lines
+    return None, []
 
 
 # ---------- catalog helpers ----------
@@ -1135,7 +1180,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         if not entries:
             entries = _extraction_activity_runs(catalog_path.parent, limit)
             return JSONResponse({"runs": entries, "total": len(entries), "source": "extractions"})
-        return JSONResponse({"runs": entries, "total": len(entries), "source": "scheduler"})
+        return JSONResponse({"runs": entries, "total": len(entries), "source": "activity"})
 
     @app.get("/api/crawl/runs/{run_id}")
     def crawl_run_detail(run_id: str) -> JSONResponse:
@@ -1211,6 +1256,13 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             extraction_runs = _extraction_activity_runs(catalog_path.parent, 1)
             if extraction_runs:
                 last_run = extraction_runs[0]
+        active_log_path = str(trigger_log) if trigger_log.is_file() else None
+        active_log_tail = tail_file(trigger_log)
+        if not active_log_tail:
+            activity_log_path, activity_log_tail = latest_activity_log(data_dir)
+            if activity_log_path:
+                active_log_path = str(activity_log_path)
+                active_log_tail = activity_log_tail
         return JSONResponse({
             "lock": lock_info,
             "scheduler": scheduler_payload,
@@ -1220,8 +1272,8 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             "budget_usd": float(scheduler_payload.get("budget_usd") or 20.0),
             "workspace_root": os.environ.get("WORKSPACE_ROOT") or "",
             "workspace_config": os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json"),
-            "active_log_path": str(trigger_log) if trigger_log.is_file() else None,
-            "active_log_tail": tail_file(trigger_log),
+            "active_log_path": active_log_path,
+            "active_log_tail": active_log_tail,
         })
 
     @app.post("/api/crawl/scheduler/start")

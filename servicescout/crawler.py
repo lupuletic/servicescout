@@ -13,9 +13,13 @@ import datetime as dt
 import json
 import os
 import re
+import select
+import socket
 import subprocess
 import sys
+import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -29,6 +33,175 @@ HERE = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG_DIR = HERE / "data" / "catalog"
 DEFAULT_CATALOG = HERE / "data" / "catalog.json"
 DEFAULT_STATE = HERE / "data" / "crawler_state.json"
+_EMIT_LOCK = threading.Lock()
+_ACTIVITY_RUN: "ActivityRun | None" = None
+_ACTIVITY_EVENTS_LIMIT = 2000
+_ACTIVITY_FLUSH_INTERVAL_SECONDS = 2.0
+_FORCE_FLUSH_EVENTS = {
+    "crawl_start",
+    "resume_decision",
+    "seed_clone_start",
+    "discovery_index_start",
+    "discovery_index_done",
+    "frontier_empty",
+    "discovery_round_start",
+    "discovery_round_done",
+    "budget_exhausted",
+    "batch_start",
+    "repo_done",
+    "build_catalog_start",
+    "build_catalog_done",
+    "reconcile_start",
+    "reconcile_done",
+    "embed_start",
+    "embed_done",
+    "build_kuzu_start",
+    "build_kuzu_done",
+    "crawl_done",
+}
+
+
+def _run_id() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def acquire_lock(path: Path) -> bool:
+    """Acquire the shared crawler lock used by the Activity UI."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        try:
+            parts = path.read_text(encoding="utf-8").strip().split()
+            if len(parts) >= 2:
+                pid = int(parts[0])
+                host = parts[1]
+                if host == socket.gethostname() and _pid_alive(pid):
+                    return False
+        except (OSError, ValueError):
+            pass
+    path.write_text(
+        f"{os.getpid()} {socket.gethostname()} {dt.datetime.now(dt.timezone.utc).isoformat()}\n",
+        encoding="utf-8",
+    )
+    return True
+
+
+def release_lock(path: Path) -> None:
+    try:
+        if path.is_file():
+            parts = path.read_text(encoding="utf-8").strip().split()
+            if parts and int(parts[0]) != os.getpid():
+                return
+            path.unlink()
+    except (OSError, ValueError):
+        pass
+
+
+class ActivityRun:
+    """Incremental run document consumed by the dashboard Activity page."""
+
+    def __init__(
+        self,
+        *,
+        run_log_dir: Path,
+        lock_path: Path,
+        trigger: str,
+        workspace_root: Path,
+        workspace_path: Path,
+        budget_usd: float,
+    ) -> None:
+        self.run_log_dir = run_log_dir
+        self.lock_path = lock_path
+        self.path = run_log_dir / f"{_run_id()}.json"
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
+        self._lock = threading.Lock()
+        self._last_write = 0.0
+        self._doc: dict[str, Any] = {
+            "run_id": self.path.stem,
+            "trigger": trigger,
+            "status": "running",
+            "started_at": now,
+            "workspace_root": str(workspace_root),
+            "workspace_config": str(workspace_path),
+            "budget_usd": budget_usd,
+            "pid": os.getpid(),
+            "events": [],
+            "event_count": 0,
+            "repos_changed": [],
+        }
+
+    def acquire(self) -> bool:
+        acquired = acquire_lock(self.lock_path)
+        self.run_log_dir.mkdir(parents=True, exist_ok=True)
+        if acquired:
+            self._write_locked()
+            return True
+        self._doc["status"] = "tick_skipped_busy"
+        self._doc["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        self._write_locked()
+        return False
+
+    def append(self, event: dict[str, Any]) -> None:
+        force = event.get("event") in _FORCE_FLUSH_EVENTS
+        with self._lock:
+            events = self._doc.setdefault("events", [])
+            events.append(event)
+            self._doc["event_count"] = int(self._doc.get("event_count") or 0) + 1
+            if len(events) > _ACTIVITY_EVENTS_LIMIT:
+                del events[: len(events) - _ACTIVITY_EVENTS_LIMIT]
+                self._doc["events_truncated"] = True
+            self._apply_event_locked(event)
+            now = time.monotonic()
+            if force or now - self._last_write >= _ACTIVITY_FLUSH_INTERVAL_SECONDS:
+                self._write_locked()
+                self._last_write = now
+
+    def finish(self, status: str, *, returncode: int = 0, cost_usd: float | None = None) -> None:
+        with self._lock:
+            self._doc["status"] = status
+            self._doc["crawler_returncode"] = returncode
+            self._doc["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            if cost_usd is not None:
+                self._doc["cost_usd"] = cost_usd
+            self._write_locked()
+        release_lock(self.lock_path)
+
+    def _apply_event_locked(self, event: dict[str, Any]) -> None:
+        name = event.get("event")
+        if name == "crawl_start":
+            self._doc["repos_checked"] = event.get("workspace_repos")
+        elif name == "repo_done":
+            repo = event.get("repo")
+            if repo:
+                changed = self._doc.setdefault("repos_changed", [])
+                changed.append({
+                    "repo": repo,
+                    "status": event.get("status"),
+                    "reason": "crawler_extraction",
+                })
+        elif name == "build_catalog_done":
+            self._doc["catalog_summary"] = {
+                key: value
+                for key, value in event.items()
+                if key not in {"event", "ts"}
+            }
+        elif name == "crawl_done":
+            spent = event.get("spent")
+            if isinstance(spent, (int, float)):
+                self._doc["cost_usd"] = float(spent)
+
+    def _write_locked(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self._doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, self.path)
 
 
 def is_stale(repo: dict[str, Any], catalog_dir: Path, max_age_hours: float) -> str | None:
@@ -109,24 +282,97 @@ def run_extractor(
     if stream_logs:
         cmd.append("--stream-logs")
     started = time.monotonic()
-    completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    duration = round(time.monotonic() - started, 2)
-    payload: dict[str, Any] = {"stdout_tail": completed.stdout[-2000:]}
-    for line in reversed(completed.stdout.splitlines()):
+    result_path = catalog_dir / ".scratch" / f".{repo['name']}.result.json"
+    emit(
+        {
+            "event": "extractor_process_start",
+            "repo": repo["id"],
+            "timeout_seconds": timeout_seconds,
+        }
+    )
+    process = subprocess.Popen(
+        cmd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+    )
+    emit({"event": "extractor_process_pid", "repo": repo["id"], "pid": process.pid})
+    assert process.stdout is not None
+    stdout_lines: list[str] = []
+    parsed_result: dict[str, Any] | None = None
+    last_heartbeat = started
+    while True:
+        now = time.monotonic()
+        if now - last_heartbeat >= 60:
+            emit(
+                {
+                    "event": "extractor_heartbeat",
+                    "repo": repo["id"],
+                    "pid": process.pid,
+                    "elapsed_seconds": round(now - started, 1),
+                    "result_file_present": result_path.exists(),
+                }
+            )
+            last_heartbeat = now
+        if process.poll() is not None:
+            pending = process.stdout.readlines()
+            for line in pending:
+                line = line.rstrip("\n")
+                stdout_lines.append(line)
+                if line.startswith("EXTRACTOR_RESULT "):
+                    try:
+                        parsed_result = json.loads(line[len("EXTRACTOR_RESULT "):])
+                    except json.JSONDecodeError:
+                        pass
+                elif line.strip():
+                    emit({"event": "extractor_child_event", "repo": repo["id"], "line": line[:1200]})
+            break
+        ready, _, _ = select.select([process.stdout], [], [], 5.0)
+        if not ready:
+            continue
+        line = process.stdout.readline()
+        if not line:
+            continue
+        line = line.rstrip("\n")
+        stdout_lines.append(line)
         if line.startswith("EXTRACTOR_RESULT "):
             try:
-                payload = json.loads(line[len("EXTRACTOR_RESULT "):])
+                parsed_result = json.loads(line[len("EXTRACTOR_RESULT "):])
             except json.JSONDecodeError:
                 pass
-            break
+        elif line.strip():
+            emit({"event": "extractor_child_event", "repo": repo["id"], "line": line[:1200]})
+
+    returncode = process.returncode or 0
+    duration = round(time.monotonic() - started, 2)
+    stdout_text = "\n".join(stdout_lines)
+    payload: dict[str, Any] = parsed_result or {"stdout_tail": stdout_text[-2000:]}
+    if parsed_result is None and returncode != 0:
+        payload.setdefault("status", "error")
+        payload.setdefault("error", "extractor exited without EXTRACTOR_RESULT")
     payload["repo"] = repo["id"]
-    payload["returncode"] = completed.returncode
+    payload["returncode"] = returncode
     payload["duration_seconds"] = duration
+    emit(
+        {
+            "event": "extractor_process_exit",
+            "repo": repo["id"],
+            "pid": process.pid,
+            "returncode": returncode,
+            "duration_seconds": duration,
+            "status": payload.get("status"),
+        }
+    )
     return payload
 
 
 def emit(event: dict[str, Any]) -> None:
-    print(json.dumps({"ts": dt.datetime.now(dt.timezone.utc).isoformat(), **event}, sort_keys=True), flush=True)
+    record = {"ts": dt.datetime.now(dt.timezone.utc).isoformat(), **event}
+    with _EMIT_LOCK:
+        print(json.dumps(record, sort_keys=True), flush=True)
+    if _ACTIVITY_RUN is not None:
+        _ACTIVITY_RUN.append(record)
 
 
 def list_org_repos(org: str, timeout_seconds: int = 60) -> list[dict[str, str]]:
@@ -136,10 +382,39 @@ def list_org_repos(org: str, timeout_seconds: int = 60) -> list[dict[str, str]]:
         result = subprocess.run(cmd, text=True, capture_output=True, check=False, timeout=timeout_seconds)
         if result.returncode != 0:
             emit({"event": "gh_repo_list_failed", "org": org, "stderr_tail": result.stderr[-300:]})
-            return []
-        return json.loads(result.stdout)
+            return list_org_repos_via_api(org, timeout_seconds=timeout_seconds)
+        repos = json.loads(result.stdout)
+        if repos:
+            return repos
+        return list_org_repos_via_api(org, timeout_seconds=timeout_seconds)
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
         emit({"event": "gh_repo_list_error", "org": org, "error": str(exc)})
+        return []
+
+
+def list_org_repos_via_api(org: str, timeout_seconds: int = 120) -> list[dict[str, str]]:
+    """Fallback for orgs where `gh repo list` returns an incomplete/empty set."""
+    cmd = [
+        "gh", "api", f"/orgs/{org}/repos?type=all&per_page=100",
+        "--paginate",
+        "--jq", ".[] | {name, nameWithOwner: .full_name, description, isArchived: .archived}",
+    ]
+    try:
+        result = subprocess.run(cmd, text=True, capture_output=True, check=False, timeout=timeout_seconds)
+        if result.returncode != 0:
+            emit({"event": "gh_repo_api_failed", "org": org, "stderr_tail": result.stderr[-300:]})
+            return []
+        repos: list[dict[str, str]] = []
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            try:
+                repos.append(json.loads(line))
+            except json.JSONDecodeError:
+                emit({"event": "gh_repo_api_parse_error", "org": org, "line": line[:120]})
+        return repos
+    except (OSError, subprocess.SubprocessError) as exc:
+        emit({"event": "gh_repo_api_error", "org": org, "error": str(exc)})
         return []
 
 
@@ -410,9 +685,12 @@ def state_completed_repos(state: dict[str, Any]) -> set[str]:
             if not isinstance(r, dict):
                 continue
             if (r.get("status") or "").lower() in {"ok", "success", "completed"}:
-                name = r.get("name") or r.get("id")
-                if name:
+                for name in (r.get("name"), r.get("id"), r.get("repo")):
+                    if not name:
+                        continue
                     out.add(name)
+                    if "/" in name:
+                        out.add(name.rsplit("/", 1)[1])
     return out
 
 
@@ -523,6 +801,8 @@ def crawl(
     emit({"event": "crawl_start", "workspace_repos": len(repos), "discover": discover, "resume": resume})
 
     discovery_rounds = 0
+    attempted_this_run: set[str] = set()
+    skipped_after_attempt: dict[str, str] = {}
 
     batches_done = 0
     while batches_done < max_batches:
@@ -530,7 +810,12 @@ def crawl(
         for repo in repos:
             reason = is_stale(repo, catalog_dir, max_age_hours)
             if reason:
+                if repo["id"] in attempted_this_run:
+                    skipped_after_attempt[repo["id"]] = reason
+                    continue
                 stale.append((repo, reason))
+        if skipped_after_attempt:
+            emit({"event": "stale_attempted_skipped", "count": len(skipped_after_attempt)})
         if not stale:
             emit({"event": "frontier_empty"})
             if not discover or discovery_rounds >= max_discovery_rounds:
@@ -572,6 +857,10 @@ def crawl(
             break
 
         batch = stale[:batch_size]
+        for repo, _ in batch:
+            attempted_this_run.add(repo["id"])
+        state["attempted_repos"] = sorted(attempted_this_run)
+        state["skipped_after_attempt"] = skipped_after_attempt
         emit({"event": "batch_start", "n": len(batch), "spent_so_far": current_total})
         results: list[dict[str, Any]] = []
         with ThreadPoolExecutor(max_workers=parallelism) as executor:
@@ -665,6 +954,24 @@ def main() -> int:
     parser.add_argument("--reconcile", action="store_true", help="Run reconcile.py after each build_catalog (collapse external duplicates).")
     parser.add_argument("--reconcile-llm", action="store_true", help="Use --llm-assist on reconcile.py (LLM-judgment merges for ambiguous duplicates).")
     parser.add_argument(
+        "--run-log-dir",
+        type=Path,
+        default=None,
+        help="Directory for Activity run JSON documents. Defaults to <catalog-output-dir>/crawl_runs.",
+    )
+    parser.add_argument(
+        "--lock-path",
+        type=Path,
+        default=None,
+        help="Shared Activity lock path. Defaults to <catalog-output-dir>/crawl_lock.",
+    )
+    parser.add_argument("--trigger", default="cli", help="Activity trigger label for this crawler run.")
+    parser.add_argument(
+        "--no-activity",
+        action="store_true",
+        help="Do not write Activity run logs or acquire the shared crawl lock. Used by the scheduler child process.",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume from a prior run: read the state file at --state and skip repos that were "
@@ -674,36 +981,69 @@ def main() -> int:
              "starts fresh and writes a new state file.",
     )
     args = parser.parse_args()
-    # Fail fast on missing extractor auth, before discovery/cloning, so a
-    # missing CLI login or API key gives a clear message instead of an opaque
-    # per-repo extraction failure later.
-    ensure_provider_authenticated(args.provider)
-    crawl(
-        root=args.root.resolve(),
-        catalog_dir=args.catalog_dir,
-        catalog_output=args.catalog_output,
-        workspace_path=args.workspace,
-        seeds_dir=args.seeds_dir,
-        state_path=args.state,
-        provider=args.provider,
-        model=args.model,
-        effort=args.effort,
-        timeout_seconds=args.timeout_seconds,
-        max_age_hours=args.max_age_hours,
-        parallelism=args.parallelism,
-        batch_size=args.batch_size,
-        max_batches=args.max_batches,
-        budget_usd=args.budget_usd,
-        repos_filter=args.repos,
-        embed=args.embed,
-        build_kuzu=args.build_kuzu,
-        stream_logs=args.stream_logs,
-        discover=args.discover,
-        max_discovery_rounds=args.max_discovery_rounds,
-        reconcile_after_build=args.reconcile,
-        reconcile_llm=args.reconcile_llm,
-        resume=args.resume,
-    )
+
+    global _ACTIVITY_RUN
+    activity: ActivityRun | None = None
+    if not args.no_activity:
+        run_log_dir = args.run_log_dir or (args.catalog_output.parent / "crawl_runs")
+        lock_path = args.lock_path or (args.catalog_output.parent / "crawl_lock")
+        activity = ActivityRun(
+            run_log_dir=run_log_dir,
+            lock_path=lock_path,
+            trigger=args.trigger,
+            workspace_root=args.root.resolve(),
+            workspace_path=args.workspace,
+            budget_usd=args.budget_usd,
+        )
+        _ACTIVITY_RUN = activity
+        if not activity.acquire():
+            emit({"event": "crawl_skipped_busy", "run_id": activity.path.stem})
+            _ACTIVITY_RUN = None
+            return 75
+
+    try:
+        # Fail fast on missing extractor auth, before discovery/cloning, so a
+        # missing CLI login or API key gives a clear message instead of an opaque
+        # per-repo extraction failure later.
+        ensure_provider_authenticated(args.provider)
+        state = crawl(
+            root=args.root.resolve(),
+            catalog_dir=args.catalog_dir,
+            catalog_output=args.catalog_output,
+            workspace_path=args.workspace,
+            seeds_dir=args.seeds_dir,
+            state_path=args.state,
+            provider=args.provider,
+            model=args.model,
+            effort=args.effort,
+            timeout_seconds=args.timeout_seconds,
+            max_age_hours=args.max_age_hours,
+            parallelism=args.parallelism,
+            batch_size=args.batch_size,
+            max_batches=args.max_batches,
+            budget_usd=args.budget_usd,
+            repos_filter=args.repos,
+            embed=args.embed,
+            build_kuzu=args.build_kuzu,
+            stream_logs=args.stream_logs,
+            discover=args.discover,
+            max_discovery_rounds=args.max_discovery_rounds,
+            reconcile_after_build=args.reconcile,
+            reconcile_llm=args.reconcile_llm,
+            resume=args.resume,
+        )
+        if activity is not None:
+            activity.finish("ok", cost_usd=state.get("total_cost_usd"))
+    except SystemExit as exc:
+        if activity is not None:
+            activity.finish("error", returncode=exc.code if isinstance(exc.code, int) else 1)
+        raise
+    except BaseException:
+        if activity is not None:
+            activity.finish("exception", returncode=1)
+        raise
+    finally:
+        _ACTIVITY_RUN = None
     return 0
 
 

@@ -122,12 +122,14 @@ export function ActivityPage() {
   const recentRunsLabel = runs?.source === "extractions" ? "extraction runs" : "listed in Activity";
   const changedLabel = runs?.source === "extractions" ? "repos extracted" : "recent window";
   const schedulerRunning = Boolean(status?.scheduler?.running);
+  const crawlerRunning = Boolean(status?.crawler?.running);
+  const workRunning = Boolean(status?.lock?.held || crawlerRunning);
   const schedulerSource = status?.scheduler?.source || (schedulerRunning ? "external" : "stopped");
   const schedulerManaged = schedulerSource === "dashboard";
   const interval = formatInterval(schedulerInterval);
   const logPath = status?.scheduler?.log_path || status?.active_log_path;
   const logTail = status?.scheduler?.log_tail?.length ? status.scheduler.log_tail : (status?.active_log_tail || []);
-  const pageDescription = status?.lock?.held
+  const pageDescription = workRunning
     ? "A crawl or re-index is running"
     : schedulerRunning
       ? `Automated crawl every ${interval}`
@@ -143,7 +145,7 @@ export function ActivityPage() {
             <Button variant="outline" onClick={() => void mutate(() => true)}>
               <RefreshCw size={14} /> Refresh
             </Button>
-            <Button onClick={triggerNow} disabled={triggering || status?.lock?.held}>
+            <Button onClick={triggerNow} disabled={triggering || workRunning}>
               {triggering ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
               Trigger now
             </Button>
@@ -162,9 +164,13 @@ export function ActivityPage() {
             </Card>
             <Card>
               <CardTitle>Current Work</CardTitle>
-              <CardValue>{status?.lock?.held ? "Running" : "Idle"}</CardValue>
+              <CardValue>{workRunning ? "Running" : "Idle"}</CardValue>
               <div className="text-xs text-fg-dim mt-1">
-                {status?.lock?.pid ? `lock PID ${status.lock.pid}` : "Ready for trigger"}
+                {status?.lock?.pid
+                  ? `lock PID ${status.lock.pid}`
+                  : status?.crawler?.pid
+                    ? `crawler PID ${status.crawler.pid}`
+                    : "Ready for trigger"}
               </div>
             </Card>
             <Card>

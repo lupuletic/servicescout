@@ -54,6 +54,23 @@ BROKER_TECHNOLOGIES = {
     "pubsub": "Pub/Sub",
     "servicebus": "Service Bus",
 }
+GENERIC_BROKER_ENDPOINTS = set(BROKER_TECHNOLOGIES) | {
+    "active-mq",
+    "active mq",
+    "pub-sub",
+    "pub/sub",
+    "google pubsub",
+    "google pub/sub",
+    "message-broker",
+    "message broker",
+    "broker",
+    "queue",
+    "topic",
+}
+GENERIC_BROKER_ENDPOINT_KEYS = {
+    re.sub(r"[^a-z0-9]+", "", value.lower())
+    for value in GENERIC_BROKER_ENDPOINTS
+}
 
 
 def canonical_key(name: str) -> str:
@@ -1502,6 +1519,11 @@ def _resource_endpoint(resource_ref: str, entity: dict[str, Any] | None) -> str:
     return name
 
 
+def _is_generic_broker_endpoint(endpoint: str) -> bool:
+    key = re.sub(r"[^a-z0-9]+", "", endpoint.lower())
+    return key in GENERIC_BROKER_ENDPOINT_KEYS or key in BROKER_TECHNOLOGIES
+
+
 def _transport_for(ref: str, entity: dict[str, Any] | None, relation: dict[str, Any]) -> str:
     props = relation.get("properties") or {}
     if props.get("protocol") and props["protocol"] != "unknown":
@@ -1722,6 +1744,8 @@ def derive_communication_flows(payload: dict[str, Any]) -> int:
 
     # Broker/topic/queue/event-stream style rendezvous resources.
     for endpoint in sorted(set(producers_by_endpoint) & set(consumers_by_endpoint)):
+        if _is_generic_broker_endpoint(endpoint):
+            continue
         for producer in producers_by_endpoint[endpoint]:
             producer_resource = entities.get(producer.get("to"))
             for consumer in consumers_by_endpoint[endpoint]:
