@@ -48,8 +48,11 @@ export function ActivityPage() {
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
   const [triggering, setTriggering] = useState(false);
   const [automationAction, setAutomationAction] = useState<"start" | "stop" | null>(null);
+  const [runtimeAction, setRuntimeAction] = useState(false);
   const [intervalInput, setIntervalInput] = useState("360");
   const [budgetInput, setBudgetInput] = useState("20");
+  const [parallelismInput, setParallelismInput] = useState("8");
+  const [batchSizeInput, setBatchSizeInput] = useState("24");
   const selected = selectedRun || runs?.runs?.[0]?.run_id || null;
   const { data: detail } = useSWR<CrawlRunDetail>(selected ? `/api/crawl/runs/${selected}` : null);
   const schedulerInterval = status?.scheduler?.interval_minutes ?? status?.interval_minutes;
@@ -60,6 +63,12 @@ export function ActivityPage() {
     if (schedulerInterval != null) setIntervalInput(String(schedulerInterval));
     if (schedulerBudget != null) setBudgetInput(String(schedulerBudget));
   }, [automationAction, schedulerBudget, schedulerInterval]);
+
+  useEffect(() => {
+    if (runtimeAction) return;
+    if (status?.crawler_runtime?.parallelism != null) setParallelismInput(String(status.crawler_runtime.parallelism));
+    if (status?.crawler_runtime?.batch_size != null) setBatchSizeInput(String(status.crawler_runtime.batch_size));
+  }, [runtimeAction, status?.crawler_runtime?.batch_size, status?.crawler_runtime?.parallelism]);
 
   const triggerNow = async () => {
     setTriggering(true);
@@ -112,6 +121,27 @@ export function ActivityPage() {
       await Promise.all([mutate("/api/crawl/status"), mutate("/api/crawl/runs")]);
     } finally {
       setAutomationAction(null);
+    }
+  };
+
+  const updateCrawlerRuntime = async () => {
+    setRuntimeAction(true);
+    try {
+      const response = await fetch("/api/crawl/runtime", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          parallelism: Number(parallelismInput),
+          batch_size: Number(batchSizeInput),
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        alert(payload.error ? `Update failed: ${payload.error}` : `Update failed: ${response.status}`);
+      }
+      await mutate("/api/crawl/status");
+    } finally {
+      setRuntimeAction(false);
     }
   };
 
@@ -263,6 +293,51 @@ export function ActivityPage() {
                 >
                   {automationAction === "stop" ? <Loader2 size={14} className="animate-spin" /> : <Pause size={14} />}
                   Pause
+                </Button>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_auto] gap-4 border-b border-border px-4 py-3">
+              <div>
+                <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-fg-dim">
+                  <Settings2 size={13} /> Crawler limits
+                </div>
+                <div className="mt-1 text-sm text-fg-muted">
+                  Applies before the next batch. Current source: {status?.crawler_runtime?.source || "default"}.
+                </div>
+              </div>
+              <div className="flex flex-wrap items-end gap-2 2xl:justify-end">
+                <label className="block w-[120px]">
+                  <span className="mb-1 block text-xs text-fg-dim">Parallelism</span>
+                  <Input
+                    id="crawler-parallelism"
+                    type="number"
+                    min={1}
+                    max={64}
+                    value={parallelismInput}
+                    disabled={runtimeAction}
+                    onChange={(event) => setParallelismInput(event.target.value)}
+                  />
+                </label>
+                <label className="block w-[120px]">
+                  <span className="mb-1 block text-xs text-fg-dim">Batch size</span>
+                  <Input
+                    id="crawler-batch-size"
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={batchSizeInput}
+                    disabled={runtimeAction}
+                    onChange={(event) => setBatchSizeInput(event.target.value)}
+                  />
+                </label>
+                <Button
+                  variant="outline"
+                  onClick={updateCrawlerRuntime}
+                  disabled={runtimeAction}
+                  className="h-9"
+                >
+                  {runtimeAction ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                  Apply
                 </Button>
               </div>
             </div>

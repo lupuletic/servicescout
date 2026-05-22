@@ -33,6 +33,8 @@ HERE = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG_DIR = HERE / "data" / "catalog"
 DEFAULT_CATALOG = HERE / "data" / "catalog.json"
 DEFAULT_STATE = HERE / "data" / "crawler_state.json"
+DEFAULT_MAX_PARALLELISM = 64
+DEFAULT_MAX_BATCH_SIZE = 500
 _EMIT_LOCK = threading.Lock()
 _ACTIVITY_RUN: "ActivityRun | None" = None
 _ACTIVITY_EVENTS_LIMIT = 2000
@@ -640,6 +642,69 @@ def load_state(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _runtime_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(max(parsed, minimum), maximum)
+
+
+def read_runtime_config(
+    path: Path | None,
+    *,
+    default_parallelism: int,
+    default_batch_size: int,
+) -> dict[str, Any]:
+    """Read live crawler tuning. Applies between batches, not mid-extractor."""
+    config: dict[str, Any] = {
+        "parallelism": _runtime_int(
+            default_parallelism,
+            default=2,
+            minimum=1,
+            maximum=DEFAULT_MAX_PARALLELISM,
+        ),
+        "batch_size": _runtime_int(
+            default_batch_size,
+            default=4,
+            minimum=1,
+            maximum=DEFAULT_MAX_BATCH_SIZE,
+        ),
+        "source": "cli",
+        "path": str(path) if path else None,
+    }
+    config["batch_size"] = max(config["batch_size"], config["parallelism"])
+    if path is None or not path.is_file():
+        return config
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        config["source"] = "invalid"
+        return config
+    if not isinstance(raw, dict):
+        config["source"] = "invalid"
+        return config
+    parallelism = _runtime_int(
+        raw.get("parallelism"),
+        default=config["parallelism"],
+        minimum=1,
+        maximum=DEFAULT_MAX_PARALLELISM,
+    )
+    batch_size = _runtime_int(
+        raw.get("batch_size"),
+        default=config["batch_size"],
+        minimum=1,
+        maximum=DEFAULT_MAX_BATCH_SIZE,
+    )
+    config.update({
+        "parallelism": parallelism,
+        "batch_size": max(batch_size, parallelism),
+        "source": "file",
+        "updated_at": raw.get("updated_at"),
+    })
+    return config
+
+
 # The fields of the crawler invocation that, if changed between runs,
 # make resume-from-state unsafe. Examples: switching workspaces, changing
 # the LLM model (output schema may differ), narrowing the repo allowlist.
@@ -709,6 +774,7 @@ def crawl(
     max_age_hours: float,
     parallelism: int,
     batch_size: int,
+    runtime_config_path: Path | None,
     max_batches: int,
     budget_usd: float,
     repos_filter: list[str] | None,
@@ -803,9 +869,32 @@ def crawl(
     discovery_rounds = 0
     attempted_this_run: set[str] = set()
     skipped_after_attempt: dict[str, str] = {}
+    applied_runtime_config: tuple[int, int, str] | None = None
 
     batches_done = 0
     while batches_done < max_batches:
+        runtime_config = read_runtime_config(
+            runtime_config_path,
+            default_parallelism=parallelism,
+            default_batch_size=batch_size,
+        )
+        current_parallelism = int(runtime_config["parallelism"])
+        current_batch_size = int(runtime_config["batch_size"])
+        config_key = (
+            current_parallelism,
+            current_batch_size,
+            str(runtime_config.get("source") or ""),
+        )
+        if config_key != applied_runtime_config:
+            emit({
+                "event": "runtime_config_applied",
+                "parallelism": current_parallelism,
+                "batch_size": current_batch_size,
+                "source": runtime_config.get("source"),
+                "path": runtime_config.get("path"),
+            })
+            applied_runtime_config = config_key
+        state["runtime_config"] = runtime_config
         stale: list[tuple[dict[str, Any], str]] = []
         for repo in repos:
             reason = is_stale(repo, catalog_dir, max_age_hours)
@@ -856,14 +945,21 @@ def crawl(
             emit({"event": "budget_exhausted", "spent": current_total, "budget": budget_usd})
             break
 
-        batch = stale[:batch_size]
+        batch = stale[:current_batch_size]
         for repo, _ in batch:
             attempted_this_run.add(repo["id"])
         state["attempted_repos"] = sorted(attempted_this_run)
         state["skipped_after_attempt"] = skipped_after_attempt
-        emit({"event": "batch_start", "n": len(batch), "spent_so_far": current_total})
+        emit({
+            "event": "batch_start",
+            "n": len(batch),
+            "parallelism": current_parallelism,
+            "batch_size": current_batch_size,
+            "stale_remaining": len(stale),
+            "spent_so_far": current_total,
+        })
         results: list[dict[str, Any]] = []
-        with ThreadPoolExecutor(max_workers=parallelism) as executor:
+        with ThreadPoolExecutor(max_workers=current_parallelism) as executor:
             futures = {
                 executor.submit(
                     run_extractor,
@@ -943,6 +1039,12 @@ def main() -> int:
     parser.add_argument("--max-age-hours", type=float, default=24.0)
     parser.add_argument("--parallelism", type=int, default=2)
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument(
+        "--runtime-config",
+        type=Path,
+        default=None,
+        help="JSON file polled between batches for live parallelism/batch_size tuning. Defaults to <catalog-output-dir>/crawler_runtime.json.",
+    )
     parser.add_argument("--max-batches", type=int, default=999, help="Safety cap; default is effectively unbounded. Real termination should be frontier_empty + discovery exhausted, or budget.")
     parser.add_argument("--budget-usd", type=float, default=200.0, help="Hard stop on cumulative LLM spend. Default 200 is sized for a medium-large enterprise crawl.")
     parser.add_argument("--repos", nargs="*", default=None, help="Limit crawl to specific repo names/ids")
@@ -1020,6 +1122,7 @@ def main() -> int:
             max_age_hours=args.max_age_hours,
             parallelism=args.parallelism,
             batch_size=args.batch_size,
+            runtime_config_path=args.runtime_config or (args.catalog_output.parent / "crawler_runtime.json"),
             max_batches=args.max_batches,
             budget_usd=args.budget_usd,
             repos_filter=args.repos,

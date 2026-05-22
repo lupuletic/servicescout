@@ -61,6 +61,11 @@ class WorkspaceConfigBody(BaseModel):
     token: str | None = None  # optional: persist for the crawl via `gh auth`
 
 
+class CrawlerRuntimeBody(BaseModel):
+    parallelism: int | None = None
+    batch_size: int | None = None
+
+
 def _persist_github_token(token: str) -> bool:
     """Store the PAT server-side so the crawl can clone private repos, via
     `gh auth login --with-token` (stdin — never logged). Single-tenant; the
@@ -247,6 +252,58 @@ def write_scheduler_settings(data_dir: Path, *, interval_minutes: int, budget_us
         }, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def crawler_runtime_config_path(data_dir: Path) -> Path:
+    return data_dir / "crawler_runtime.json"
+
+
+def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(max(parsed, minimum), maximum)
+
+
+def read_crawler_runtime_config(data_dir: Path) -> dict[str, Any]:
+    path = crawler_runtime_config_path(data_dir)
+    payload: dict[str, Any] = {
+        "parallelism": _bounded_int(os.environ.get("CRAWLER_PARALLELISM"), default=8, minimum=1, maximum=64),
+        "batch_size": _bounded_int(os.environ.get("CRAWLER_BATCH_SIZE"), default=24, minimum=1, maximum=500),
+        "path": str(path),
+        "source": "default",
+    }
+    if path.is_file():
+        try:
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(stored, dict):
+                payload.update({
+                    "parallelism": _bounded_int(stored.get("parallelism"), default=payload["parallelism"], minimum=1, maximum=64),
+                    "batch_size": _bounded_int(stored.get("batch_size"), default=payload["batch_size"], minimum=1, maximum=500),
+                    "updated_at": stored.get("updated_at"),
+                    "source": "file",
+                })
+        except (OSError, json.JSONDecodeError):
+            payload["source"] = "invalid"
+    payload["batch_size"] = max(int(payload["batch_size"]), int(payload["parallelism"]))
+    return payload
+
+
+def write_crawler_runtime_config(data_dir: Path, *, parallelism: int, batch_size: int) -> dict[str, Any]:
+    path = crawler_runtime_config_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    parallelism = _bounded_int(parallelism, default=8, minimum=1, maximum=64)
+    batch_size = max(_bounded_int(batch_size, default=max(parallelism, 24), minimum=1, maximum=500), parallelism)
+    payload = {
+        "parallelism": parallelism,
+        "batch_size": batch_size,
+        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return read_crawler_runtime_config(data_dir)
 
 
 def managed_scheduler_status(data_dir: Path) -> dict[str, Any]:
@@ -669,6 +726,8 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             "--crawler-arg=--reconcile",
             "--crawler-arg=--embed",
             "--crawler-arg=--build-kuzu",
+            "--crawler-arg=--runtime-config",
+            f"--crawler-arg={crawler_runtime_config_path(data_dir)}",
         ]
         if trigger:
             cmd.extend(["--once", "--trigger", trigger])
@@ -1272,9 +1331,23 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             "budget_usd": float(scheduler_payload.get("budget_usd") or 20.0),
             "workspace_root": os.environ.get("WORKSPACE_ROOT") or "",
             "workspace_config": os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json"),
+            "crawler_runtime": read_crawler_runtime_config(data_dir),
             "active_log_path": active_log_path,
             "active_log_tail": active_log_tail,
         })
+
+    @app.post("/api/crawl/runtime")
+    def update_crawler_runtime(body: CrawlerRuntimeBody) -> JSONResponse:
+        """Update runtime crawler tuning for the next batch."""
+        data_dir = catalog_path.parent.resolve()
+        current = read_crawler_runtime_config(data_dir)
+        parallelism = body.parallelism if body.parallelism is not None else int(current["parallelism"])
+        batch_size = body.batch_size if body.batch_size is not None else int(current["batch_size"])
+        return JSONResponse(write_crawler_runtime_config(
+            data_dir,
+            parallelism=parallelism,
+            batch_size=batch_size,
+        ))
 
     @app.post("/api/crawl/scheduler/start")
     def start_scheduler(

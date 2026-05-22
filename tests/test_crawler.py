@@ -130,5 +130,43 @@ class RunExtractorRootTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--root") + 1], "/workspace")
 
 
+class RuntimeConfigTests(unittest.TestCase):
+    def test_missing_runtime_config_uses_cli_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = crawler.read_runtime_config(
+                Path(tmp) / "missing.json",
+                default_parallelism=8,
+                default_batch_size=12,
+            )
+        self.assertEqual(config["parallelism"], 8)
+        self.assertEqual(config["batch_size"], 12)
+        self.assertEqual(config["source"], "cli")
+
+    def test_runtime_config_can_raise_limits_between_batches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "runtime.json"
+            path.write_text(json.dumps({"parallelism": 12, "batch_size": 48}), encoding="utf-8")
+            config = crawler.read_runtime_config(
+                path,
+                default_parallelism=8,
+                default_batch_size=12,
+            )
+        self.assertEqual(config["parallelism"], 12)
+        self.assertEqual(config["batch_size"], 48)
+        self.assertEqual(config["source"], "file")
+
+    def test_batch_size_never_drops_below_parallelism(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "runtime.json"
+            path.write_text(json.dumps({"parallelism": 16, "batch_size": 4}), encoding="utf-8")
+            config = crawler.read_runtime_config(
+                path,
+                default_parallelism=8,
+                default_batch_size=12,
+            )
+        self.assertEqual(config["parallelism"], 16)
+        self.assertEqual(config["batch_size"], 16)
+
+
 if __name__ == "__main__":
     unittest.main()
