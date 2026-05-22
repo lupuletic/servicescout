@@ -4,6 +4,7 @@ from pathlib import Path
 
 from servicescout.static_extractors.snippet_verify import (
     clear_cache,
+    relocate_payload,
     verify_payload,
 )
 
@@ -40,6 +41,50 @@ def _make_payload(evidence: list[dict]) -> dict:
             }
         ],
     }
+
+
+class RelocateTests(unittest.TestCase):
+    """relocate_payload snaps the cited line to where the verbatim snippet
+    truly occurs, so a downstream verify_payload then confirms it."""
+
+    def setUp(self) -> None:
+        clear_cache()
+
+    def _line(self, payload: dict) -> int:
+        return payload["dependencies"][0]["evidence"][0]["line"]
+
+    def test_relocates_line_past_eof(self) -> None:
+        # The drift bug we saw in the wild: a line far past the end of file.
+        payload = _make_payload([
+            {"path": "src/orders.py", "line": 999, "snippet": 'routing_key="shipping-task"'},
+        ])
+        changed = relocate_payload(payload, REPO_A)
+        self.assertEqual(changed, 1)
+        self.assertEqual(self._line(payload), 16)
+        self.assertEqual(verify_payload(payload, REPO_A).facts[0].verdict, "confirmed")
+
+    def test_relocates_wrong_line(self) -> None:
+        payload = _make_payload([
+            {"path": "src/orders.py", "line": 2, "snippet": 'routing_key="shipping-task"'},
+        ])
+        self.assertEqual(relocate_payload(payload, REPO_A), 1)
+        self.assertEqual(self._line(payload), 16)
+
+    def test_correct_line_is_left_untouched(self) -> None:
+        payload = _make_payload([
+            {"path": "src/orders.py", "line": 16, "snippet": 'routing_key="shipping-task"'},
+        ])
+        self.assertEqual(relocate_payload(payload, REPO_A), 0)
+        self.assertEqual(self._line(payload), 16)
+
+    def test_hallucinated_snippet_is_not_relocated(self) -> None:
+        # A snippet that appears nowhere must be left for the verifier to
+        # demote — never silently moved onto an unrelated line.
+        payload = _make_payload([
+            {"path": "src/orders.py", "line": 3, "snippet": 'totally_fabricated_call("nope")'},
+        ])
+        self.assertEqual(relocate_payload(payload, REPO_A), 0)
+        self.assertEqual(self._line(payload), 3)
 
 
 class SnippetVerifyTests(unittest.TestCase):

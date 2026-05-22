@@ -346,6 +346,89 @@ def verify_payload(payload: dict[str, Any], repo_root: Path) -> VerifyReport:
     return VerifyReport(facts=facts)
 
 
+RELOCATE_MIN_ANCHOR_LEN = 8
+RELOCATE_MIN_ANCHOR_TOKENS = 2
+
+
+def _anchor_line(snippet: str) -> str | None:
+    """The most specific single line of a (possibly multi-line) snippet.
+
+    Returns None when no line is distinctive enough to relocate on safely —
+    relocating on a 1-token fragment would move the citation to an arbitrary
+    occurrence.
+    """
+    candidates = [ln for ln in snippet.splitlines() if ln.strip()]
+    if not candidates:
+        return None
+    anchor = max(candidates, key=lambda ln: len(ln.strip()))
+    if len(_normalise(anchor)) < RELOCATE_MIN_ANCHOR_LEN:
+        return None
+    if len([t for t in _tokens(anchor) if len(t) >= 3]) < RELOCATE_MIN_ANCHOR_TOKENS:
+        return None
+    return anchor
+
+
+def _true_line(lines: Iterable[str], snippet: str, hint: int) -> int | None:
+    """1-based line where the snippet's anchor verbatim-occurs, or None.
+
+    Picks the occurrence nearest the cited line when that hint is in range
+    (disambiguates duplicate call sites toward the agent's intent); falls back
+    to the first occurrence when the hint is bogus (e.g. a line past EOF)."""
+    anchor = _anchor_line(snippet)
+    if anchor is None:
+        return None
+    anchor_norm = _normalise(anchor)
+    line_list = list(lines)
+    matches = [i + 1 for i, ln in enumerate(line_list) if anchor_norm in _normalise(ln)]
+    if not matches:
+        return None
+    pivot = hint if isinstance(hint, int) and 1 <= hint <= len(line_list) else matches[0]
+    return min(matches, key=lambda c: abs(c - pivot))
+
+
+def _iter_all_evidence(payload: dict[str, Any]) -> Iterable[dict[str, Any]]:
+    repo = payload.get("repo") or {}
+    if isinstance(repo, dict):
+        summary = repo.get("summary") or {}
+        if isinstance(summary, dict):
+            for ev in summary.get("evidence") or []:
+                if isinstance(ev, dict):
+                    yield ev
+    for category in EVIDENCE_CATEGORIES:
+        for fact in payload.get(category) or []:
+            if isinstance(fact, dict):
+                for ev in fact.get("evidence") or []:
+                    if isinstance(ev, dict):
+                        yield ev
+
+
+def relocate_payload(payload: dict[str, Any], repo_root: Path) -> int:
+    """Snap each evidence `line` to where its verbatim `snippet` truly occurs.
+
+    LLMs reliably copy a verbatim snippet but cannot reliably count lines, so
+    the snippet is the source of truth and the line is derived. Only relocates
+    when the snippet's anchor occurs in the file — genuine hallucinations are
+    left in place for verify_payload/calibrate to demote, never silently moved.
+    Mutates the payload; returns how many lines changed. Free, deterministic.
+    Run BEFORE verify_payload so corrected lines also stop spurious demotions.
+    """
+    relocated = 0
+    for ev in _iter_all_evidence(payload):
+        raw_path = (ev.get("path") or "").lstrip("/")
+        snippet = ev.get("snippet") or ""
+        if not raw_path or not snippet.strip():
+            continue
+        lines = _read_lines(repo_root, raw_path)
+        if lines is None:
+            continue
+        cited = ev.get("line")
+        true_line = _true_line(lines, snippet, cited if isinstance(cited, int) else 0)
+        if true_line is not None and true_line != cited:
+            ev["line"] = true_line
+            relocated += 1
+    return relocated
+
+
 def clear_cache() -> None:
     """Drop the file-read cache. Test-only."""
     _read_lines_cached.cache_clear()

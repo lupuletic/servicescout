@@ -322,11 +322,14 @@ EVIDENCE RULES:
   - path must be relative to the repo root (not absolute, no `..`).
   - line is an integer ≥1.
   - snippet is a SHORT extract (≤200 chars). It MUST be a verbatim
-    substring of the cited file at the cited line (whitespace
-    normalisation is fine). Do NOT paraphrase, summarise, or compose
-    snippets from multiple lines: a deterministic post-extractor verifier
-    will open the file and check this exact substring is present, and
-    facts that fail this check get demoted to confidence=review.
+    substring of the cited file (whitespace normalisation is fine) —
+    copy it exactly, do NOT retype, paraphrase, summarise, or compose
+    snippets from multiple lines. A deterministic post-extractor opens
+    the file, finds your exact snippet, and SNAPS `line` to where it
+    truly occurs — so a character-exact snippet matters far more than
+    the line number (do not burn effort counting lines). A snippet that
+    cannot be found verbatim anywhere in the file is treated as a
+    fabrication and the fact is demoted to confidence=review.
   - If a snippet you want to cite spans multiple lines, emit ONE evidence
     item per line (each with its own line number and the verbatim text
     of that line). A multi-line method signature → 2-3 evidence items,
@@ -1038,6 +1041,9 @@ def run_for_repo(
     payload = normalize_payload(payload, repo)
     repo_root = Path(repo["absolute_path"])
     quarantined = confine_evidence_paths(payload, repo_root)
+    # Snap evidence line numbers to where each verbatim snippet truly occurs —
+    # before verify, so corrected lines also avoid spurious confidence demotion.
+    relocated = snippet_verify.relocate_payload(payload, repo_root)
     errors = validate_against_schema(payload)
     cross_check = None
     correction_runs: list[dict[str, Any]] = []
@@ -1072,6 +1078,7 @@ def run_for_repo(
                 apply_summary = correction.apply_corrections(payload, directives)
                 # Re-quarantine in case corrections introduced bad paths.
                 quarantined += confine_evidence_paths(payload, repo_root)
+                relocated += snippet_verify.relocate_payload(payload, repo_root)
                 round_errors = validate_against_schema(payload)
                 correction_runs.append(
                     {
@@ -1109,6 +1116,7 @@ def run_for_repo(
         "extracted_at": utc_now_iso(),
         "schema": "catalog-v1",
         "evidence_quarantined": quarantined,
+        "evidence_relocated": relocated,
         "validation_errors": errors,
         "cross_check": cross_check,
         "correction_runs": correction_runs,
