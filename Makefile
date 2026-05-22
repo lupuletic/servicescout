@@ -5,7 +5,34 @@ KUZU := $(shell $(PYTHON) evals/workspace_paths.py --workspace $(WORKSPACE) | $(
 SOURCE := $(shell $(PYTHON) evals/workspace_paths.py --workspace $(WORKSPACE) | $(PYTHON) -c 'import json,sys; print(json.load(sys.stdin)["clone_root"])')
 AUDIT_MD := docs/$(WORKSPACE)-catalog-audit.md
 
-.PHONY: eval-setup eval-extract eval-kuzu eval-run eval-report eval-audit stack stack-edge stack-crawl wheelhouse docker-build docker-build-offline demo demo-down
+.PHONY: eval-setup eval-extract eval-kuzu eval-run eval-report eval-audit stack stack-edge stack-crawl wheelhouse docker-build docker-build-offline demo demo-down publish quickstart
+
+IMAGE ?= lupuletic/servicescout
+VERSION := $(shell sed -n 's/^version *= *"\(.*\)"/\1/p' pyproject.toml)
+PLATFORMS ?= linux/amd64,linux/arm64
+
+# Publish the multi-arch image to Docker Hub manually (CI does this on a `v*`
+# tag; this is the local fallback). Run `docker login` first. Builds amd64 via
+# QEMU emulation, so it's slow from an arm64 machine — CI is the faster path.
+publish:
+	@docker buildx inspect ssbuilder >/dev/null 2>&1 || \
+		docker buildx create --name ssbuilder --driver docker-container --bootstrap
+	docker buildx build --builder ssbuilder --platform $(PLATFORMS) \
+		-t $(IMAGE):$(VERSION) -t $(IMAGE):latest --push .
+	@echo "pushed $(IMAGE):$(VERSION) and $(IMAGE):latest ($(PLATFORMS))"
+
+# One-command onboarding for your own org: configure (interactive wizard on
+# first run), crawl, then serve. Pulls the prebuilt image if published, else
+# builds locally. Honour the BUDGET_USD cap in .env.
+quickstart:
+	@test -f .env -a -f workspace.json || $(PYTHON) -m servicescout.init_wizard
+	docker compose pull mcp dashboard crawler 2>/dev/null || true
+	docker compose run --rm crawler
+	docker compose up -d mcp dashboard
+	@echo ""
+	@echo "Catalog built and serving:"
+	@echo "  Dashboard: http://127.0.0.1:8788"
+	@echo "  MCP:       http://127.0.0.1:8765/mcp"
 
 # Zero-cost instant demo: serve a bundled, pre-extracted catalog (no LLM call,
 # no credentials). Defaults to the Google Online Boutique;

@@ -32,3 +32,6 @@ workspace.runtime.json
 id_rsa*
 .codex/
 .claude/
+# but the build genuinely needs CA bundles dropped in certs/*.pem for proxied
+# (enterprise) builds — keep that directory in the context.
+!certs/

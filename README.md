@@ -63,12 +63,25 @@ Evidence tab that ties every fact back to source.
 
 ## Quickstart
 
+**Fastest path — point it at your own org in one command:**
+
+```bash
+git clone https://github.com/lupuletic/servicescout.git && cd servicescout
+make quickstart   # interactive config on first run, then crawl + serve
+```
+
+`make quickstart` runs the setup wizard (orgs, LLM auth, budget) if you haven't
+configured it yet, **pulls the prebuilt multi-arch image from Docker Hub**
+(`lupuletic/servicescout` — no local build), crawls your orgs, and serves the
+dashboard + MCP. The manual steps below are the same thing, broken out.
+
 **1. Run the server (Docker, HTTP streamable on `:8765`):**
 
 ```bash
 git clone https://github.com/lupuletic/servicescout.git
 cd servicescout
 cp .env.example .env  # fill in WORKSPACE_ROOT, GOOGLE_CLOUD_PROJECT
+docker compose pull mcp dashboard  # grab the prebuilt image (or omit to build)
 docker compose up -d mcp dashboard
 ```
 
