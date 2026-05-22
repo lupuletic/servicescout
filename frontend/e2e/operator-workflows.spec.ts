@@ -199,6 +199,9 @@ async function mockApis(page: Page) {
     },
   }));
   await page.route("**/api/operator/summary", async (route) => route.fulfill({ json: operatorSummary }));
+  // HomeGate reads this to decide first-run empty-state vs Explorer; a populated
+  // catalog keeps "/" on the graph.
+  await page.route("**/api/state.json", async (route) => route.fulfill({ json: { summary: { repos_indexed: 2, entities: 12 } } }));
   await page.route("**/api/triage/facts", async (route) => route.fulfill({ json: factsPayload }));
   await page.route("**/api/triage/decisions", async (route) => route.fulfill({ json: decisionsPayload }));
   await page.route("**/api/triage.json", async (route) => route.fulfill({ json: triagePayload }));
