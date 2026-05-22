@@ -323,6 +323,29 @@ def clone_repo(repo_full_name: str, workspace_root: Path, timeout_seconds: int =
         return False, str(exc)
 
 
+def clone_seeds(seeds: list[str], root: Path) -> list[dict[str, Any]]:
+    """Clone journey-seed repos ("org/name") into root if absent, so they form
+    the initial extraction frontier; downstream repos are then discovered from
+    their dependency references. Already-present seeds are a no-op, not an error.
+    """
+    results: list[dict[str, Any]] = []
+    for seed in seeds:
+        full = (seed or "").strip()
+        if "/" not in full:
+            emit({"event": "seed_invalid", "seed": seed, "reason": "expected org/name"})
+            results.append({"seed": seed, "cloned": False, "reason": "invalid"})
+            continue
+        ok, info = clone_repo(full, root)
+        results.append({"seed": full, "cloned": ok, "info": info})
+        if ok:
+            emit({"event": "seed_cloned", "seed": full})
+        elif info == "already_exists":
+            emit({"event": "seed_present", "seed": full})
+        else:
+            emit({"event": "seed_clone_failed", "seed": full, "error": info})
+    return results
+
+
 def write_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
@@ -421,6 +444,23 @@ def crawl(
     resume: bool = False,
 ) -> dict[str, Any]:
     workspace = load_workspace_config(workspace_path)
+
+    # Phase 1: explicit journey seeds. Clone the configured seed repos (the
+    # journey roots, e.g. storefronts/mobile) before discovery so they form the
+    # initial frontier; downstream services are discovered from their refs.
+    seeds = list(workspace.get("seeds") or [])
+    if seeds:
+        emit({"event": "seed_clone_start", "count": len(seeds)})
+        clone_seeds(seeds, root)
+
+    # `scope` lets a workspace define its own crawl bounds (so a UI-built config
+    # is self-contained); explicit CLI args still win when the caller set them.
+    scope = workspace.get("scope") or {}
+    if scope.get("discover"):
+        discover = True
+    if scope.get("max_discovery_rounds") is not None:
+        max_discovery_rounds = int(scope["max_discovery_rounds"])
+
     repos = find_repos(
         root,
         workspace.get("orgs") or [],

@@ -263,5 +263,62 @@ class DashboardApiTests(unittest.TestCase):
             self.assertEqual(closed["count"], 0)
 
 
+class OnboardingApiTests(unittest.TestCase):
+    """Phases 2-3: PAT -> orgs/repos picker, and workspace config persistence."""
+
+    def _app(self, root: Path):
+        return dashboard.create_app(
+            catalog_path=_write_catalog(root),
+            extraction_log=root / "extractions.jsonl",
+            decisions_path=root / "decisions.jsonl",
+        )
+
+    def test_github_validate_returns_orgs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = TestClient(self._app(Path(tmp)))
+            with mock.patch("servicescout.dashboard.github_client.validate_token",
+                            return_value={"login": "octocat", "orgs": [{"login": "acme"}]}):
+                resp = client.post("/api/github/validate", json={"token": "tok"})
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json()["orgs"], [{"login": "acme"}])
+
+    def test_github_validate_maps_error_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = TestClient(self._app(Path(tmp)))
+            from servicescout.github_client import GithubError
+            with mock.patch("servicescout.dashboard.github_client.validate_token",
+                            side_effect=GithubError(401, "bad token")):
+                resp = client.post("/api/github/validate", json={"token": "x"})
+            self.assertEqual(resp.status_code, 401)
+            self.assertEqual(resp.json()["error"], "github_error")
+
+    def test_workspace_config_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "workspace.json"
+            client = TestClient(self._app(root))
+            with mock.patch.dict("os.environ", {"SERVICESCOUT_WORKSPACE_CONFIG": str(cfg)}, clear=False), \
+                 mock.patch("servicescout.dashboard._persist_github_token", return_value=True) as persist:
+                save = client.post("/api/workspace/config", json={
+                    "orgs": ["acme"],
+                    "seeds": ["acme/storefront", "acme/mobile"],
+                    "discover": True,
+                    "max_discovery_rounds": 4,
+                    "budget_usd": 25,
+                    "token": "ghp_secret",
+                })
+                self.assertEqual(save.status_code, 200)
+                body = save.json()
+                self.assertTrue(body["token_stored"])
+                persist.assert_called_once()  # token persisted server-side, never echoed
+                self.assertNotIn("token", body)
+
+                got = client.get("/api/workspace/config").json()
+                self.assertEqual(got["orgs"], ["acme"])
+                self.assertEqual(got["seeds"], ["acme/storefront", "acme/mobile"])
+                self.assertEqual(got["scope"], {"discover": True, "max_discovery_rounds": 4})
+                self.assertEqual(got["budget_usd"], 25)
+
+
 if __name__ == "__main__":
     unittest.main()

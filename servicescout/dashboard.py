@@ -36,6 +36,47 @@ from typing import Any
 from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from servicescout import github_client
+from servicescout.repo_discovery import load_workspace_config, write_workspace_config
+
+
+class GithubTokenBody(BaseModel):
+    token: str
+
+
+class GithubReposBody(BaseModel):
+    token: str
+    org: str
+
+
+class WorkspaceConfigBody(BaseModel):
+    orgs: list[str] = []
+    seeds: list[str] = []
+    scope: dict[str, Any] = {}
+    discover: bool | None = None
+    max_discovery_rounds: int | None = None
+    budget_usd: float | None = None
+    token: str | None = None  # optional: persist for the crawl via `gh auth`
+
+
+def _persist_github_token(token: str) -> bool:
+    """Store the PAT server-side so the crawl can clone private repos, via
+    `gh auth login --with-token` (stdin — never logged). Single-tenant; the
+    multi-tenant credential vault is Phase 4 on the roadmap."""
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "login", "--with-token"],
+            input=token, text=True, capture_output=True, timeout=20,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _workspace_config_path() -> Path:
+    return Path(os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json"))
 
 
 HERE = Path(__file__).resolve().parents[1]
@@ -1378,6 +1419,62 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             return RedirectResponse(url="/triage", status_code=303)
         append_jsonl(decisions_path, record)
         return RedirectResponse(url="/triage", status_code=303)
+
+    # ---- onboarding: GitHub PAT -> orgs/repos, workspace config (Phases 2-3) ----
+    @app.post("/api/github/validate")
+    def github_validate(body: GithubTokenBody) -> JSONResponse:
+        """Validate a PAT and return the orgs it can read (for the picker)."""
+        try:
+            result = github_client.validate_token(body.token)
+        except github_client.GithubError as exc:
+            return JSONResponse({"error": "github_error", "detail": exc.message}, status_code=exc.status or 502)
+        return JSONResponse(result)
+
+    @app.post("/api/github/repos")
+    def github_repos(body: GithubReposBody) -> JSONResponse:
+        """List an org's non-archived repos, for journey-seed selection."""
+        try:
+            repos = github_client.list_org_repos(body.token, body.org)
+        except github_client.GithubError as exc:
+            return JSONResponse({"error": "github_error", "detail": exc.message}, status_code=exc.status or 502)
+        return JSONResponse({"org": body.org, "repos": repos})
+
+    @app.get("/api/workspace/config")
+    def get_workspace_config() -> JSONResponse:
+        cfg = load_workspace_config(_workspace_config_path())
+        settings = read_scheduler_settings(catalog_path.parent.resolve())
+        return JSONResponse({
+            "orgs": cfg.get("orgs") or [],
+            "seeds": cfg.get("seeds") or [],
+            "scope": cfg.get("scope") or {},
+            "budget_usd": settings.get("budget_usd"),
+            "config_path": str(_workspace_config_path()),
+        })
+
+    @app.post("/api/workspace/config")
+    def save_workspace_config(body: WorkspaceConfigBody) -> JSONResponse:
+        scope = dict(body.scope or {})
+        if body.discover is not None:
+            scope["discover"] = bool(body.discover)
+        if body.max_discovery_rounds is not None:
+            scope["max_discovery_rounds"] = int(body.max_discovery_rounds)
+        saved = write_workspace_config(
+            _workspace_config_path(), orgs=body.orgs, seeds=body.seeds, scope=scope,
+        )
+        data_dir = catalog_path.parent.resolve()
+        if body.budget_usd is not None and body.budget_usd > 0:
+            settings = read_scheduler_settings(data_dir)
+            write_scheduler_settings(
+                data_dir,
+                interval_minutes=int(settings.get("interval_minutes") or 360),
+                budget_usd=float(body.budget_usd),
+            )
+        token_stored = _persist_github_token(body.token) if body.token else False
+        return JSONResponse({
+            "saved": {"orgs": saved.get("orgs"), "seeds": saved.get("seeds"), "scope": saved.get("scope")},
+            "config_path": str(_workspace_config_path()),
+            "token_stored": token_stored,
+        })
 
     # ---- frontend (React SPA) ----
     if FRONTEND_DIST.exists() and (FRONTEND_DIST / "index.html").exists():

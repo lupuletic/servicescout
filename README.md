@@ -75,6 +75,12 @@ configured it yet, **pulls the prebuilt multi-arch image from Docker Hub**
 (`lupuletic/servicescout` — no local build), crawls your orgs, and serves the
 dashboard + MCP. The manual steps below are the same thing, broken out.
 
+**Prefer a UI?** Once the server is up, onboard entirely from the browser at
+**`/onboard`**: paste a GitHub PAT, pick orgs and journey-seed repos
+(storefronts, mobile, entry points), set a budget, and start the crawl — it
+follows dependencies downstream from your seeds. See
+[UI onboarding](#ui-onboarding-shipped).
+
 **1. Run the server (Docker, HTTP streamable on `:8765`):**
 
 ```bash
@@ -517,6 +523,35 @@ are welcome.
 
 It is **GitHub-only by design**; support for other source-control hosts
 (GitLab, Bitbucket, GitHub Enterprise) is not currently planned.
+
+### UI onboarding (shipped)
+
+Onboarding is UI-driven at **`/onboard`** in the dashboard: paste a GitHub PAT
+to pick from the orgs it can read, select **journey-seed repos** (storefronts,
+mobile apps, other entry points), set a budget, and start the crawl. The crawler
+extracts the seeds first, then follows their dependency edges *downstream* to
+the backing APIs and services — so a "product" is its front doors plus
+everything they call, not an exhaustive (and expensive) scan of the whole org.
+Seeds and crawl bounds live in `workspace.json` (`seeds`, `scope`), so a
+UI-built config is also inspectable and reproducible as config-as-code.
+
+### Multi-workspace platform (planned)
+
+The natural next step is to make ServiceScout a centralized platform with a
+**knowledge graph per product**:
+
+- **Workspace registry + selector.** Promote "workspace" from an env-switched
+  singleton to a first-class, persisted entity — `{name, seeds, orgs, scope,
+  credential-ref, isolated catalog/data}` — with a UI to create, select, and
+  manage many. Each product becomes a journey-seeded subgraph.
+- **Credential vault.** Today a single operator's PAT is stored server-side
+  (single-tenant, the same trust model as a `.env`). A multi-team platform that
+  accepts many users' tokens needs a real vault: encryption-at-rest,
+  per-workspace scoping, rotation, and audit. This is the load-bearing piece —
+  not the UI.
+- **The fork that sizes it:** single-team self-host (one operator, many
+  workspaces) vs. true multi-tenant (many teams, RBAC, isolation). That decision
+  determines most of the cost here and should be settled before the build.
 
 ---
 

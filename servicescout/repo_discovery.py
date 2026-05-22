@@ -145,11 +145,47 @@ def find_repos(
 
 def load_workspace_config(config_path: Path) -> dict[str, object]:
     if not config_path.exists():
-        return {"orgs": [], "excluded_repos": []}
+        return {"orgs": [], "excluded_repos": [], "seeds": [], "scope": {}}
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     return {
         "orgs": list(payload.get("orgs", [])),
         "excluded_repos": list(payload.get("excluded_repos", [])),
         "repo_units": list(payload.get("repo_units") or payload.get("extract_units") or []),
         "communication_discovery_role_suffixes": list(payload.get("communication_discovery_role_suffixes", [])),
+        # Journey-root repos ("org/name") to clone + extract first; downstream
+        # dependencies are then discovered from their references.
+        "seeds": [str(s).strip() for s in (payload.get("seeds") or []) if str(s).strip()],
+        # Crawl bounds: {"discover": bool, "max_discovery_rounds": int}.
+        "scope": dict(payload.get("scope") or {}),
     }
+
+
+def write_workspace_config(
+    config_path: Path,
+    *,
+    orgs: Iterable[str],
+    seeds: Iterable[str],
+    scope: dict[str, Any] | None,
+    excluded_repos: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Persist orgs/seeds/scope to workspace.json, preserving any existing
+    fields (repo_units, role suffixes) the UI doesn't manage. Returns the
+    written config. Never handles secrets — the PAT is stored separately.
+    """
+    existing: dict[str, Any] = {}
+    if config_path.exists():
+        try:
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+    merged = dict(existing)
+    merged["orgs"] = list(orgs)
+    merged["seeds"] = [str(s).strip() for s in seeds if str(s).strip()]
+    merged["scope"] = dict(scope or {})
+    if excluded_repos is not None:
+        merged["excluded_repos"] = list(excluded_repos)
+    else:
+        merged.setdefault("excluded_repos", list(existing.get("excluded_repos") or []))
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(merged, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return merged

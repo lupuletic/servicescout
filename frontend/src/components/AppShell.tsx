@@ -9,6 +9,7 @@ import {
   CalendarClock,
   PanelLeftClose,
   PanelLeftOpen,
+  Rocket,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 
@@ -18,6 +19,7 @@ const NAV = [
   { to: "/activity", label: "Activity", icon: CalendarClock },
   { to: "/operator", label: "Operator", icon: Gauge },
   { to: "/triage", label: "Triage", icon: ListChecks },
+  { to: "/onboard", label: "Onboard", icon: Rocket },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {

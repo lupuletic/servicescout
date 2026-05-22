@@ -9,6 +9,7 @@ import { EntityPage } from "@/pages/EntityPage";
 import { TriagePage } from "@/pages/TriagePage";
 import { ActivityPage } from "@/pages/ActivityPage";
 import { OperatorPage } from "@/pages/OperatorPage";
+import { OnboardingPage } from "@/pages/OnboardingPage";
 import "@react-sigma/core/lib/style.css";
 import "./index.css";
 
@@ -29,6 +30,7 @@ createRoot(document.getElementById("root")!).render(
             <Route path="/triage" element={<TriagePage />} />
             <Route path="/activity" element={<ActivityPage />} />
             <Route path="/operator" element={<OperatorPage />} />
+            <Route path="/onboard" element={<OnboardingPage />} />
           </Routes>
         </AppShell>
       </BrowserRouter>
