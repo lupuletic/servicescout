@@ -60,6 +60,13 @@ function cameraRatioForNodeCount(nodeCount: number) {
   return 1.05;
 }
 
+function nodeFocusRatioForNodeCount(nodeCount: number) {
+  if (nodeCount > 1200) return 1.08;
+  if (nodeCount > 800) return 0.95;
+  if (nodeCount > 400) return 0.78;
+  return 0.55;
+}
+
 type EntityFull = EntityRecord & {
   metadata: {
     annotations?: {
@@ -151,7 +158,7 @@ function GraphLoader({
     });
     loadGraph(graph);
     sigma.getCamera().setState({ x: 0.5, y: 0.5, ratio: cameraRatioForNodeCount(nodeCount), angle: 0 });
-  }, [graph, loadGraph, sigma]);
+  }, [graph, graph.order, loadGraph, sigma]);
 
   // Notify the parent so it can wire camera-control buttons.
   useEffect(() => {
@@ -164,14 +171,16 @@ function GraphLoader({
         onSelect(node);
         const pos = sigma.getNodeDisplayData(node);
         if (pos) {
-          sigma.getCamera().animate({ x: pos.x, y: pos.y, ratio: 0.2 }, { duration: 400 });
+          const current = sigma.getCamera().getState();
+          const ratio = Math.min(current.ratio, nodeFocusRatioForNodeCount(graph.order));
+          sigma.getCamera().animate({ x: pos.x, y: pos.y, ratio }, { duration: 400 });
         }
       },
       clickStage: () => onSelect(null),
       enterNode: ({ node }) => setHovered(node),
       leaveNode: () => setHovered(null),
     });
-  }, [registerEvents, sigma, onSelect]);
+  }, [registerEvents, sigma, onSelect, graph.order]);
 
   useEffect(() => {
     sigma.setSetting("nodeReducer", (node, data) => {
@@ -229,7 +238,9 @@ export function GraphPage() {
     if (!sigmaRef || !selectedRef) return;
     const pos = sigmaRef.getNodeDisplayData(selectedRef);
     if (pos) {
-      sigmaRef.getCamera().animate({ x: pos.x, y: pos.y, ratio: 0.2 }, { duration: 350 });
+      const current = sigmaRef.getCamera().getState();
+      const ratio = Math.min(current.ratio, nodeFocusRatioForNodeCount(sigmaRef.getGraph().order));
+      sigmaRef.getCamera().animate({ x: pos.x, y: pos.y, ratio }, { duration: 350 });
     }
   };
 

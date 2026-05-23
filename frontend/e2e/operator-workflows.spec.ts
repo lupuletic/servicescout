@@ -116,6 +116,24 @@ const crawlRunDetail = {
   crawler_stdout_tail: "crawler ok",
 };
 
+const workspaceConfig = {
+  orgs: ["acme"],
+  seeds: ["acme/storefront", "acme/mobile-app"],
+  budget_usd: 100,
+  scope: { max_discovery_rounds: 10 },
+};
+
+const auditPayload = {
+  entries: [
+    {
+      ts: "2026-05-19T10:00:00+00:00",
+      action: "crawl_triggered",
+      repo: "acme/storefront",
+      token_stored: false,
+    },
+  ],
+};
+
 const operatorSummary = {
   catalog: {
     last_build_at: "2026-05-19T10:00:00+00:00",
@@ -178,6 +196,14 @@ async function mockApis(page: Page) {
   await page.route("**/api/crawl/runs", async (route) => route.fulfill({ json: crawlRuns }));
   await page.route("**/api/crawl/trigger", async (route) => route.fulfill({ status: 202, json: { status: "accepted", pid: 123 } }));
   await page.route("**/api/crawl/trigger/repo**", async (route) => route.fulfill({ status: 202, json: { status: "accepted", pid: 124 } }));
+  await page.route("**/api/workspace/config", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({ json: { status: "ok" } });
+      return;
+    }
+    await route.fulfill({ json: workspaceConfig });
+  });
+  await page.route("**/api/audit**", async (route) => route.fulfill({ json: auditPayload }));
   await page.route("**/api/crawl/scheduler/start", async (route) => route.fulfill({
     status: 202,
     json: {
@@ -210,6 +236,24 @@ async function mockApis(page: Page) {
 
 test.beforeEach(async ({ page }) => {
   await mockApis(page);
+});
+
+test("new crawl page summarizes saved seeds and starts a crawl", async ({ page }) => {
+  await page.goto("/onboard");
+  await expect(page.getByRole("heading", { name: "New crawl" })).toBeVisible();
+  await expect(page.getByText("2 selected")).toBeVisible();
+  await expect(page.getByText("acme/storefront", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Budget (USD)")).toHaveValue("100");
+  await expect(page.getByLabel("Rounds")).toHaveValue("10");
+
+  const configRequest = page.waitForRequest((request) =>
+    request.url().endsWith("/api/workspace/config") && request.method() === "POST",
+  );
+  const triggerRequest = page.waitForRequest("**/api/crawl/trigger");
+  await page.getByRole("button", { name: "Save & crawl" }).click();
+  await expect((await configRequest).postData() || "").toContain("acme/storefront");
+  await expect((await triggerRequest).method()).toBe("POST");
+  await expect(page.getByText("Crawl started")).toBeVisible();
 });
 
 test("explorer and catalog expose confidence as an operator filter", async ({ page }) => {

@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { KeyRound, Loader2, Check, Rocket, X } from "lucide-react";
+import { Activity, Check, GitBranch, KeyRound, Loader2, Rocket, Search, ShieldCheck, Settings2, X } from "lucide-react";
 import { Card, CardTitle, Button, Input, PageHeader } from "@/components/ui";
+import { cn } from "@/lib/cn";
 
 type Org = { login: string };
 type Repo = { name: string; full_name: string; description: string; language: string };
@@ -112,7 +113,7 @@ export function OnboardingPage() {
         token: token || undefined,
       });
       await postJSON("/api/crawl/trigger", {});
-      setResult("Crawl started — follow it on the Activity page.");
+      setResult("Crawl started - follow it on the Activity page.");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -127,144 +128,242 @@ export function OnboardingPage() {
     return q ? repos.filter((r) => r.full_name.toLowerCase().includes(q) || r.description.toLowerCase().includes(q)) : repos;
   };
 
+  const seedList = [...seeds].sort();
+  const selectedOrgList = [...selectedOrgs].sort();
+  const canCrawl = seeds.size > 0 && budget > 0 && maxRounds >= 0 && !saving;
+
   return (
-    <div className="space-y-6">
+    <div className="h-full grid grid-rows-[auto_1fr]">
       <PageHeader
-        title="Set up a crawl"
-        description="Connect GitHub, pick journey-seed repos (storefronts, mobile, entry points), and crawl downstream from them."
+        title="New crawl"
+        description="Choose entry-point repos, set a spend guardrail, then crawl downstream dependencies."
+        actions={
+          <Link to="/activity" className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-fg hover:bg-bg-elevated">
+            <Activity size={14} /> Activity
+          </Link>
+        }
       />
 
-      {/* Step 1 · connect */}
-      <Card className="space-y-3">
-        <CardTitle>1 · Connect GitHub</CardTitle>
-        <p className="text-sm text-muted-foreground">
-          Paste a <strong>fine-grained, read-only</strong> Personal Access Token — repository permissions{" "}
-          <code>Contents: read</code> + <code>Metadata: read</code>, and <code>Organization: read</code>. ServiceScout
-          only clones and reads; it never needs write access. The token lists your orgs/repos and authorizes the crawl;
-          it's stored server-side and never shown again.
-        </p>
-        <div className="flex gap-2">
-          <Input
-            type="password"
-            placeholder="github_pat_… (read-only)"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            className="max-w-md font-mono"
-            autoComplete="off"
-          />
-          <Button onClick={connect} disabled={!token || connecting}>
-            {connecting ? <Loader2 className="animate-spin" size={16} /> : <KeyRound size={16} />}
-            {login ? "Reconnect" : "Connect"}
-          </Button>
-        </div>
-        {login && (
-          <p className="text-sm text-emerald-600 flex items-center gap-1">
-            <Check size={14} /> Connected as <strong>{login}</strong> — {orgs.length} org(s) readable.
-          </p>
-        )}
-      </Card>
-
-      {/* Step 2 · seeds — ALWAYS visible so prefilled seeds never hide the picker */}
-      <Card className="space-y-3">
-        <CardTitle>2 · Journey seeds</CardTitle>
-        {seeds.size > 0 ? (
-          <div className="flex flex-wrap gap-2">
-            {[...seeds].map((s) => (
-              <span key={s} className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-xs font-mono">
-                {s}
-                <button onClick={() => toggleSeed(s)} aria-label={`Remove ${s}`} className="hover:text-red-600">
-                  <X size={12} />
-                </button>
-              </span>
-            ))}
-          </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">No seeds yet — connect above, pick your orgs, then check the entry-point repos.</p>
-        )}
-
-        {orgs.length === 0 && seeds.size > 0 && (
-          <p className="text-xs text-muted-foreground">Connect to add or change seeds.</p>
-        )}
-
-        {orgs.length > 0 && (
-          <>
-            <div className="flex flex-wrap gap-2 pt-1">
-              {orgs.map((o) => (
-                <Button key={o.login} variant={selectedOrgs.has(o.login) ? "default" : "outline"} onClick={() => toggleOrg(o.login)}>
-                  {selectedOrgs.has(o.login) && <Check size={14} />} {o.login}
-                </Button>
-              ))}
-            </div>
-            {[...selectedOrgs].length > 0 && (
-              <Input placeholder="Filter repos…" value={repoFilter} onChange={(e) => setRepoFilter(e.target.value)} className="max-w-md" />
-            )}
-            {[...selectedOrgs].map((org) => (
-              <div key={org} className="space-y-1">
-                <div className="text-xs font-semibold uppercase text-muted-foreground">{org}</div>
-                {loadingOrg === org && <p className="text-sm flex items-center gap-1"><Loader2 className="animate-spin" size={14} /> loading repos…</p>}
-                <div className="max-h-64 overflow-auto rounded border border-border divide-y divide-border">
-                  {visibleRepos(org).map((r) => (
-                    <label key={r.full_name} className="flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-muted/40 cursor-pointer">
-                      <input type="checkbox" checked={seeds.has(r.full_name)} onChange={() => toggleSeed(r.full_name)} />
-                      <span className="font-mono">{r.name}</span>
-                      {r.language && <span className="text-xs text-muted-foreground">{r.language}</span>}
-                      <span className="text-xs text-muted-foreground truncate">{r.description}</span>
-                    </label>
-                  ))}
+      <div className="min-h-0 overflow-auto p-4 lg:p-6">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="space-y-4">
+            <Card className="overflow-hidden p-0">
+              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
+                <div>
+                  <CardTitle className="mb-1 flex items-center gap-2">
+                    <ShieldCheck size={14} /> GitHub access
+                  </CardTitle>
+                  <p className="max-w-3xl text-sm text-fg-muted">
+                    Connect only when you need to browse or change repositories. Use a fine-grained, read-only token with
+                    <code className="mx-1 rounded border border-border bg-bg px-1 py-0.5">Contents: read</code>
+                    <code className="mx-1 rounded border border-border bg-bg px-1 py-0.5">Metadata: read</code>
+                    and <code className="mx-1 rounded border border-border bg-bg px-1 py-0.5">Organization: read</code>.
+                  </p>
                 </div>
+                <StatusPill active={Boolean(login)}>
+                  {login ? `Connected as ${login}` : "Not connected"}
+                </StatusPill>
               </div>
-            ))}
-          </>
-        )}
-      </Card>
+              <div className="grid gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_auto]">
+                <Input
+                  type="password"
+                  placeholder="github_pat_... (read-only)"
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  className="font-mono"
+                  autoComplete="off"
+                />
+                <Button onClick={connect} disabled={!token || connecting} className="h-9">
+                  {connecting ? <Loader2 className="animate-spin" size={16} /> : <KeyRound size={16} />}
+                  {login ? "Reconnect" : "Connect"}
+                </Button>
+              </div>
+            </Card>
 
-      {/* Step 3 · budget & crawl */}
-      {seeds.size > 0 && (
-        <Card className="space-y-3">
-          <CardTitle>3 · Budget &amp; crawl</CardTitle>
-          <p className="text-sm text-muted-foreground">
-            The crawl extracts your {seeds.size} seed(s), then follows their dependencies downstream — stopping at the
-            budget or after the discovery rounds.
-          </p>
-          <div className="flex flex-wrap items-end gap-4">
-            <label className="text-sm">
-              Budget (USD)
-              <Input type="number" min={1} value={budget} onChange={(e) => setBudget(Number(e.target.value))} className="w-28" />
-            </label>
-            <label className="text-sm">
-              Max discovery rounds
-              <Input type="number" min={0} value={maxRounds} onChange={(e) => setMaxRounds(Number(e.target.value))} className="w-28" />
-            </label>
-            <Button onClick={saveAndCrawl} disabled={saving || selectedOrgs.size === 0}>
-              {saving ? <Loader2 className="animate-spin" size={16} /> : <Rocket size={16} />} Save &amp; crawl
-            </Button>
+            <Card className="overflow-hidden p-0">
+              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
+                <div>
+                  <CardTitle className="mb-1 flex items-center gap-2">
+                    <GitBranch size={14} /> Journey seeds
+                  </CardTitle>
+                  <p className="text-sm text-fg-muted">
+                    Start from storefronts, mobile apps, APIs, or other entry points. Discovery follows downstream dependencies.
+                  </p>
+                </div>
+                <StatusPill active={seeds.size > 0}>{seeds.size} selected</StatusPill>
+              </div>
+
+              <div className="space-y-4 px-4 py-3">
+                {seeds.size > 0 ? (
+                  <div className="max-h-32 overflow-auto rounded-md border border-border bg-bg/40 p-2">
+                    <div className="flex flex-wrap gap-1.5">
+                      {seedList.map((seed) => (
+                        <span key={seed} className="inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-bg-elevated px-2 py-1 text-xs font-mono text-fg">
+                          <span className="truncate">{seed}</span>
+                          <button
+                            type="button"
+                            onClick={() => toggleSeed(seed)}
+                            aria-label={`Remove ${seed}`}
+                            className="grid h-4 w-4 shrink-0 place-items-center rounded text-fg-dim hover:bg-bg hover:text-red-400"
+                          >
+                            <X size={11} />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-fg-muted">
+                    No seed repos selected yet. Connect GitHub to browse repositories, or keep an existing saved seed list.
+                  </div>
+                )}
+
+                {orgs.length === 0 && seeds.size > 0 && (
+                  <p className="text-xs text-fg-dim">Current seeds are loaded from the saved workspace. Connect GitHub to add or replace them.</p>
+                )}
+
+                {orgs.length > 0 && (
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap gap-2">
+                      {orgs.map((org) => (
+                        <Button
+                          key={org.login}
+                          variant={selectedOrgs.has(org.login) ? "default" : "outline"}
+                          onClick={() => toggleOrg(org.login)}
+                          className="h-8"
+                        >
+                          {selectedOrgs.has(org.login) && <Check size={14} />} {org.login}
+                        </Button>
+                      ))}
+                    </div>
+
+                    {selectedOrgList.length > 0 && (
+                      <div className="relative max-w-lg">
+                        <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-dim" />
+                        <Input
+                          placeholder="Filter repositories"
+                          value={repoFilter}
+                          onChange={(e) => setRepoFilter(e.target.value)}
+                          className="pl-8"
+                        />
+                      </div>
+                    )}
+
+                    {selectedOrgList.map((org) => (
+                      <div key={org} className="space-y-1.5">
+                        <div className="flex items-center justify-between text-xs uppercase tracking-wider text-fg-dim">
+                          <span>{org}</span>
+                          <span>{visibleRepos(org).length} repos</span>
+                        </div>
+                        {loadingOrg === org && (
+                          <p className="flex items-center gap-1 text-sm text-fg-muted">
+                            <Loader2 className="animate-spin" size={14} /> Loading repos...
+                          </p>
+                        )}
+                        <div className="max-h-72 overflow-auto rounded-md border border-border">
+                          {visibleRepos(org).map((repo) => (
+                            <label
+                              key={repo.full_name}
+                              className={cn(
+                                "grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 border-b border-border px-3 py-2 text-sm last:border-b-0 hover:bg-bg",
+                                seeds.has(repo.full_name) && "bg-accent/10",
+                              )}
+                            >
+                              <input type="checkbox" checked={seeds.has(repo.full_name)} onChange={() => toggleSeed(repo.full_name)} />
+                              <span className="min-w-0">
+                                <span className="block truncate font-mono text-fg">{repo.name}</span>
+                                {repo.description && <span className="block truncate text-xs text-fg-dim">{repo.description}</span>}
+                              </span>
+                              {repo.language && <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-fg-dim">{repo.language}</span>}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </Card>
           </div>
-          {result && (
-            <p className="text-sm text-emerald-600">
-              {result} <Link to="/activity" className="underline">Go to Activity →</Link>
-            </p>
-          )}
-        </Card>
-      )}
 
-      {error && <p className="text-sm text-red-600">⚠ {error}</p>}
+          <aside className="space-y-4 xl:sticky xl:top-4 xl:self-start">
+            <Card className="space-y-4">
+              <div>
+                <CardTitle className="mb-1 flex items-center gap-2">
+                  <Settings2 size={14} /> Crawl plan
+                </CardTitle>
+                <p className="text-sm text-fg-muted">Save the workspace and start a manual crawl immediately.</p>
+              </div>
 
-      {/* Audit trail — config changes, token storage, crawl triggers */}
-      {audit.length > 0 && (
-        <Card className="space-y-2">
-          <CardTitle>Recent activity</CardTitle>
-          <ul className="text-sm divide-y divide-border">
-            {audit.map((a, i) => (
-              <li key={i} className="flex items-center justify-between gap-3 py-1.5">
-                <span className="font-mono text-xs">
-                  {a.action}{a.repo ? ` · ${a.repo}` : ""}{a.token_stored ? " · token stored" : ""}
-                </span>
-                <span className="text-xs text-muted-foreground">{new Date(a.ts).toLocaleString()}</span>
-              </li>
-            ))}
-          </ul>
-        </Card>
+              <div className="grid grid-cols-2 gap-2">
+                <PlanMetric label="Seeds" value={seeds.size} />
+                <PlanMetric label="Orgs" value={selectedOrgs.size || "-"} />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-xs uppercase tracking-wider text-fg-dim">
+                  Budget (USD)
+                  <Input type="number" min={1} value={budget} onChange={(e) => setBudget(Number(e.target.value))} className="mt-1" />
+                </label>
+                <label className="text-xs uppercase tracking-wider text-fg-dim">
+                  Rounds
+                  <Input type="number" min={0} value={maxRounds} onChange={(e) => setMaxRounds(Number(e.target.value))} className="mt-1" />
+                </label>
+              </div>
+
+              <Button onClick={saveAndCrawl} disabled={!canCrawl} className="h-10 w-full">
+                {saving ? <Loader2 className="animate-spin" size={16} /> : <Rocket size={16} />} Save &amp; crawl
+              </Button>
+
+              {seeds.size === 0 && <p className="text-xs text-fg-dim">Select at least one seed repo before crawling.</p>}
+              {result && (
+                <p className="text-sm text-emerald-400">
+                  {result} <Link to="/activity" className="underline">Open Activity</Link>
+                </p>
+              )}
+              {error && <p className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">{error}</p>}
+            </Card>
+
+            {audit.length > 0 && (
+              <Card className="space-y-2">
+                <CardTitle>Recent activity</CardTitle>
+                <ul className="divide-y divide-border text-sm">
+                  {audit.map((entry, index) => (
+                    <li key={index} className="flex items-start justify-between gap-3 py-2">
+                      <span className="min-w-0 truncate font-mono text-xs text-fg">
+                        {entry.action}{entry.repo ? ` · ${entry.repo}` : ""}{entry.token_stored ? " · token stored" : ""}
+                      </span>
+                      <span className="shrink-0 text-xs text-fg-dim">{new Date(entry.ts).toLocaleDateString()}</span>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+            )}
+          </aside>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatusPill({ active, children }: { active: boolean; children: ReactNode }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded border px-2 py-1 text-xs font-medium",
+        active ? "border-accent/35 bg-accent/15 text-accent" : "border-border bg-bg text-fg-dim",
       )}
+    >
+      {children}
+    </span>
+  );
+}
+
+function PlanMetric({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="rounded-md border border-border bg-bg/45 px-3 py-2">
+      <div className="text-[10px] uppercase tracking-wider text-fg-dim">{label}</div>
+      <div className="mt-0.5 text-lg font-semibold text-fg">{value}</div>
     </div>
   );
 }
