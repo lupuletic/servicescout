@@ -6,6 +6,13 @@ import { Button, Card, CardTitle, CardValue, Input, PageHeader, StatusBadge } fr
 import { cn } from "@/lib/cn";
 
 type ChangedRepo = NonNullable<CrawlRunDetail["repos_changed"]>[number];
+type ActiveWorker = {
+  repo: string;
+  pid?: number;
+  elapsedSeconds?: number;
+  lastEvent: string;
+  lastAt?: string | null;
+};
 
 function StatusGlyph({ status, className }: { status?: string; className?: string }) {
   if (status === "ok" || status === "no_changes") return <CheckCircle2 size={14} className={className} />;
@@ -28,6 +35,12 @@ function duration(start?: string, finish?: string) {
   if (!start || !finish) return "-";
   const seconds = Math.max((new Date(finish).getTime() - new Date(start).getTime()) / 1000, 0);
   return formatSeconds(seconds);
+}
+
+function runDuration(run?: Pick<CrawlRunDetail, "started_at" | "finished_at" | "duration_seconds"> | null) {
+  if (!run) return "-";
+  if (run.duration_seconds != null) return formatSeconds(run.duration_seconds);
+  return duration(run.started_at, run.finished_at);
 }
 
 function formatSeconds(seconds?: number | null) {
@@ -149,25 +162,53 @@ function withRepoMetadata(repos: ChangedRepo[], events: Array<Record<string, unk
 function summariseRun(detail?: CrawlRunDetail) {
   const events = detail?.events || [];
   const repos = withRepoMetadata(detail?.repos_changed || [], events);
-  const active = new Map<string, Record<string, unknown>>();
+  const active = new Map<string, ActiveWorker>();
   let latestBatch: Record<string, unknown> | null = null;
   for (const event of events) {
     const name = String(event.event || "");
     const repo = typeof event.repo === "string" ? event.repo : "";
     if (name === "batch_start") latestBatch = event;
-    if ((name === "extractor_process_start" || name === "extractor_heartbeat") && repo) active.set(repo, event);
+    if (name === "extractor_process_start" && repo) {
+      active.set(repo, {
+        repo,
+        pid: numeric(event.pid) ?? undefined,
+        lastEvent: "started",
+        lastAt: eventTimestamp(event),
+      });
+    }
+    if (name === "extractor_heartbeat" && repo) {
+      const existing = active.get(repo);
+      active.set(repo, {
+        repo,
+        pid: numeric(event.pid) ?? existing?.pid,
+        elapsedSeconds: numeric(event.elapsed_seconds) ?? existing?.elapsedSeconds,
+        lastEvent: "heartbeat",
+        lastAt: eventTimestamp(event),
+      });
+    }
+    if (name === "extractor_child_event" && repo) {
+      const existing = active.get(repo);
+      if (existing) {
+        active.set(repo, {
+          ...existing,
+          lastEvent: formatEvent(event),
+          lastAt: eventTimestamp(event),
+        });
+      }
+    }
     if ((name === "extractor_process_exit" || name === "repo_done") && repo) active.delete(repo);
   }
   const failures = repos.filter((repo) => repo.status && repo.status !== "ok").length;
   const ok = repos.filter((repo) => repo.status === "ok").length;
   const totalDuration = repos.reduce((sum, repo) => sum + (repo.duration_seconds || 0), 0);
-  const activeRepos = [...active.keys()].slice(-12).reverse();
+  const activeWorkers = [...active.values()].slice(-12).reverse();
   return {
     checked: detail?.repos_checked,
     completed: repos.length || detail?.repos_changed_count || 0,
     ok,
     failures,
-    activeRepos,
+    activeWorkers,
+    activeRepos: activeWorkers.map((worker) => worker.repo),
     activeCount: active.size,
     latestBatch,
     avgDurationSeconds: repos.length ? totalDuration / repos.length : null,
@@ -560,7 +601,7 @@ export function ActivityPage() {
                       </div>
                       <div className="text-fg-muted">{run.repos_changed_count}</div>
                       <div className="text-right text-fg-muted tabular-nums">{fmtMoney(run.cost_usd)}</div>
-                      <div className="text-right text-fg-muted">{duration(run.started_at, run.finished_at)}</div>
+                      <div className="text-right text-fg-muted">{runDuration(run)}</div>
                     </button>
                   );
                 })}
@@ -587,6 +628,7 @@ function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReinde
   const failures = changedRepos.filter((repo) => repo.status && repo.status !== "ok").slice(-12).reverse();
   const currentRunSpend = detail.cost_usd ?? numeric(stats.latestBatch?.run_spent_so_far);
   const batchCatalogSpend = numeric(stats.latestBatch?.spent_so_far);
+  const observedFinish = detail.finished_at || detail.observed_at;
 
   return (
     <div className="grid h-full min-h-0 grid-rows-[auto_auto_auto_minmax(0,1fr)] gap-5 p-6 text-sm">
@@ -597,7 +639,7 @@ function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReinde
         </div>
         <h2 className="mt-2 font-mono text-sm text-fg break-all">{detail.run_id}</h2>
         <div className="mt-1 text-xs text-fg-dim">
-          {formatDate(detail.started_at)} - {formatDate(detail.finished_at)}
+          {formatDate(detail.started_at)} - {detail.status === "running" && !detail.finished_at ? "now" : formatDate(observedFinish)}
         </div>
       </div>
 
@@ -605,7 +647,9 @@ function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReinde
         <MiniMetric label="Checked" value={detail.repos_checked ?? "-"} />
         <MiniMetric label="Completed" value={stats.completed || detail.repos_changed_count || "-"} />
         <MiniMetric label="Active" value={stats.activeCount} />
+        <MiniMetric label="Duration" value={runDuration(detail)} />
         <MiniMetric label="Spend" value={fmtMoney(currentRunSpend)} />
+        <MiniMetric label="Failures" value={stats.failures} />
       </div>
 
       <div className="min-h-0 overflow-auto pr-1 space-y-5">
@@ -625,14 +669,24 @@ function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReinde
           </section>
         )}
 
-        {stats.activeRepos.length > 0 && (
+        {stats.activeWorkers.length > 0 && (
           <section>
-            <h3 className="text-xs uppercase tracking-wider text-fg-dim mb-2">Active repos</h3>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <h3 className="text-xs uppercase tracking-wider text-fg-dim">Active workers</h3>
+              <span className="text-xs text-fg-dim">Latest {stats.activeWorkers.length} of {stats.activeCount}</span>
+            </div>
             <div className="space-y-1">
-              {stats.activeRepos.map((repo) => (
-                <div key={repo} className="rounded border border-border bg-bg px-3 py-2">
-                  <div className="font-mono text-xs text-fg truncate">{repo}</div>
-                  <div className="mt-1 text-xs text-fg-dim">extracting now</div>
+              {stats.activeWorkers.map((worker) => (
+                <div key={worker.repo} className="rounded border border-border bg-bg px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">{worker.repo}</span>
+                    {worker.pid && <span className="text-[11px] text-fg-dim">PID {worker.pid}</span>}
+                  </div>
+                  <div className="mt-1 flex items-center gap-2 text-xs text-fg-dim">
+                    <span>{worker.elapsedSeconds != null ? formatSeconds(worker.elapsedSeconds) : "running"}</span>
+                    <span>·</span>
+                    <span className="truncate">{worker.lastEvent}</span>
+                  </div>
                 </div>
               ))}
             </div>

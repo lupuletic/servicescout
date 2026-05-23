@@ -379,14 +379,130 @@ def latest_activity_log(data_dir: Path, limit: int = 40) -> tuple[Path | None, l
 def normalise_activity_run_doc(doc: dict[str, Any]) -> dict[str, Any]:
     """Mark a previously interrupted crawler run as no longer active."""
     if doc.get("status") != "running":
-        return doc
+        return _with_observed_duration(doc)
     try:
         pid = int(doc.get("pid") or 0)
     except (TypeError, ValueError):
         pid = 0
     if pid and not pid_alive(pid):
-        return {**doc, "status": "abandoned"}
-    return doc
+        return _with_observed_duration({**doc, "status": "abandoned"})
+    return _with_observed_duration(doc)
+
+
+def _aware_dt(value: dt.datetime | None) -> dt.datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=dt.timezone.utc)
+    return value
+
+
+def _last_activity_at(doc: dict[str, Any]) -> str | None:
+    candidates = [doc.get("finished_at")]
+    for event in doc.get("events") or []:
+        if isinstance(event, dict):
+            candidates.append(event.get("ts"))
+    parsed = [_aware_dt(_parse_dt(str(value))) for value in candidates if value]
+    parsed = [value for value in parsed if value is not None]
+    return max(parsed).isoformat() if parsed else None
+
+
+def _with_observed_duration(doc: dict[str, Any]) -> dict[str, Any]:
+    started = _aware_dt(_parse_dt(doc.get("started_at")))
+    if started is None:
+        return doc
+    if doc.get("finished_at"):
+        observed = _aware_dt(_parse_dt(doc.get("finished_at")))
+    elif doc.get("status") == "running":
+        observed = dt.datetime.now(dt.timezone.utc)
+    else:
+        observed = _aware_dt(_parse_dt(_last_activity_at(doc)))
+    if observed is None:
+        return doc
+    duration = max((observed - started).total_seconds(), 0.0)
+    return {**doc, "duration_seconds": round(duration, 1), "observed_at": observed.isoformat()}
+
+
+def _repo_catalog_metrics(catalog_dir: Path, repo: str, *, started_at: str | None = None) -> dict[str, Any]:
+    name = repo.split("/")[-1]
+    if not name:
+        return {}
+    path = catalog_dir / f"{name}.json"
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    meta = payload.get("_meta") or {}
+    extracted_at = _aware_dt(_parse_dt(meta.get("extracted_at")))
+    started = _aware_dt(_parse_dt(started_at))
+    if started is not None and extracted_at is not None and extracted_at < started:
+        return {}
+    run = meta.get("run") or {}
+    cost = (run.get("cost") or {}).get("estimated_usd")
+    out: dict[str, Any] = {}
+    if isinstance(cost, (int, float)):
+        out["cost_usd"] = float(cost)
+    duration = run.get("duration_seconds")
+    if isinstance(duration, (int, float)):
+        out["duration_seconds"] = float(duration)
+    if run.get("status"):
+        out["status"] = run.get("status")
+    return out
+
+
+def _enrich_activity_run_doc(doc: dict[str, Any], catalog_dir: Path) -> dict[str, Any]:
+    doc = normalise_activity_run_doc(doc)
+    started_at = doc.get("started_at")
+    repos = []
+    total_cost = 0.0
+    saw_cost = False
+    total_duration = 0.0
+    saw_duration = False
+    for repo in doc.get("repos_changed") or []:
+        if not isinstance(repo, dict):
+            continue
+        metrics = _repo_catalog_metrics(catalog_dir, str(repo.get("repo") or ""), started_at=started_at)
+        merged = {**metrics, **repo}
+        if merged.get("cost_usd") is None and metrics.get("cost_usd") is not None:
+            merged["cost_usd"] = metrics["cost_usd"]
+        if merged.get("duration_seconds") is None and metrics.get("duration_seconds") is not None:
+            merged["duration_seconds"] = metrics["duration_seconds"]
+        cost = merged.get("cost_usd")
+        if isinstance(cost, (int, float)):
+            total_cost += float(cost)
+            saw_cost = True
+        duration = merged.get("duration_seconds")
+        if isinstance(duration, (int, float)):
+            total_duration += float(duration)
+            saw_duration = True
+        repos.append(merged)
+    out = {**doc, "repos_changed": repos}
+    if out.get("cost_usd") is None and saw_cost:
+        out["cost_usd"] = round(total_cost, 4)
+    if out.get("worker_duration_seconds") is None and saw_duration:
+        out["worker_duration_seconds"] = round(total_duration, 1)
+    return out
+
+
+def _activity_run_summary(doc: dict[str, Any], path: Path) -> dict[str, Any]:
+    return {
+        "run_id": doc.get("run_id") or path.stem,
+        "trigger": doc.get("trigger") or "cron",
+        "started_at": doc.get("started_at"),
+        "finished_at": doc.get("finished_at"),
+        "observed_at": doc.get("observed_at"),
+        "status": doc.get("status"),
+        "repos_checked": doc.get("repos_checked"),
+        "repos_changed_count": len(doc.get("repos_changed") or []),
+        "budget_usd": doc.get("budget_usd"),
+        "cost_usd": doc.get("cost_usd"),
+        "catalog_cost_usd": doc.get("catalog_cost_usd"),
+        "duration_seconds": doc.get("duration_seconds"),
+        "worker_duration_seconds": doc.get("worker_duration_seconds"),
+        "crawler_returncode": doc.get("crawler_returncode"),
+    }
 
 
 # ---------- catalog helpers ----------
@@ -1230,25 +1346,14 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         if not run_log_dir.is_dir():
             runs = _extraction_activity_runs(catalog_path.parent, limit)
             return JSONResponse({"runs": runs, "total": len(runs), "source": "extractions"})
+        repo_record_dir = _repo_record_dir(catalog_path.parent)
         entries: list[dict[str, Any]] = []
         for path in sorted(run_log_dir.glob("*.json"), reverse=True):
             try:
-                doc = normalise_activity_run_doc(json.loads(path.read_text(encoding="utf-8")))
+                doc = _enrich_activity_run_doc(json.loads(path.read_text(encoding="utf-8")), repo_record_dir)
             except (OSError, json.JSONDecodeError):
                 continue
-            entries.append({
-                "run_id": doc.get("run_id") or path.stem,
-                "trigger": doc.get("trigger") or "cron",
-                "started_at": doc.get("started_at"),
-                "finished_at": doc.get("finished_at"),
-                "status": doc.get("status"),
-                "repos_checked": doc.get("repos_checked"),
-                "repos_changed_count": len(doc.get("repos_changed") or []),
-                "budget_usd": doc.get("budget_usd"),
-                "cost_usd": doc.get("cost_usd"),
-                "catalog_cost_usd": doc.get("catalog_cost_usd"),
-                "crawler_returncode": doc.get("crawler_returncode"),
-            })
+            entries.append(_activity_run_summary(doc, path))
             if len(entries) >= limit:
                 break
         if not entries:
@@ -1280,7 +1385,10 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 return JSONResponse(detail)
             return JSONResponse({"error": "not_found", "run_id": safe}, status_code=404)
         try:
-            doc = normalise_activity_run_doc(json.loads(path.read_text(encoding="utf-8")))
+            doc = _enrich_activity_run_doc(
+                json.loads(path.read_text(encoding="utf-8")),
+                _repo_record_dir(catalog_path.parent),
+            )
         except (OSError, json.JSONDecodeError):
             return JSONResponse({"error": "corrupt"}, status_code=500)
         return JSONResponse(doc)
@@ -1316,18 +1424,11 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             paths = sorted(run_log_dir.glob("*.json"), reverse=True)
             if paths:
                 try:
-                    doc = normalise_activity_run_doc(json.loads(paths[0].read_text(encoding="utf-8")))
-                    last_run = {
-                        "run_id": doc.get("run_id"),
-                        "status": doc.get("status"),
-                        "started_at": doc.get("started_at"),
-                        "finished_at": doc.get("finished_at"),
-                        "repos_checked": doc.get("repos_checked"),
-                        "repos_changed_count": len(doc.get("repos_changed") or []),
-                        "budget_usd": doc.get("budget_usd"),
-                        "cost_usd": doc.get("cost_usd"),
-                        "catalog_cost_usd": doc.get("catalog_cost_usd"),
-                    }
+                    doc = _enrich_activity_run_doc(
+                        json.loads(paths[0].read_text(encoding="utf-8")),
+                        _repo_record_dir(catalog_path.parent),
+                    )
+                    last_run = _activity_run_summary(doc, paths[0])
                 except (OSError, json.JSONDecodeError):
                     pass
         if last_run is None:

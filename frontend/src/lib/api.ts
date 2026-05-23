@@ -62,6 +62,7 @@ export type CrawlRunSummary = {
   trigger: string;
   started_at?: string;
   finished_at?: string;
+  observed_at?: string;
   status?: string;
   repos_checked?: number;
   repos_changed_count: number;
@@ -69,6 +70,7 @@ export type CrawlRunSummary = {
   cost_usd?: number;
   catalog_cost_usd?: number;
   duration_seconds?: number;
+  worker_duration_seconds?: number;
   crawler_returncode?: number | null;
 };
 
