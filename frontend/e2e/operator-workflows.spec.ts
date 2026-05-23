@@ -219,6 +219,9 @@ test("explorer and catalog expose confidence as an operator filter", async ({ pa
   await expect(page.getByRole("button", { name: "review" })).toBeVisible();
   await expect(page.getByRole("button", { name: "API contracts" })).toBeDisabled();
   await expect(page.getByText("Flow map shows service-to-service communication.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Hide graph labels" })).toBeVisible();
+  await page.getByRole("button", { name: "Hide graph labels" }).click();
+  await expect(page.getByRole("button", { name: "Show graph labels" })).toBeVisible();
 
   await page.getByRole("button", { name: "Evidence graph" }).click();
   await expect(page.getByRole("button", { name: "API contracts" })).toBeEnabled();

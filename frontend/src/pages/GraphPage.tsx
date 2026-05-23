@@ -4,10 +4,11 @@ import useSWR from "swr";
 import { SigmaContainer, useLoadGraph, useRegisterEvents, useSigma } from "@react-sigma/core";
 import { NodeCircleProgram, EdgeArrowProgram } from "sigma/rendering";
 import forceAtlas2 from "graphology-layout-forceatlas2";
-import { Filter, RotateCcw } from "lucide-react";
+import { Filter, RotateCcw, Tags } from "lucide-react";
 import { type EntityRecord, type GraphPayload } from "@/lib/api";
 import { Button, ConfidenceBadge, Input, KindBadge, PageHeader } from "@/components/ui";
 import { EDGE_TYPE_META, KIND_META, edgeTypeLabel, kindColor, kindLabel } from "@/lib/catalogLabels";
+import { cn } from "@/lib/cn";
 import { drawReadableNodeHover } from "@/lib/sigmaRenderers";
 import { githubRepoRootLabel, githubRepoRootUrl } from "@/lib/sourceLinks";
 
@@ -41,6 +42,7 @@ const SIGMA_SETTINGS = {
 
 const ALL_KINDS = ["Component", "API", "Resource", "Provider", "System", "Domain", "Group"];
 const ALL_CONFIDENCE = ["high", "medium", "low", "review"];
+const HOVER_LABEL_NEIGHBOUR_LIMIT = 10;
 
 type EntityFull = EntityRecord & {
   metadata: {
@@ -75,15 +77,41 @@ function GraphLoader({
   graph,
   onSelect,
   onSigmaReady,
+  showLabels,
 }: {
   graph: Graph;
   onSelect: (ref: string | null) => void;
   onSigmaReady?: (sigma: ReturnType<typeof useSigma>) => void;
+  showLabels: boolean;
 }) {
   const loadGraph = useLoadGraph();
   const sigma = useSigma();
   const registerEvents = useRegisterEvents();
   const [hovered, setHovered] = useState<string | null>(null);
+
+  const hoverLabelNodes = useMemo(() => {
+    if (!hovered || !graph.hasNode(hovered)) return null;
+    if (!showLabels) return new Set([hovered]);
+
+    const scoreNode = (node: string) => {
+      const attrs = graph.getNodeAttributes(node) as { label?: string; size?: number };
+      return {
+        label: attrs.label || node,
+        size: typeof attrs.size === "number" ? attrs.size : 0,
+      };
+    };
+
+    const neighbours = graph.neighbors(hovered)
+      .filter((node) => node !== hovered)
+      .sort((a, b) => {
+        const left = scoreNode(a);
+        const right = scoreNode(b);
+        return right.size - left.size || left.label.localeCompare(right.label);
+      })
+      .slice(0, HOVER_LABEL_NEIGHBOUR_LIMIT);
+
+    return new Set([hovered, ...neighbours]);
+  }, [graph, hovered, showLabels]);
 
   useEffect(() => {
     // Pre-compute the layout synchronously so the user sees the final state
@@ -129,17 +157,18 @@ function GraphLoader({
 
   useEffect(() => {
     sigma.setSetting("nodeReducer", (node, data) => {
-      if (!hovered) return data;
+      if (!hovered) {
+        return showLabels ? data : { ...data, label: "", forceLabel: false };
+      }
       const isHovered = node === hovered;
       const isNeighbor = graph.areNeighbors(node, hovered);
+      const shouldLabel = hoverLabelNodes?.has(node) ?? false;
       return {
         ...data,
         size: isHovered ? (data.size || 5) * 1.4 : data.size,
         color: isHovered || isNeighbor ? data.color : "#1d212b",
-        // Highlight the neighbour LABELS too, not just the nodes —
-        // makes the local neighbourhood instantly readable.
-        label: isHovered || isNeighbor ? data.label : "",
-        forceLabel: isHovered || isNeighbor,
+        label: shouldLabel ? data.label : "",
+        forceLabel: shouldLabel,
       };
     });
     sigma.setSetting("edgeReducer", (edge, data) => {
@@ -149,7 +178,7 @@ function GraphLoader({
       return { ...data, color: touch ? data.color : "#1d212b", hidden: !touch };
     });
     sigma.refresh();
-  }, [hovered, sigma, graph]);
+  }, [hovered, sigma, graph, showLabels, hoverLabelNodes]);
 
   return null;
 }
@@ -162,6 +191,7 @@ export function GraphPage() {
   const [selectedRef, setSelectedRef] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [sigmaRef, setSigmaRef] = useState<ReturnType<typeof useSigma> | null>(null);
+  const [showLabels, setShowLabels] = useState(true);
 
   const zoom = (factor: number) => {
     if (!sigmaRef) return;
@@ -393,43 +423,46 @@ export function GraphPage() {
                 </FilterSection>
 
                 <FilterSection title="Confidence" hint="Extractor/verifier certainty">
-                  <div className="grid grid-cols-4 gap-1.5">
+                  <div className="flex flex-wrap gap-1.5">
                     {ALL_CONFIDENCE.map((confidence) => (
-                      <FilterChip
+                      <CompactChip
                         key={confidence}
                         active={confidences.has(confidence)}
                         onClick={() => toggleConfidence(confidence)}
                       >
-                        <span className="truncate">{confidence}</span>
-                      </FilterChip>
+                        {confidence}
+                      </CompactChip>
                     ))}
                   </div>
                 </FilterSection>
 
-                <FilterSection title="Relationships" hint="Choose a high-level flow view or inspect raw evidence">
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <FilterChip active={flowActive} onClick={showFlowView} title={EDGE_TYPE_META.communicatesWith.description}>
+                <FilterSection title="Relationships" hint="Flow view or raw evidence">
+                  <div className="grid grid-cols-2 rounded-md border border-border bg-bg/40 p-0.5">
+                    <ModeButton active={flowActive} onClick={showFlowView} title={EDGE_TYPE_META.communicatesWith.description}>
                       Flow map
-                    </FilterChip>
-                    <FilterChip active={!flowActive} onClick={showEvidenceView}>
+                    </ModeButton>
+                    <ModeButton active={!flowActive} onClick={showEvidenceView}>
                       Evidence graph
-                    </FilterChip>
+                    </ModeButton>
                   </div>
                   {!flowActive && (
-                    <div className="mt-2 grid grid-cols-2 gap-1.5">
-                      <FilterChip active={edgeTypes.size === 0} onClick={() => setEdgeTypes(new Set())}>
-                        All evidence
-                      </FilterChip>
-                      {EVIDENCE_EDGE_TYPES.map((et) => (
-                        <FilterChip
-                          key={et.value}
-                          active={edgeTypes.has(et.value)}
-                          onClick={() => toggleEdgeType(et.value)}
-                          title={EDGE_TYPE_META[et.value]?.description}
-                        >
-                          <span className="truncate">{et.label}</span>
-                        </FilterChip>
-                      ))}
+                    <div className="mt-2">
+                      <div className="mb-1.5 text-[10px] uppercase tracking-wider text-fg-dim">Evidence types</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        <CompactChip active={edgeTypes.size === 0} onClick={() => setEdgeTypes(new Set())}>
+                          All
+                        </CompactChip>
+                        {EVIDENCE_EDGE_TYPES.map((et) => (
+                          <CompactChip
+                            key={et.value}
+                            active={edgeTypes.has(et.value)}
+                            onClick={() => toggleEdgeType(et.value)}
+                            title={EDGE_TYPE_META[et.value]?.description}
+                          >
+                            {et.label}
+                          </CompactChip>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </FilterSection>
@@ -466,6 +499,18 @@ export function GraphPage() {
           {/* Camera control bar — bottom-right */}
           <div className="absolute bottom-3 right-3 z-10 flex flex-col gap-1.5 rounded-md border border-border bg-bg-elevated/80 backdrop-blur-sm p-1">
             <button
+              onClick={() => setShowLabels((value) => !value)}
+              title={showLabels ? "Hide labels" : "Show labels"}
+              aria-label={showLabels ? "Hide graph labels" : "Show graph labels"}
+              aria-pressed={showLabels}
+              className={cn(
+                "h-7 w-7 rounded grid place-items-center hover:bg-bg",
+                showLabels ? "text-accent hover:text-fg" : "text-fg-muted hover:text-fg",
+              )}
+            >
+              <Tags size={14} />
+            </button>
+            <button
               onClick={() => zoom(0.75)}
               title="Zoom in"
               className="h-7 w-7 rounded grid place-items-center text-fg-muted hover:text-fg hover:bg-bg"
@@ -501,7 +546,12 @@ export function GraphPage() {
             className="sigma-container"
             settings={SIGMA_SETTINGS}
           >
-            <GraphLoader graph={graphInstance} onSelect={setSelectedRef} onSigmaReady={setSigmaRef} />
+            <GraphLoader
+              graph={graphInstance}
+              onSelect={setSelectedRef}
+              onSigmaReady={setSigmaRef}
+              showLabels={showLabels}
+            />
           </SigmaContainer>
           </div>
         </div>
@@ -571,6 +621,62 @@ function FilterChip({
           ? "border-accent/45 bg-accent/15 text-fg"
           : "border-border bg-bg/45 text-fg-muted hover:border-border-strong hover:bg-bg hover:text-fg"
       }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function CompactChip({
+  active,
+  onClick,
+  title,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title?: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      title={title}
+      onClick={onClick}
+      className={cn(
+        "inline-flex h-7 items-center rounded-md border px-2 text-[11px] transition-colors",
+        active
+          ? "border-accent/45 bg-accent/15 text-fg"
+          : "border-border bg-bg/45 text-fg-muted hover:border-border-strong hover:bg-bg hover:text-fg",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ModeButton({
+  active,
+  onClick,
+  title,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title?: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      title={title}
+      onClick={onClick}
+      className={cn(
+        "flex h-8 items-center justify-center rounded px-2 text-xs transition-colors",
+        active ? "bg-accent/18 text-fg" : "text-fg-muted hover:bg-bg hover:text-fg",
+      )}
     >
       {children}
     </button>
