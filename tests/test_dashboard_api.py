@@ -106,6 +106,80 @@ class DashboardApiTests(unittest.TestCase):
             self.assertEqual(graph["edge_total"], 1)
             self.assertEqual(graph["edges"][0]["confidence"], "high")
 
+    def test_graph_limit_keeps_selected_kinds_represented(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog_path = root / "catalog.json"
+            catalog_path.write_text(
+                json.dumps(
+                    {
+                        "summary": {"entities": 10, "relations": 0, "repos_indexed": 1},
+                        "entities": [
+                            *[
+                                {
+                                    "kind": "API",
+                                    "metadata": {"name": f"api-{idx}", "annotations": {}},
+                                    "spec": {},
+                                    "confidence": "high",
+                                }
+                                for idx in range(8)
+                            ],
+                            {
+                                "kind": "Provider",
+                                "metadata": {"name": "stripe", "annotations": {}},
+                                "spec": {},
+                                "confidence": "high",
+                            },
+                            {
+                                "kind": "Domain",
+                                "metadata": {"name": "checkout", "annotations": {}},
+                                "spec": {},
+                                "confidence": "high",
+                            },
+                        ],
+                        "relations": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            app = dashboard.create_app(
+                catalog_path=catalog_path,
+                extraction_log=root / "extractions.jsonl",
+                decisions_path=root / "decisions.jsonl",
+            )
+            client = TestClient(app)
+
+            graph = client.get(
+                "/api/graph",
+                params=[
+                    ("kind", "API"),
+                    ("kind", "Provider"),
+                    ("kind", "Domain"),
+                    ("include_orphans", "true"),
+                    ("limit", "5"),
+                ],
+            ).json()
+
+            kinds = {node["kind"] for node in graph["nodes"]}
+            self.assertEqual(len(graph["nodes"]), 5)
+            self.assertEqual(graph["node_total"], 10)
+            self.assertIn("API", kinds)
+            self.assertIn("Provider", kinds)
+            self.assertIn("Domain", kinds)
+
+            full_graph = client.get(
+                "/api/graph",
+                params=[
+                    ("kind", "API"),
+                    ("kind", "Provider"),
+                    ("kind", "Domain"),
+                    ("include_orphans", "true"),
+                    ("limit", "0"),
+                ],
+            ).json()
+            self.assertEqual(len(full_graph["nodes"]), 10)
+            self.assertFalse(full_graph["truncated"])
+
     def test_operator_summary_reads_repo_run_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -66,6 +66,52 @@ class CrawlerRuntimeBody(BaseModel):
     batch_size: int | None = None
 
 
+def _balanced_entity_selection(
+    entities: list[dict[str, Any]],
+    *,
+    selected_kinds: list[str],
+    limit: int,
+    score_key: Any,
+) -> list[dict[str, Any]]:
+    """Keep large kinds from crowding smaller selected kinds out of the graph."""
+    sorted_entities = sorted(entities, key=score_key)
+    if limit <= 0:
+        return sorted_entities
+    if len(sorted_entities) <= limit:
+        return sorted_entities
+
+    groups: dict[str, list[dict[str, Any]]] = {
+        kind: [entity for entity in sorted_entities if entity.get("kind") == kind]
+        for kind in selected_kinds
+    }
+    active_kinds = [kind for kind in selected_kinds if groups.get(kind)]
+    if not active_kinds:
+        return sorted_entities[:limit]
+
+    base_quota = limit // len(active_kinds)
+    quotas = {kind: min(len(groups[kind]), base_quota) for kind in active_kinds}
+    remaining = limit - sum(quotas.values())
+
+    while remaining > 0:
+        candidates = [
+            (score_key(groups[kind][quotas[kind]]), kind)
+            for kind in active_kinds
+            if quotas[kind] < len(groups[kind])
+        ]
+        if not candidates:
+            break
+        _, kind = min(candidates)
+        quotas[kind] += 1
+        remaining -= 1
+
+    kept = [
+        entity
+        for kind in active_kinds
+        for entity in groups[kind][:quotas[kind]]
+    ]
+    return sorted(kept, key=score_key)
+
+
 def _persist_github_token(token: str) -> bool:
     """Store the PAT server-side so the crawl can clone private repos, via
     `gh auth login --with-token` (stdin — never logged). Single-tenant; the
@@ -1024,8 +1070,8 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         """Return nodes + edges in a Sigma-friendly shape.
 
         - `kind` repeated → filter by entity kinds. Default: Component + Provider + Resource.
-        - `limit` → cap to top-N nodes by total degree (in+out). Edges are pruned to those whose
-          source and target are both in the kept set.
+        - `limit` → cap to top-N nodes by total degree (in+out); `0` means no cap.
+          Edges are pruned to those whose source and target are both in the kept set.
         - `include_orphans=False` (default) drops nodes with zero edges to/from another kept
           node — these otherwise form a useless visual halo in force-directed layouts.
         - `center` (optional) → return the ego-graph of this entity ref at `depth` hops.
@@ -1111,7 +1157,8 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 "depth": depth,
             })
 
-        all_kinds = set(kind or ["Component", "Provider", "Resource"])
+        selected_kinds = list(dict.fromkeys(kind or ["Component", "Provider", "Resource"]))
+        all_kinds = set(selected_kinds)
         entities = [e for e in (catalog.get("entities") or []) if e.get("kind") in all_kinds]
         node_total = len(entities)
 
@@ -1124,8 +1171,20 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 degree[r["from"]] = degree.get(r["from"], 0) + 1
                 degree[r["to"]] = degree.get(r["to"], 0) + 1
 
-        entities.sort(key=lambda e: -degree.get(ref_for(e), 0))
-        kept = entities[:limit]
+        def entity_score(entity: dict[str, Any]) -> tuple[int, str, str]:
+            ref = ref_for(entity)
+            return (
+                -degree.get(ref, 0),
+                str(entity.get("metadata", {}).get("name") or "").lower(),
+                ref,
+            )
+
+        kept = _balanced_entity_selection(
+            entities,
+            selected_kinds=selected_kinds,
+            limit=limit,
+            score_key=entity_score,
+        )
         kept_refs = {ref_for(e) for e in kept}
 
         # Build edges between kept entities.
@@ -1163,7 +1222,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         return JSONResponse({
             "nodes": nodes,
             "edges": edges,
-            "truncated": len(kept) < node_total,
+            "truncated": limit > 0 and len(kept) < node_total,
             "node_total": node_total,
             "edge_total": edge_total,
             "include_orphans": include_orphans,

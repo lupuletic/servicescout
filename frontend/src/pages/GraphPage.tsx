@@ -43,6 +43,22 @@ const SIGMA_SETTINGS = {
 const ALL_KINDS = ["Component", "API", "Resource", "Provider", "System", "Domain", "Group"];
 const ALL_CONFIDENCE = ["high", "medium", "low", "review"];
 const HOVER_LABEL_NEIGHBOUR_LIMIT = 10;
+const TOP_GRAPH_LIMIT = 400;
+
+function layoutSettingsForNodeCount(nodeCount: number) {
+  return {
+    gravity: nodeCount > 1200 ? 0.12 : nodeCount > 800 ? 0.16 : nodeCount > 400 ? 0.22 : 0.3,
+    scalingRatio: Math.min(96, 32 + Math.sqrt(Math.max(nodeCount, 1)) * 2),
+    slowDown: nodeCount > 800 ? 10 : 8,
+  };
+}
+
+function cameraRatioForNodeCount(nodeCount: number) {
+  if (nodeCount > 1200) return 1.6;
+  if (nodeCount > 800) return 1.4;
+  if (nodeCount > 400) return 1.22;
+  return 1.05;
+}
 
 type EntityFull = EntityRecord & {
   metadata: {
@@ -114,16 +130,18 @@ function GraphLoader({
   }, [graph, hovered, showLabels]);
 
   useEffect(() => {
+    const nodeCount = graph.order;
+    const layoutSettings = layoutSettingsForNodeCount(nodeCount);
     // Pre-compute the layout synchronously so the user sees the final state
     // on first paint — no FA2 worker, no per-tick refresh, no visible jump.
-    // 200 iterations is enough for ~400 nodes; it costs ~500ms blocking on
-    // a modern laptop, vs. ~3s of laggy animation with the worker.
+    // 200 iterations keeps the layout deterministic and responsive for the
+    // dashboard-sized graphs we render here, without a visible worker tick.
     forceAtlas2.assign(graph, {
       iterations: 200,
       settings: {
-        gravity: 0.3,
-        scalingRatio: 32,
-        slowDown: 8,
+        gravity: layoutSettings.gravity,
+        scalingRatio: layoutSettings.scalingRatio,
+        slowDown: layoutSettings.slowDown,
         strongGravityMode: false,
         barnesHutOptimize: true,
         adjustSizes: true,
@@ -132,7 +150,7 @@ function GraphLoader({
       },
     });
     loadGraph(graph);
-    sigma.getCamera().animatedReset({ duration: 300 });
+    sigma.getCamera().setState({ x: 0.5, y: 0.5, ratio: cameraRatioForNodeCount(nodeCount), angle: 0 });
   }, [graph, loadGraph, sigma]);
 
   // Notify the parent so it can wire camera-control buttons.
@@ -187,7 +205,7 @@ export function GraphPage() {
   const [kinds, setKinds] = useState<Set<string>>(new Set(["Component", "Provider", "Resource"]));
   const [edgeTypes, setEdgeTypes] = useState<Set<string>>(new Set(["communicatesWith"]));
   const [confidences, setConfidences] = useState<Set<string>>(new Set(ALL_CONFIDENCE));
-  const [limit, setLimit] = useState(400);
+  const [limit, setLimit] = useState(TOP_GRAPH_LIMIT);
   const [selectedRef, setSelectedRef] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [sigmaRef, setSigmaRef] = useState<ReturnType<typeof useSigma> | null>(null);
@@ -201,7 +219,11 @@ export function GraphPage() {
   };
   const fitToView = () => {
     if (!sigmaRef) return;
-    sigmaRef.getCamera().animate({ x: 0.5, y: 0.5, ratio: 1.05, angle: 0 }, { duration: 350 });
+    const nodeCount = sigmaRef.getGraph().order;
+    sigmaRef.getCamera().animate(
+      { x: 0.5, y: 0.5, ratio: cameraRatioForNodeCount(nodeCount), angle: 0 },
+      { duration: 350 },
+    );
   };
   const centerSelected = () => {
     if (!sigmaRef || !selectedRef) return;
@@ -321,8 +343,14 @@ export function GraphPage() {
     });
   };
 
-  const showFlowView = () => setEdgeTypes(new Set(["communicatesWith"]));
-  const showEvidenceView = () => setEdgeTypes(new Set());
+  const showFlowView = () => {
+    setEdgeTypes(new Set(["communicatesWith"]));
+    setLimit(TOP_GRAPH_LIMIT);
+  };
+  const showEvidenceView = () => {
+    setEdgeTypes(new Set());
+    setLimit(0);
+  };
   const resetFilters = () => {
     setKinds(new Set(["Component", "Provider", "Resource"]));
     setConfidences(new Set(ALL_CONFIDENCE));
@@ -359,10 +387,10 @@ export function GraphPage() {
             />
             <Button
               variant="outline"
-              onClick={() => setLimit((l) => (l === 400 ? 1500 : 400))}
+              onClick={() => setLimit((l) => (l === TOP_GRAPH_LIMIT ? 0 : TOP_GRAPH_LIMIT))}
               title="Toggle node limit"
             >
-              {limit === 400 ? "Show all" : "Top 400"}
+              {limit === TOP_GRAPH_LIMIT ? "Show all" : "Top 400"}
             </Button>
           </>
         }
