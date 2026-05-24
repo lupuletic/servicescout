@@ -1,0 +1,178 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1480 1010" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrowBlue" markerWidth="12" markerHeight="12" refX="9" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1d4ed8"/>
+    </marker>
+    <marker id="arrowAmber" markerWidth="12" markerHeight="12" refX="9" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d97706"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1480" height="1010" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="40" y="42" font-size="27" font-weight="700" fill="#0f1b2d">Extending ServiceScout beyond code — the two-layer evidence graph</text>
+  <text x="40" y="70" font-size="14.5" fill="#5b6b7d">Durable facts derived from source (never-stale) + a volatile runtime layer federated on demand. Every fact keeps its provenance.</text>
+
+  <!-- Column headers -->
+  <text x="40"  y="108" font-size="16" font-weight="700" fill="#1d4ed8">1 · SOURCES &#8594; ADAPTERS</text>
+  <text x="430" y="108" font-size="16" font-weight="700" fill="#1d4ed8">2 · THE EVIDENCE GRAPH (catalog)</text>
+  <text x="940" y="108" font-size="16" font-weight="700" fill="#1d4ed8">3 · WHAT THE AGENT CAN NOW ANSWER</text>
+
+  <!-- ============ COLUMN 1: SOURCES / ADAPTERS ============ -->
+  <!-- Card A: Code (existing) -->
+  <g>
+    <rect x="40" y="128" width="350" height="160" rx="10" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+    <rect x="318" y="140" width="60" height="20" rx="10" fill="#e2e8f0"/>
+    <text x="348" y="154" font-size="10.5" font-weight="700" fill="#475569" text-anchor="middle">EXISTING</text>
+    <text x="58" y="160" font-size="15.5" font-weight="700" fill="#0f1b2d">Code — GitHub repos</text>
+    <text x="58" y="184" font-size="12.5" fill="#475569">Call sites, API clients, message</text>
+    <text x="58" y="202" font-size="12.5" fill="#475569">producers/consumers, manifests</text>
+    <rect x="58" y="222" width="300" height="48" rx="8" fill="#e8eefb"/>
+    <text x="70" y="242" font-size="11.5" font-weight="700" fill="#1d4ed8">evidence.source = code</text>
+    <text x="70" y="260" font-size="11.5" fill="#1d4ed8">path : line : snippet</text>
+  </g>
+  <!-- Card B: dbt + migrations (new) -->
+  <g>
+    <rect x="40" y="304" width="350" height="160" rx="10" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+    <rect x="338" y="316" width="40" height="20" rx="10" fill="#d1fae5"/>
+    <text x="358" y="330" font-size="10.5" font-weight="700" fill="#059669" text-anchor="middle">NEW</text>
+    <text x="58" y="336" font-size="15.5" font-weight="700" fill="#0f1b2d">dbt + migrations</text>
+    <text x="58" y="360" font-size="12.5" fill="#475569">manifest.json / catalog.json,</text>
+    <text x="58" y="378" font-size="12.5" fill="#475569">Flyway / Liquibase / Alembic .sql</text>
+    <rect x="58" y="398" width="300" height="48" rx="8" fill="#e8eefb"/>
+    <text x="70" y="418" font-size="11.5" font-weight="700" fill="#1d4ed8">evidence.source = dbt_manifest</text>
+    <text x="70" y="436" font-size="11.5" fill="#1d4ed8">node_id — pure file parse, no creds</text>
+  </g>
+  <!-- Card C: DB introspection (new) -->
+  <g>
+    <rect x="40" y="480" width="350" height="160" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+    <rect x="338" y="492" width="40" height="20" rx="10" fill="#d1fae5"/>
+    <text x="358" y="506" font-size="10.5" font-weight="700" fill="#059669" text-anchor="middle">NEW</text>
+    <text x="58" y="512" font-size="15.5" font-weight="700" fill="#0f1b2d">DB read-replica / warehouse</text>
+    <text x="58" y="536" font-size="12.5" fill="#475569">information_schema, view / proc DDL,</text>
+    <text x="58" y="554" font-size="12.5" fill="#475569">live column types (read-only)</text>
+    <rect x="58" y="574" width="300" height="48" rx="8" fill="#fef3c7"/>
+    <text x="70" y="594" font-size="11.5" font-weight="700" fill="#b45309">evidence.source = db_introspection</text>
+    <text x="70" y="612" font-size="11.5" fill="#b45309">query @ observed_at</text>
+  </g>
+  <!-- Card D: Config / flag APIs (new) -->
+  <g>
+    <rect x="40" y="656" width="350" height="160" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+    <rect x="338" y="668" width="40" height="20" rx="10" fill="#d1fae5"/>
+    <text x="358" y="682" font-size="10.5" font-weight="700" fill="#059669" text-anchor="middle">NEW</text>
+    <text x="58" y="688" font-size="15.5" font-weight="700" fill="#0f1b2d">Config / feature-flag APIs</text>
+    <text x="58" y="712" font-size="12.5" fill="#475569">LaunchDarkly, Unleash, AppConfig,</text>
+    <text x="58" y="730" font-size="12.5" fill="#475569">Consul/etcd, config tables (MCP)</text>
+    <rect x="58" y="750" width="300" height="48" rx="8" fill="#fef3c7"/>
+    <text x="70" y="770" font-size="11.5" font-weight="700" fill="#b45309">evidence.source = config_store</text>
+    <text x="70" y="788" font-size="11.5" fill="#b45309">key @ observed_at — fetched live</text>
+  </g>
+
+  <!-- ============ COLUMN 2: CATALOG ============ -->
+  <!-- Box A: durable backbone -->
+  <g>
+    <rect x="430" y="128" width="470" height="330" rx="12" fill="#eef4ff" stroke="#1d4ed8" stroke-width="2"/>
+    <text x="452" y="160" font-size="16.5" font-weight="700" fill="#1d4ed8">Durable backbone — never-stale</text>
+    <text x="452" y="188" font-size="13" fill="#1e293b">Components · APIs · Resources · Providers</text>
+    <line x1="452" y1="204" x2="878" y2="204" stroke="#bcd0f7" stroke-width="1"/>
+    <text x="452" y="230" font-size="13" font-weight="700" fill="#059669">+ Views · Stored procedures · Mat. views</text>
+    <text x="452" y="254" font-size="13" font-weight="700" fill="#059669">+ Triggers · scheduled SQL jobs</text>
+    <rect x="452" y="272" width="426" height="46" rx="8" fill="#dbe7ff"/>
+    <text x="466" y="293" font-size="12.5" font-weight="700" fill="#1d4ed8">+ edge: transformsResource / derivesFrom</text>
+    <text x="466" y="311" font-size="12" fill="#1d4ed8">table &#8594; table &amp; column-level lineage</text>
+    <text x="452" y="346" font-size="12" fill="#475569">Same pipeline: snippet-verify + tree-sitter /</text>
+    <text x="452" y="364" font-size="12" fill="#475569">sqlglot AST cross-check &#8594; confidence.</text>
+    <rect x="452" y="382" width="426" height="56" rx="8" fill="#ffffff" stroke="#bcd0f7"/>
+    <text x="466" y="404" font-size="12" font-weight="700" fill="#1d4ed8">Trust rule</text>
+    <text x="466" y="424" font-size="11.5" fill="#334155">Derived from source. Re-derived as code changes.</text>
+  </g>
+  <!-- Box B: runtime layer -->
+  <g>
+    <rect x="430" y="486" width="470" height="300" rx="12" fill="#fffbeb" stroke="#d97706" stroke-width="2" stroke-dasharray="7 5"/>
+    <text x="452" y="518" font-size="16.5" font-weight="700" fill="#b45309">Runtime layer — volatile · timestamped</text>
+    <text x="452" y="548" font-size="13" fill="#1e293b">Live config / flag values (key &#8594; value @ time)</text>
+    <text x="452" y="572" font-size="13" fill="#1e293b">Live schema snapshot</text>
+    <text x="452" y="596" font-size="13" fill="#1e293b">Drift flags: declared (migrations) vs. live DB</text>
+    <rect x="452" y="614" width="426" height="46" rx="8" fill="#fef3c7"/>
+    <text x="466" y="635" font-size="12.5" font-weight="700" fill="#b45309">Never cached as a structural fact</text>
+    <text x="466" y="653" font-size="12" fill="#b45309">carries observed_at + TTL; flagged volatile</text>
+    <rect x="452" y="676" width="426" height="56" rx="8" fill="#ffffff" stroke="#f3d18a"/>
+    <text x="466" y="698" font-size="12" font-weight="700" fill="#b45309">Trust rule</text>
+    <text x="466" y="718" font-size="11.5" fill="#334155">Point-in-time. Read-only replica · least-privilege ·</text>
+    <text x="466" y="735" font-size="11.5" fill="#334155">allow-listed objects only.</text>
+  </g>
+
+  <!-- ============ COLUMN 3: AGENT QUESTIONS ============ -->
+  <!-- MCP tools strip -->
+  <g>
+    <rect x="940" y="128" width="500" height="74" rx="10" fill="#0f1b2d"/>
+    <text x="958" y="154" font-size="12.5" font-weight="700" fill="#cbd5e1">MCP (read-only): search · describe · neighbors · trace · evidence</text>
+    <text x="958" y="180" font-size="12.5" font-weight="700" fill="#6ee7b7">+ NEW: resolve_config · check_drift</text>
+  </g>
+  <!-- Q1 -->
+  <g>
+    <rect x="940" y="216" width="500" height="138" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+    <text x="958" y="244" font-size="14.5" font-weight="700" fill="#0f1b2d">&#8220;Which returns provider is live for site GB1</text>
+    <text x="958" y="266" font-size="14.5" font-weight="700" fill="#0f1b2d">— and where is that decided in code?&#8221;</text>
+    <text x="958" y="294" font-size="11.5" fill="#64748b">Today: agent finds the key `returns.provider`, but not its value.</text>
+    <rect x="958" y="312" width="180" height="26" rx="13" fill="#fef3c7"/>
+    <text x="1048" y="329" font-size="11" font-weight="700" fill="#b45309" text-anchor="middle">resolve_config · runtime</text>
+    <rect x="1146" y="312" width="120" height="26" rx="13" fill="#dbe7ff"/>
+    <text x="1206" y="329" font-size="11" font-weight="700" fill="#1d4ed8" text-anchor="middle">+ code evidence</text>
+  </g>
+  <!-- Q2 -->
+  <g>
+    <rect x="940" y="368" width="500" height="138" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+    <text x="958" y="396" font-size="14.5" font-weight="700" fill="#0f1b2d">&#8220;What feeds the customer_churn table, and</text>
+    <text x="958" y="418" font-size="14.5" font-weight="700" fill="#0f1b2d">which service owns each upstream input?&#8221;</text>
+    <text x="958" y="446" font-size="11.5" fill="#64748b">In-DB transformation (view / proc / dbt) made visible.</text>
+    <rect x="958" y="464" width="220" height="26" rx="13" fill="#dbe7ff"/>
+    <text x="1068" y="481" font-size="11" font-weight="700" fill="#1d4ed8" text-anchor="middle">transformsResource · durable</text>
+  </g>
+  <!-- Q3 -->
+  <g>
+    <rect x="940" y="520" width="500" height="138" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+    <text x="958" y="548" font-size="14.5" font-weight="700" fill="#0f1b2d">&#8220;Has prod&#8217;s orders schema drifted from</text>
+    <text x="958" y="570" font-size="14.5" font-weight="700" fill="#0f1b2d">what the migrations declare?&#8221;</text>
+    <text x="958" y="598" font-size="11.5" fill="#64748b">Catalog audits itself against the running system.</text>
+    <rect x="958" y="616" width="250" height="26" rx="13" fill="#fde9c8"/>
+    <text x="1083" y="633" font-size="11" font-weight="700" fill="#b45309" text-anchor="middle">check_drift · runtime vs. durable</text>
+  </g>
+  <!-- Q4 -->
+  <g>
+    <rect x="940" y="672" width="500" height="138" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+    <text x="958" y="700" font-size="14.5" font-weight="700" fill="#0f1b2d">&#8220;Trace a refund end-to-end — and which</text>
+    <text x="958" y="722" font-size="14.5" font-weight="700" fill="#0f1b2d">processor actually runs for EU orders today?&#8221;</text>
+    <text x="958" y="750" font-size="11.5" fill="#64748b">Structural journey + the live branch that's actually taken.</text>
+    <rect x="958" y="768" width="150" height="26" rx="13" fill="#dbe7ff"/>
+    <text x="1033" y="785" font-size="11" font-weight="700" fill="#1d4ed8" text-anchor="middle">trace · durable</text>
+    <rect x="1116" y="768" width="180" height="26" rx="13" fill="#fef3c7"/>
+    <text x="1206" y="785" font-size="11" font-weight="700" fill="#b45309" text-anchor="middle">+ resolve_config · runtime</text>
+  </g>
+
+  <!-- ============ FLOW ARROWS ============ -->
+  <!-- ingest: sources -> durable backbone -->
+  <line x1="392" y1="250" x2="426" y2="250" stroke="#1d4ed8" stroke-width="3" marker-end="url(#arrowBlue)"/>
+  <text x="396" y="238" font-size="10.5" font-weight="700" fill="#1d4ed8">ingest</text>
+  <!-- federation: runtime layer <-> config source (dashed, on demand) -->
+  <path d="M 428 600 C 410 640, 405 700, 392 728" fill="none" stroke="#d97706" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#arrowAmber)"/>
+  <text x="300" y="640" font-size="10.5" font-weight="700" fill="#b45309">federate on demand</text>
+  <!-- query: catalog -> agent tools -->
+  <line x1="902" y1="300" x2="936" y2="300" stroke="#1d4ed8" stroke-width="3" marker-end="url(#arrowBlue)"/>
+  <text x="900" y="288" font-size="10.5" font-weight="700" fill="#1d4ed8">query</text>
+
+  <!-- ============ LEGEND / FOOTER ============ -->
+  <line x1="40" y1="858" x2="1440" y2="858" stroke="#e2e8f0" stroke-width="1.5"/>
+  <line x1="40" y1="892" x2="80" y2="892" stroke="#1d4ed8" stroke-width="3" marker-end="url(#arrowBlue)"/>
+  <text x="92" y="896" font-size="12.5" fill="#334155">ingest — durable facts written to the catalog (re-derived on each crawl)</text>
+  <line x1="40" y1="922" x2="80" y2="922" stroke="#d97706" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#arrowAmber)"/>
+  <text x="92" y="926" font-size="12.5" fill="#334155">federation — volatile values fetched read-only at query time, never cached</text>
+  <rect x="640" y="884" width="16" height="16" rx="3" fill="#eef4ff" stroke="#1d4ed8" stroke-width="1.5"/>
+  <text x="664" y="896" font-size="12.5" fill="#334155">durable / never-stale (derived from source)</text>
+  <rect x="640" y="914" width="16" height="16" rx="3" fill="#fffbeb" stroke="#d97706" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="664" y="926" font-size="12.5" fill="#334155">runtime / volatile (read-only replica, least-privilege, allow-listed)</text>
+  <text x="1095" y="896" font-size="12.5" font-weight="700" fill="#059669">NEW</text>
+  <text x="1130" y="896" font-size="12.5" fill="#334155">= adds to today's code-only graph</text>
+  <text x="1095" y="926" font-size="12.5" fill="#334155">Bonus: drift detection answers the &#8220;catalogs go stale&#8221; objection.</text>
+</svg>
