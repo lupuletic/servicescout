@@ -13,8 +13,16 @@ type ActiveWorker = {
   lastEvent: string;
   lastAt?: string | null;
 };
+type FailureItem = {
+  repo: string;
+  category: string;
+  status: string;
+  detail?: string;
+  event?: string;
+};
 
 function StatusGlyph({ status, className }: { status?: string; className?: string }) {
+  if (status === "running") return <Loader2 size={14} className={cn("animate-spin", className)} />;
   if (status === "ok" || status === "no_changes") return <CheckCircle2 size={14} className={className} />;
   if (status === "crawler_failed" || status === "exception") return <XCircle size={14} className={className} />;
   if (status === "tick_skipped_busy" || status === "abandoned") return <Clock3 size={14} className={className} />;
@@ -77,6 +85,10 @@ function parseJson(value: unknown): Record<string, unknown> | null {
   }
 }
 
+function parseLogEvents(lines?: string[]) {
+  return (lines || []).map(parseJson).filter((event): event is Record<string, unknown> => Boolean(event));
+}
+
 function shortRepo(value?: unknown) {
   const text = String(value || "");
   return text.includes("/") ? text.split("/").pop() || text : text;
@@ -89,6 +101,25 @@ function eventTimestamp(event: Record<string, unknown>) {
 function formatEvent(event: Record<string, unknown>) {
   const name = String(event.event || "event");
   const repo = typeof event.repo === "string" ? event.repo : "";
+  if (name === "tick_start") {
+    return `Run started: ${event.run_id || "pending"}`;
+  }
+  if (name === "manual_reindex_selected") {
+    return `Manual re-index selected: ${event.count || "-"} repos`;
+  }
+  if (name === "crawler_invoke") {
+    const repos = Array.isArray(event.repos) ? event.repos.length : "-";
+    return `Crawler invoked: ${repos} repos`;
+  }
+  if (name === "repo_clone_failed" || name === "seed_clone_failed") {
+    const failure = classifyFailure({
+      repo: repo || event.seed,
+      status: "clone_failed",
+      error: event.error,
+      event: name,
+    });
+    return `${shortRepo(failure.repo)} ${failure.category.toLowerCase()}`;
+  }
   if (name === "batch_start") {
     return `Batch started: ${event.n || "-"} repos, ${event.parallelism || "-"} workers, ${event.stale_remaining || "-"} waiting`;
   }
@@ -149,9 +180,57 @@ function repoEventMetadata(events: Array<Record<string, unknown>>) {
       status: typeof event.status === "string" ? event.status : existing.status,
       duration_seconds: durationSeconds ?? existing.duration_seconds,
       cost_usd: costUsd ?? existing.cost_usd,
+      error: typeof event.error === "string" ? event.error : existing.error,
     });
   }
   return metadata;
+}
+
+function isFailureStatus(status?: string) {
+  if (!status) return false;
+  return !["ok", "completed", "running", "in_progress", "started", "queued"].includes(status);
+}
+
+function classifyFailure(input: { repo?: unknown; status?: unknown; error?: unknown; event?: unknown }): FailureItem {
+  const repo = String(input.repo || "unknown");
+  const status = String(input.status || input.event || "failed");
+  const detail = typeof input.error === "string" ? input.error.trim().replace(/\s+/g, " ").slice(0, 220) : "";
+  const text = `${status}\n${detail}`.toLowerCase();
+  let category = "Extractor error";
+  if (text.includes("saml") || text.includes("sso") || text.includes("403") || text.includes("not authorized") || text.includes("permission")) {
+    category = "Permission / SSO";
+  } else if (text.includes("not found") || text.includes("404") || text.includes("repository not found")) {
+    category = "Not found";
+  } else if (text.includes("could not read username") || text.includes("authentication failed") || text.includes("authenticate")) {
+    category = "Auth required";
+  } else if (status.includes("clone") || text.includes("git clone") || text.includes("unable to access")) {
+    category = "Clone failed";
+  }
+  return { repo, status, detail, category, event: String(input.event || "") };
+}
+
+function failureItems(repos: ChangedRepo[], events: Array<Record<string, unknown>>) {
+  const failures: FailureItem[] = [];
+  for (const repo of repos) {
+    if (!isFailureStatus(repo.status)) continue;
+    failures.push(classifyFailure({
+      repo: repo.repo,
+      status: repo.status,
+      error: repo.error,
+      event: repo.reason,
+    }));
+  }
+  for (const event of events) {
+    const name = String(event.event || "");
+    if (!["repo_clone_failed", "seed_clone_failed", "gh_repo_api_error", "gh_repo_list_error"].includes(name)) continue;
+    failures.push(classifyFailure({
+      repo: event.repo || event.seed || event.org,
+      status: name,
+      error: event.error,
+      event: name,
+    }));
+  }
+  return failures;
 }
 
 function withRepoMetadata(repos: ChangedRepo[], events: Array<Record<string, unknown>>) {
@@ -198,7 +277,7 @@ function summariseRun(detail?: CrawlRunDetail) {
     }
     if ((name === "extractor_process_exit" || name === "repo_done") && repo) active.delete(repo);
   }
-  const failures = repos.filter((repo) => repo.status && repo.status !== "ok").length;
+  const failures = failureItems(repos, events).length;
   const ok = repos.filter((repo) => repo.status === "ok").length;
   const totalDuration = repos.reduce((sum, repo) => sum + (repo.duration_seconds || 0), 0);
   const activeWorkers = [...active.values()].slice(-12).reverse();
@@ -215,6 +294,36 @@ function summariseRun(detail?: CrawlRunDetail) {
   };
 }
 
+function activeRunFromStatus(status?: CrawlStatusPayload): CrawlRunDetail | null {
+  if (!status?.lock?.held) return null;
+  const events = parseLogEvents(status.active_log_tail);
+  const tickStart = [...events].reverse().find((event) => event.event === "tick_start");
+  const selected = [...events].reverse().find((event) => event.event === "manual_reindex_selected" || event.event === "change_detected");
+  const invoked = [...events].reverse().find((event) => event.event === "crawler_invoke");
+  const runId = String(tickStart?.run_id || selected?.run_id || invoked?.run_id || `active-${status.lock.pid || "crawl"}`);
+  const selectedCount = numeric(selected?.count);
+  const invokedRepos = Array.isArray(invoked?.repos) ? invoked.repos.filter((repo) => typeof repo === "string") as string[] : [];
+  const completed = events.filter((event) => event.event === "repo_done").length;
+  const startedAt = eventTimestamp(tickStart || {}) || status.lock.acquired_at;
+  const observedAt = new Date().toISOString();
+  const started = startedAt ? new Date(startedAt).getTime() : Number.NaN;
+  const durationSeconds = Number.isFinite(started) ? Math.max((Date.now() - started) / 1000, 0) : undefined;
+  return {
+    run_id: runId,
+    trigger: selected?.event === "manual_reindex_selected" ? "manual-reindex" : "manual",
+    started_at: startedAt,
+    observed_at: observedAt,
+    status: "running",
+    repos_checked: selectedCount ?? (invokedRepos.length || undefined),
+    repos_changed_count: completed,
+    budget_usd: status.scheduler?.budget_usd ?? status.budget_usd,
+    duration_seconds: durationSeconds == null ? undefined : Math.round(durationSeconds),
+    workspace_root: status.workspace_root,
+    repos_changed: [],
+    events,
+  };
+}
+
 export function ActivityPage() {
   const { data: status } = useSWR<CrawlStatusPayload>("/api/crawl/status", { refreshInterval: 3000 });
   const { data: runs, isLoading } = useSWR<CrawlRunsPayload>("/api/crawl/runs", { refreshInterval: 5000 });
@@ -227,8 +336,16 @@ export function ActivityPage() {
   const [budgetInput, setBudgetInput] = useState<string | null>(null);
   const [parallelismInput, setParallelismInput] = useState<string | null>(null);
   const [batchSizeInput, setBatchSizeInput] = useState<string | null>(null);
-  const selected = selectedRun || runs?.runs?.[0]?.run_id || null;
-  const { data: detail } = useSWR<CrawlRunDetail>(selected ? `/api/crawl/runs/${selected}` : null, { refreshInterval: 3000 });
+  const activeRun = useMemo(() => activeRunFromStatus(status), [status]);
+  const displayedRuns = useMemo(() => {
+    const rows = runs?.runs || [];
+    if (!activeRun) return rows;
+    return [activeRun, ...rows.filter((run) => run.run_id !== activeRun.run_id)];
+  }, [activeRun, runs]);
+  const selected = selectedRun || displayedRuns[0]?.run_id || null;
+  const selectedIsActive = Boolean(activeRun && selected === activeRun.run_id);
+  const { data: detail } = useSWR<CrawlRunDetail>(selected && !selectedIsActive ? `/api/crawl/runs/${selected}` : null, { refreshInterval: 3000 });
+  const selectedDetail = selectedIsActive ? activeRun : detail;
   const schedulerInterval = status?.scheduler?.interval_minutes ?? status?.interval_minutes;
   const schedulerBudget = status?.scheduler?.budget_usd ?? status?.budget_usd;
   const intervalValue = intervalInput ?? String(schedulerInterval ?? 360);
@@ -312,8 +429,8 @@ export function ActivityPage() {
   };
 
   const totalChanged = useMemo(
-    () => (runs?.runs || []).reduce((sum, run) => sum + (run.repos_changed_count || 0), 0),
-    [runs],
+    () => displayedRuns.reduce((sum, run) => sum + (run.repos_changed_count || 0), 0),
+    [displayedRuns],
   );
   const changedLabel = runs?.source === "extractions" ? "repos extracted" : "recent window";
   const schedulerRunning = Boolean(status?.scheduler?.running);
@@ -324,14 +441,14 @@ export function ActivityPage() {
   const interval = formatInterval(schedulerInterval);
   const logPath = status?.scheduler?.log_path || status?.active_log_path;
   const logTail = status?.scheduler?.log_tail?.length ? status.scheduler.log_tail : (status?.active_log_tail || []);
-  const runStats = useMemo(() => summariseRun(detail), [detail]);
-  const runChecked = runStats.checked ?? status?.last_run?.repos_checked;
-  const runCompleted = runStats.completed || status?.last_run?.repos_changed_count || 0;
+  const runStats = useMemo(() => summariseRun(selectedDetail || undefined), [selectedDetail]);
+  const runChecked = runStats.checked ?? (selectedDetail ? undefined : status?.last_run?.repos_checked);
+  const runCompleted = selectedDetail ? runStats.completed : status?.last_run?.repos_changed_count || 0;
   const runProgress = runChecked ? Math.min(100, Math.round((runCompleted / runChecked) * 100)) : null;
-  const runBudget = detail?.budget_usd ?? status?.last_run?.budget_usd ?? schedulerBudget;
-  const runCost = detail?.cost_usd ?? status?.last_run?.cost_usd;
+  const runBudget = selectedDetail?.budget_usd ?? status?.last_run?.budget_usd ?? schedulerBudget;
+  const runCost = selectedDetail?.cost_usd ?? status?.last_run?.cost_usd;
   const runSpendSoFar = numeric(runStats.latestBatch?.run_spent_so_far);
-  const catalogSpend = numeric(runStats.latestBatch?.spent_so_far) ?? detail?.catalog_cost_usd ?? status?.last_run?.catalog_cost_usd;
+  const catalogSpend = numeric(runStats.latestBatch?.spent_so_far) ?? selectedDetail?.catalog_cost_usd ?? status?.last_run?.catalog_cost_usd;
   const spendValue = runCost ?? runSpendSoFar ?? catalogSpend;
   const spendHint = runCost != null
     ? `final run spend${runBudget != null ? ` of $${runBudget}` : ""}`
@@ -576,10 +693,10 @@ export function ActivityPage() {
                   <div className="text-right">Duration</div>
                 </div>
                 {isLoading && <div className="p-6 text-fg-muted">Loading runs...</div>}
-                {!isLoading && (runs?.runs || []).length === 0 && (
+                {!isLoading && displayedRuns.length === 0 && (
                   <div className="p-6 text-fg-muted">No activity recorded.</div>
                 )}
-                {(runs?.runs || []).map((run) => {
+                {displayedRuns.map((run) => {
                   const active = selected === run.run_id;
                   return (
                     <button
@@ -611,8 +728,8 @@ export function ActivityPage() {
         </div>
 
         <aside className="min-w-0 overflow-hidden border-t border-border bg-bg-elevated xl:border-l xl:border-t-0">
-          {!detail && <div className="p-6 text-sm text-fg-muted">Select a run.</div>}
-          {detail && <RunDetail detail={detail} onReindexRepo={triggerRepo} />}
+          {!selectedDetail && <div className="p-6 text-sm text-fg-muted">Select a run.</div>}
+          {selectedDetail && <RunDetail detail={selectedDetail} onReindexRepo={triggerRepo} />}
         </aside>
       </div>
     </div>
@@ -625,7 +742,8 @@ function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReinde
   const visibleChangedRepos = changedRepos.slice(-20).reverse();
   const visibleEvents = events.slice(-40).reverse();
   const stats = summariseRun(detail);
-  const failures = changedRepos.filter((repo) => repo.status && repo.status !== "ok").slice(-12).reverse();
+  const failures = failureItems(changedRepos, events);
+  const visibleFailures = failures.slice(-12).reverse();
   const currentRunSpend = detail.cost_usd ?? numeric(stats.latestBatch?.run_spent_so_far);
   const batchCatalogSpend = numeric(stats.latestBatch?.spent_so_far);
   const observedFinish = detail.finished_at || detail.observed_at;
@@ -695,15 +813,25 @@ function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReinde
 
         {failures.length > 0 && (
           <section>
-            <h3 className="text-xs uppercase tracking-wider text-fg-dim mb-2">Needs attention</h3>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <h3 className="text-xs uppercase tracking-wider text-fg-dim">Needs attention</h3>
+              {failures.length > visibleFailures.length && (
+                <span className="text-xs text-fg-dim">Latest {visibleFailures.length} of {failures.length}</span>
+              )}
+            </div>
             <div className="space-y-1">
-              {failures.map((repo, index) => (
-                <div key={`${repo.repo}-${index}`} className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2">
+              {visibleFailures.map((failure, index) => (
+                <div key={`${failure.repo}-${failure.event || failure.status}-${index}`} className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2">
                   <div className="flex items-center gap-2 text-fg">
                     <XCircle size={13} className="text-red-400" />
-                    <span className="font-mono text-xs truncate">{repo.repo}</span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-xs">{failure.repo}</span>
+                    <span className="rounded border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-red-300">
+                      {failure.category}
+                    </span>
                   </div>
-                  <div className="mt-1 text-xs text-fg-dim">{repo.status || "failed"}</div>
+                  <div className="mt-1 text-xs text-fg-dim">
+                    {[failure.status.replaceAll("_", " "), failure.detail].filter(Boolean).join(" · ")}
+                  </div>
                 </div>
               ))}
             </div>

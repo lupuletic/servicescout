@@ -113,6 +113,8 @@ export type CrawlRunDetail = CrawlRunSummary & {
     status?: string;
     duration_seconds?: number;
     cost_usd?: number;
+    error?: string;
+    failure_category?: string;
     remote_sha?: string;
     extracted_sha?: string | null;
   }>;

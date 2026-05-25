@@ -112,7 +112,14 @@ const crawlRuns = {
 const crawlRunDetail = {
   ...crawlRuns.runs[0],
   repos_changed: [{ repo: "orders", reason: "remote head moved" }],
-  events: [{ event: "change_detected", count: 1 }],
+  events: [
+    { event: "change_detected", count: 1 },
+    {
+      event: "repo_clone_failed",
+      repo: "acme/private-service",
+      error: "remote: Organization has enabled or enforced SAML SSO. The requested URL returned error: 403",
+    },
+  ],
   crawler_stdout_tail: "crawler ok",
 };
 
@@ -297,6 +304,7 @@ test("activity can inspect a scheduler tick and trigger a crawl", async ({ page 
 
   await runButton.click();
   await expect(page.getByText("remote head moved")).toBeVisible();
+  await expect(page.getByText("Permission / SSO", { exact: true }).first()).toBeVisible();
 
   const triggerRequest = page.waitForRequest("**/api/crawl/trigger");
   await page.getByRole("button", { name: "Trigger now" }).click();
@@ -308,6 +316,40 @@ test("activity can inspect a scheduler tick and trigger a crawl", async ({ page 
   expect(automation.method()).toBe("POST");
   expect(automation.postData() || "").toContain("interval_minutes");
   expect(automation.postData() || "").toContain("budget_usd");
+});
+
+test("activity surfaces an in-flight manual re-index before the final run log exists", async ({ page }) => {
+  await page.route("**/api/crawl/status", async (route) => route.fulfill({
+    json: {
+      ...crawlStatus,
+      lock: {
+        held: true,
+        pid: 69085,
+        host: "test-host",
+        acquired_at: "2026-05-25T08:40:30+00:00",
+      },
+      scheduler: {
+        ...crawlStatus.scheduler,
+        running: true,
+        pid: 69085,
+        source: "external",
+        managed: false,
+        budget_usd: 100,
+      },
+      crawler: { running: true, pid: 76257, uptime: "00:30" },
+      active_log_path: "/tmp/crawl_trigger.log",
+      active_log_tail: [
+        "{\"event\":\"tick_start\",\"run_id\":\"20260525T084030Z-7a1cf39e\",\"ts\":\"2026-05-25T08:40:30+00:00\"}",
+        "{\"event\":\"manual_reindex_selected\",\"run_id\":\"20260525T084030Z-7a1cf39e\",\"count\":77,\"requested\":[\"orders\",\"payments\"]}",
+        "{\"event\":\"crawler_invoke\",\"run_id\":\"20260525T084030Z-7a1cf39e\",\"repos\":[\"orders\",\"payments\"]}",
+      ],
+    },
+  }));
+
+  await page.goto("/activity");
+  await expect(page.getByText("20260525T084030Z-7a1cf39e").first()).toBeVisible();
+  await expect(page.getByText("0/77")).toBeVisible();
+  await expect(page.getByText("Manual re-index selected: 77 repos").first()).toBeVisible();
 });
 
 test("entity source links support monorepo subdirectories", async ({ page }) => {
