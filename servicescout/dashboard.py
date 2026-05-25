@@ -258,6 +258,15 @@ def tail_file(path: Path, limit: int = 40) -> list[str]:
     return text.splitlines()[-limit:]
 
 
+def read_lines(path: Path) -> list[str]:
+    if not path.is_file():
+        return []
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+
 def pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -543,20 +552,22 @@ def _active_run_doc(
     catalog_dir: Path,
     lock_info: dict[str, Any],
     scheduler_payload: dict[str, Any],
-    active_log_tail: list[str],
+    active_log_lines: list[str],
+    event_limit: int = 2000,
 ) -> dict[str, Any] | None:
     if not lock_info.get("held"):
         return None
 
-    events = _activity_log_events(active_log_tail)
+    events = _activity_log_events(active_log_lines)
     last_tick_index = next(
         (idx for idx in range(len(events) - 1, -1, -1) if events[idx].get("event") == "tick_start"),
         -1,
     )
-    run_events = events[last_tick_index:] if last_tick_index >= 0 else events
-    tick_start = _last_event(run_events, "tick_start")
-    selected = _last_event(run_events, "manual_reindex_selected", "change_detected")
-    invoked = _last_event(run_events, "crawler_invoke")
+    run_events_all = events[last_tick_index:] if last_tick_index >= 0 else events
+    run_events_tail = run_events_all[-event_limit:] if event_limit > 0 else run_events_all
+    tick_start = _last_event(run_events_all, "tick_start")
+    selected = _last_event(run_events_all, "manual_reindex_selected", "change_detected")
+    invoked = _last_event(run_events_all, "crawler_invoke")
     run_id = (
         (tick_start or {}).get("run_id")
         or (selected or {}).get("run_id")
@@ -599,9 +610,12 @@ def _active_run_doc(
         "workspace_config": os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json"),
         "budget_usd": float(scheduler_payload.get("budget_usd") or 20.0),
         "pid": lock_info.get("pid"),
-        "events": run_events,
+        "events": run_events_tail,
+        "event_count": len(run_events_all),
         "repos_changed": repos_changed,
     }
+    if len(run_events_tail) < len(run_events_all):
+        doc["events_truncated"] = True
     if repos_checked is not None:
         doc["repos_checked"] = repos_checked
     if data_dir:
@@ -1613,18 +1627,19 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             if extraction_runs:
                 last_run = extraction_runs[0]
         active_log_path = str(trigger_log) if trigger_log.is_file() else None
-        active_log_tail = tail_file(trigger_log, 2000)
-        if not active_log_tail:
+        active_log_lines = read_lines(trigger_log)
+        active_log_tail = active_log_lines[-2000:]
+        if not active_log_lines:
             activity_log_path, activity_log_tail = latest_activity_log(data_dir, 2000)
             if activity_log_path:
                 active_log_path = str(activity_log_path)
-                active_log_tail = activity_log_tail
+                active_log_lines = activity_log_tail
         active_run = _active_run_doc(
             data_dir=data_dir,
             catalog_dir=_repo_record_dir(catalog_path.parent),
             lock_info=lock_info,
             scheduler_payload=scheduler_payload,
-            active_log_tail=active_log_tail,
+            active_log_lines=active_log_lines,
         )
         return JSONResponse({
             "lock": lock_info,

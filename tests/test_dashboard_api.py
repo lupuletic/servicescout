@@ -360,6 +360,59 @@ class DashboardApiTests(unittest.TestCase):
             self.assertEqual(status["active_run"]["repos_changed"][0]["status"], "ok")
             self.assertEqual(status["active_run"]["status"], "running")
 
+    def test_crawl_status_keeps_active_metadata_after_log_tail_rolls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog_path = _write_catalog(root)
+            started_at = "2026-05-25T08:40:30+00:00"
+            (root / "crawl_lock").write_text(
+                f"{os.getpid()} localhost {started_at}\n",
+                encoding="utf-8",
+            )
+            events = [
+                {"event": "tick_start", "run_id": "20260525T084030Z-active", "ts": started_at},
+                {
+                    "event": "manual_reindex_selected",
+                    "run_id": "20260525T084030Z-active",
+                    "count": 2,
+                    "requested": ["orders", "payments"],
+                    "ts": "2026-05-25T08:41:00+00:00",
+                },
+                {
+                    "event": "crawler_invoke",
+                    "run_id": "20260525T084030Z-active",
+                    "repos": ["orders", "payments"],
+                    "ts": "2026-05-25T08:41:00+00:00",
+                },
+                *[
+                    {
+                        "event": "extractor_child_event",
+                        "repo": "orders",
+                        "line": "{\"event\":\"item_started\"}",
+                        "ts": f"2026-05-25T08:42:{idx % 60:02d}+00:00",
+                    }
+                    for idx in range(2105)
+                ],
+            ]
+            (root / "crawl_trigger.log").write_text(
+                "\n".join(json.dumps(event) for event in events) + "\n",
+                encoding="utf-8",
+            )
+            app = dashboard.create_app(
+                catalog_path=catalog_path,
+                extraction_log=root / "extractions.jsonl",
+                decisions_path=root / "decisions.jsonl",
+            )
+            client = TestClient(app)
+
+            status = client.get("/api/crawl/status").json()
+
+            self.assertEqual(status["active_run"]["run_id"], "20260525T084030Z-active")
+            self.assertEqual(status["active_run"]["repos_checked"], 2)
+            self.assertEqual(status["active_run"]["event_count"], len(events))
+            self.assertTrue(status["active_run"]["events_truncated"])
+            self.assertEqual(len(status["active_run"]["events"]), 2000)
+
     def test_trigger_requires_mounted_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
