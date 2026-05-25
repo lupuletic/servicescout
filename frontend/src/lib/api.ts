@@ -133,6 +133,7 @@ export type OperatorSummary = {
   staleness: {
     buckets: Record<"fresh" | "warm" | "aging" | "stale" | "unknown", number>;
     repos: Array<{ repo: string; extracted_at?: string | null; age_hours?: number | null; cost: number; status: string }>;
+    repo_total?: number;
   };
   verifier: {
     validation_errors: number;

@@ -196,6 +196,39 @@ class DashboardApiTests(unittest.TestCase):
             self.assertEqual(payload["verifier"]["evidence_quarantined"], 1)
             self.assertEqual(payload["verifier"]["entity_confidence"]["review"], 1)
 
+    def test_operator_summary_returns_full_stale_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog_path = _write_catalog(root)
+            repo_dir = root / "catalog"
+            for index in range(45):
+                (repo_dir / f"stale-{index}.json").write_text(
+                    json.dumps(
+                        {
+                            "_meta": {
+                                "extracted_at": "2026-05-01T10:00:00+00:00",
+                                "run": {
+                                    "status": "ok",
+                                    "duration_seconds": 1,
+                                    "cost": {"estimated_usd": 0.01},
+                                },
+                            },
+                            "repo": {"id": f"acme/stale-{index}"},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            app = dashboard.create_app(
+                catalog_path=catalog_path,
+                extraction_log=root / "extractions.jsonl",
+                decisions_path=root / "decisions.jsonl",
+            )
+            client = TestClient(app)
+
+            stale = client.get("/api/operator/summary").json()["staleness"]
+            self.assertGreater(len(stale["repos"]), 40)
+            self.assertEqual(stale["repo_total"], len(stale["repos"]))
+
     def test_activity_falls_back_to_extraction_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

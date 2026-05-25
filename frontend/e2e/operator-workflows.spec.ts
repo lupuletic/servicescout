@@ -146,10 +146,13 @@ const operatorSummary = {
     { day: "2026-05-19", cost: 0.77, repos: 1, duration_seconds: 180 },
   ],
   staleness: {
-    buckets: { fresh: 1, warm: 0, aging: 0, stale: 1, unknown: 0 },
+    buckets: { fresh: 1, warm: 0, aging: 0, stale: 3, unknown: 0 },
     repos: [
       { repo: "legacy", extracted_at: "2026-05-01T10:00:00+00:00", age_hours: 430, cost: 0.2, status: "ok" },
+      { repo: "checkout", extracted_at: "2026-05-08T10:00:00+00:00", age_hours: 262, cost: 1.1, status: "ok" },
+      { repo: "broken", extracted_at: "2026-05-02T10:00:00+00:00", age_hours: 406, cost: 0.01, status: "error" },
     ],
+    repo_total: 3,
   },
   verifier: {
     validation_errors: 0,
@@ -195,6 +198,7 @@ async function mockApis(page: Page) {
   await page.route("**/api/crawl/runs/20260519T100000Z-abc123", async (route) => route.fulfill({ json: crawlRunDetail }));
   await page.route("**/api/crawl/runs", async (route) => route.fulfill({ json: crawlRuns }));
   await page.route("**/api/crawl/trigger", async (route) => route.fulfill({ status: 202, json: { status: "accepted", pid: 123 } }));
+  await page.route("**/api/crawl/trigger/repos", async (route) => route.fulfill({ status: 202, json: { status: "accepted", pid: 125 } }));
   await page.route("**/api/crawl/trigger/repo**", async (route) => route.fulfill({ status: 202, json: { status: "accepted", pid: 124 } }));
   await page.route("**/api/workspace/config", async (route) => {
     if (route.request().method() === "POST") {
@@ -369,6 +373,18 @@ test("operator shows cost trend, verifier signal, and stale repositories", async
   await expect(page.getByText("Verifier Signal", { exact: true })).toBeVisible();
   await expect(page.getByText("Staleness Heatmap", { exact: true })).toBeVisible();
   await expect(page.getByText("legacy")).toBeVisible();
+  await expect(page.getByText("Showing 3 of 3 repos due for re-index")).toBeVisible();
+
+  await page.getByRole("button", { name: "Sort stale repositories by Cost" }).click();
+  await expect(page.getByText("checkout")).toBeVisible();
+
+  await page.getByLabel("Select legacy").check();
+  await expect(page.getByText("1 selected")).toBeVisible();
+  const reindexRequest = page.waitForRequest("**/api/crawl/trigger/repos");
+  await page.getByRole("button", { name: "Re-index selected" }).click();
+  const request = await reindexRequest;
+  expect(request.method()).toBe("POST");
+  expect(request.postData() || "").toContain("legacy");
 });
 
 test("triage lets an operator action a disconfirmed fact", async ({ page }) => {

@@ -36,7 +36,7 @@ from typing import Any
 from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from servicescout import github_client
 from servicescout.repo_discovery import load_workspace_config, write_workspace_config
@@ -64,6 +64,10 @@ class WorkspaceConfigBody(BaseModel):
 class CrawlerRuntimeBody(BaseModel):
     parallelism: int | None = None
     batch_size: int | None = None
+
+
+class RepoReindexBody(BaseModel):
+    repos: list[str] = Field(default_factory=list)
 
 
 def _balanced_entity_selection(
@@ -879,7 +883,7 @@ def _entity_brief(entity: dict[str, Any]) -> dict[str, Any]:
 def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path) -> FastAPI:
     app = FastAPI(title="ServiceScout dashboard")
 
-    def scheduler_command(*, interval_minutes: int, budget_usd: float, trigger: str | None = None, force_repo: str | None = None) -> list[str]:
+    def scheduler_command(*, interval_minutes: int, budget_usd: float, trigger: str | None = None, force_repos: list[str] | None = None) -> list[str]:
         data_dir = catalog_path.parent.resolve()
         workspace_root = Path(os.environ.get("WORKSPACE_ROOT") or "/workspace").resolve()
         workspace_config = os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json")
@@ -906,8 +910,9 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         ]
         if trigger:
             cmd.extend(["--once", "--trigger", trigger])
-        if force_repo:
-            cmd.extend(["--force-repos", force_repo])
+        if force_repos:
+            cmd.append("--force-repos")
+            cmd.extend(force_repos)
         if model:
             cmd.extend(["--model", model])
         return cmd
@@ -1237,7 +1242,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
 
         cost_by_day: dict[str, dict[str, Any]] = {}
         stale_buckets = {"fresh": 0, "warm": 0, "aging": 0, "stale": 0, "unknown": 0}
-        stale_repos: list[dict[str, Any]] = []
+        stale_queue: list[dict[str, Any]] = []
         verifier = {
             "validation_errors": 0,
             "evidence_quarantined": 0,
@@ -1262,16 +1267,17 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 else:
                     bucket = "stale"
                 stale_buckets[bucket] += 1
-                stale_repos.append({
-                    "repo": record["repo"],
-                    "extracted_at": record["extracted_at"],
-                    "age_hours": round(age_hours, 1),
-                    "cost": record["cost"],
-                    "status": record["status"],
-                })
+                if bucket == "stale":
+                    stale_queue.append({
+                        "repo": record["repo"],
+                        "extracted_at": record["extracted_at"],
+                        "age_hours": round(age_hours, 1),
+                        "cost": record["cost"],
+                        "status": record["status"],
+                    })
             else:
                 stale_buckets["unknown"] += 1
-                stale_repos.append({
+                stale_queue.append({
                     "repo": record["repo"],
                     "extracted_at": None,
                     "age_hours": None,
@@ -1294,7 +1300,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             value = relation.get("confidence") or "review"
             confidence_relations[value] = confidence_relations.get(value, 0) + 1
 
-        stale_repos.sort(key=lambda r: (r["age_hours"] is None, -(r["age_hours"] or 0), r["repo"]))
+        stale_queue.sort(key=lambda r: (r["age_hours"] is None, -(r["age_hours"] or 0), r["repo"]))
         trend = list(cost_by_day.values())
         trend.sort(key=lambda row: row["day"])
         for row in trend:
@@ -1311,7 +1317,8 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             "cost_trend": trend[-30:],
             "staleness": {
                 "buckets": stale_buckets,
-                "repos": stale_repos[:40],
+                "repos": stale_queue,
+                "repo_total": len(stale_queue),
             },
             "verifier": {
                 **verifier,
@@ -1640,14 +1647,14 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             "workspace_root": str(workspace_root),
         }, status_code=202)
 
-    @app.post("/api/crawl/trigger/repo")
-    def trigger_repo_crawl(repo: str = Query(..., min_length=1)) -> JSONResponse:
-        """Force extraction of one repo/repo-unit from the dashboard.
+    def start_forced_repo_crawl(repos: list[str]) -> JSONResponse:
+        """Force extraction of selected repo-units in one scheduler tick."""
+        unique_repos = list(dict.fromkeys(repo.strip() for repo in repos if repo.strip()))
+        if not unique_repos:
+            return JSONResponse({"error": "repo_required"}, status_code=400)
+        if len(unique_repos) > 250:
+            return JSONResponse({"error": "too_many_repos", "limit": 250}, status_code=400)
 
-        This uses the scheduler runner so it writes a normal Activity run log,
-        but passes --force-repos to bypass staleness detection for the selected
-        repo unit.
-        """
         data_dir = catalog_path.parent.resolve()
         lock_path = (data_dir / "crawl_lock").resolve()
         lock_info = _read_lock(lock_path)
@@ -1668,7 +1675,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             interval_minutes=int(settings.get("interval_minutes") or 360),
             budget_usd=float(settings.get("budget_usd") or 20.0),
             trigger="manual-reindex",
-            force_repo=repo,
+            force_repos=unique_repos,
         )
         log_path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -1676,14 +1683,32 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 proc = subprocess.Popen(cmd, cwd=str(HERE), stdout=fh, stderr=subprocess.STDOUT)
         except OSError as exc:
             return JSONResponse({"error": "trigger_failed", "detail": str(exc)}, status_code=500)
-        _audit(data_dir, "crawl_triggered_repo", trigger="manual-reindex", repo=repo, pid=proc.pid)
+        _audit(
+            data_dir,
+            "crawl_triggered_repo" if len(unique_repos) == 1 else "crawl_triggered_repos",
+            trigger="manual-reindex",
+            repo=unique_repos[0] if len(unique_repos) == 1 else None,
+            repos=unique_repos,
+            pid=proc.pid,
+        )
         return JSONResponse({
             "status": "accepted",
             "pid": proc.pid,
-            "repo": repo,
+            "repo": unique_repos[0] if len(unique_repos) == 1 else None,
+            "repos": unique_repos,
             "log_path": str(log_path),
             "workspace_root": str(workspace_root),
         }, status_code=202)
+
+    @app.post("/api/crawl/trigger/repo")
+    def trigger_repo_crawl(repo: str = Query(..., min_length=1)) -> JSONResponse:
+        """Force extraction of one repo/repo-unit from the dashboard."""
+        return start_forced_repo_crawl([repo])
+
+    @app.post("/api/crawl/trigger/repos")
+    def trigger_repos_crawl(body: RepoReindexBody) -> JSONResponse:
+        """Force extraction of multiple repo-units in a single Activity run."""
+        return start_forced_repo_crawl(body.repos)
 
     @app.get("/api/triage/decisions")
     def triage_decisions(limit: int = Query(default=50, ge=1, le=500)) -> JSONResponse:
