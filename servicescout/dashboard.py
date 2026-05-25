@@ -28,6 +28,7 @@ import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -723,11 +724,15 @@ def _read_lock(lock_path: Path) -> dict[str, Any]:
     try:
         parts = lock_path.read_text(encoding="utf-8").strip().split()
         if len(parts) >= 3:
+            pid = int(parts[0])
+            host = parts[1]
+            stale = host == socket.gethostname() and not pid_alive(pid)
             return {
                 "held": True,
-                "pid": int(parts[0]),
-                "host": parts[1],
+                "pid": pid,
+                "host": host,
                 "acquired_at": parts[2],
+                "stale_or_corrupt": stale,
             }
     except (OSError, ValueError):
         pass
