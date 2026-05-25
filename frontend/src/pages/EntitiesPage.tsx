@@ -17,6 +17,13 @@ type FacetsPayload = {
   runtime: FacetEntry[];
   confidence: FacetEntry[];
 };
+type EntitiesPayload = {
+  entities: EntityRecord[];
+  count: number;
+  returned?: number;
+  limit?: number;
+  truncated?: boolean;
+};
 
 // URL params we sync. Each is a comma-separated list (kind=Component,Provider).
 const FACET_KEYS = ["kind", "type", "owner", "lifecycle", "environment", "tag", "runtime", "confidence"] as const;
@@ -51,11 +58,11 @@ export function EntitiesPage() {
       Array.from(selections[key]).forEach((v) => params.append(key, v));
     }
     if (query.trim()) params.set("query", query.trim());
-    params.set("limit", "500");
+    params.set("limit", "5000");
     return `/api/entities?${params.toString()}`;
   }, [selections, query]);
 
-  const { data, isLoading } = useSWR<{ entities: EntityRecord[]; count: number }>(entitiesUrl);
+  const { data, isLoading } = useSWR<EntitiesPayload>(entitiesUrl);
 
   const toggle = (key: FacetKey, value: string) => {
     const next = new URLSearchParams(sp);
@@ -86,13 +93,20 @@ export function EntitiesPage() {
   };
 
   const rows = data?.entities ?? [];
+  const returned = data?.returned ?? rows.length;
+  const total = data?.count ?? 0;
+  const catalogDescription = data
+    ? data.truncated
+      ? `${returned} of ${total} entities`
+      : `${total} entities`
+    : "Loading…";
   const anyFacetActive = FACET_KEYS.some((k) => selections[k].size > 0);
 
   return (
     <div className="h-full grid grid-rows-[auto_1fr]">
       <PageHeader
         title="Catalog"
-        description={data ? `${data.count} entities` : "Loading…"}
+        description={catalogDescription}
         actions={
           <Input
             placeholder="Search names, aliases, source repos…"
@@ -141,7 +155,14 @@ export function EntitiesPage() {
           {!isLoading && rows.length === 0 && (
             <div className="p-6 text-fg-muted">No entities match the current filters.</div>
           )}
-          <table className="w-full text-sm">
+          <table className="w-full min-w-[980px] table-fixed text-sm">
+            <colgroup>
+              <col className="w-36" />
+              <col className="w-72" />
+              <col className="w-32" />
+              <col />
+              <col className="w-56" />
+            </colgroup>
             <thead className="sticky top-0 bg-bg-elevated text-xs uppercase tracking-wider text-fg-dim">
               <tr>
                 <th className="text-left px-6 py-2.5 font-medium">Type</th>
@@ -159,10 +180,10 @@ export function EntitiesPage() {
                   className="border-t border-border hover:bg-bg-elevated cursor-pointer"
                 >
                   <td className="px-6 py-2.5"><KindBadge kind={e.kind} /></td>
-                  <td className="px-3 py-2.5 font-medium text-fg">{e.name}</td>
-                  <td className="px-3 py-2.5"><ConfidenceBadge confidence={e.confidence} /></td>
-                  <td className="px-3 py-2.5 text-fg-muted truncate max-w-xl">{e.tagline || e.description || ""}</td>
-                  <td className="px-3 py-2.5 text-fg-dim text-xs font-mono">{e.source_repos?.[0] || ""}</td>
+                  <td className="px-3 py-2.5 font-medium text-fg truncate">{e.name}</td>
+                  <td className="px-3 py-2.5 whitespace-nowrap"><ConfidenceBadge confidence={e.confidence} /></td>
+                  <td className="px-3 py-2.5 text-fg-muted truncate">{e.tagline || e.description || ""}</td>
+                  <td className="px-3 py-2.5 text-fg-dim text-xs font-mono truncate">{e.source_repos?.[0] || ""}</td>
                 </tr>
               ))}
             </tbody>

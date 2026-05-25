@@ -107,6 +107,85 @@ class DashboardApiTests(unittest.TestCase):
             self.assertEqual(graph["edge_total"], 1)
             self.assertEqual(graph["edges"][0]["confidence"], "high")
 
+    def test_entities_count_reports_total_matches_not_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = dashboard.create_app(
+                catalog_path=_write_catalog(root),
+                extraction_log=root / "extractions.jsonl",
+                decisions_path=root / "decisions.jsonl",
+            )
+            client = TestClient(app)
+
+            entities = client.get("/api/entities", params={"limit": 1}).json()
+
+            self.assertEqual(entities["count"], 2)
+            self.assertEqual(entities["returned"], 1)
+            self.assertEqual(entities["limit"], 1)
+            self.assertTrue(entities["truncated"])
+
+    def test_tag_facets_use_canonical_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog_path = root / "catalog.json"
+            catalog_path.write_text(
+                json.dumps(
+                    {
+                        "summary": {"entities": 4, "relations": 0},
+                        "entities": [
+                            {
+                                "kind": "Component",
+                                "metadata": {"name": "orders", "tags": ["Java"]},
+                                "spec": {},
+                            },
+                            {
+                                "kind": "Component",
+                                "metadata": {"name": "checkout", "tags": ["java"]},
+                                "spec": {},
+                            },
+                            {
+                                "kind": "Resource",
+                                "metadata": {"name": "orders-db", "tags": ["SQL Server"]},
+                                "spec": {},
+                            },
+                            {
+                                "kind": "Resource",
+                                "metadata": {"name": "legacy-db", "tags": ["mssql"]},
+                                "spec": {},
+                            },
+                        ],
+                        "relations": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            aliases_path = root / "tag_aliases.json"
+            aliases_path.write_text(
+                json.dumps({"aliases": {"mssql": "sql-server"}}),
+                encoding="utf-8",
+            )
+            app = dashboard.create_app(
+                catalog_path=catalog_path,
+                extraction_log=root / "extractions.jsonl",
+                decisions_path=root / "decisions.jsonl",
+                tag_aliases_path=aliases_path,
+            )
+            client = TestClient(app)
+
+            facets = client.get("/api/facets").json()
+            tags = {entry["value"]: entry["count"] for entry in facets["tag"]}
+            self.assertEqual(tags["java"], 2)
+            self.assertEqual(tags["sql-server"], 2)
+            self.assertNotIn("Java", tags)
+            self.assertNotIn("mssql", tags)
+
+            entities = client.get("/api/entities", params={"tag": "sql-server"}).json()
+            self.assertEqual(entities["count"], 2)
+            self.assertEqual({e["name"] for e in entities["entities"]}, {"orders-db", "legacy-db"})
+
+            raw_tag_entities = client.get("/api/entities", params={"tag": "Java"}).json()
+            self.assertEqual(raw_tag_entities["count"], 2)
+
     def test_graph_limit_keeps_selected_kinds_represented(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

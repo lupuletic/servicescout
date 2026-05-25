@@ -368,7 +368,9 @@ A React + Sigma.js dashboard ships with the project at
   edge, and confidence filters, hover-to-highlight neighbourhood,
   click-to-inspect.
 - **Catalog** — searchable entity table with facets for kind, owner,
-  lifecycle, runtime, environment, tag, type, and confidence.
+  lifecycle, runtime, environment, tag, type, and confidence. Tag facets use
+  generic casing/separator normalisation plus an optional generated
+  `data/tag_aliases.json` map for semantic aliases.
 - **Activity** — scheduler status, extraction/crawl run history, drilldown
   into each run, and trigger-now control.
 - **Operator** — cost trendline, verifier signal, staleness heatmap, and
@@ -409,6 +411,10 @@ each repo, asks for a Backstage-shaped JSON document with `file:line`
 evidence, and emits it through a strict JSON schema. The build step merges
 per-repo extractions into a single catalog and reconciles aliases (service
 names that appear as hostnames, config keys, or generated client classes).
+Tag cleanup is a separate, reviewable hygiene pass:
+`servicescout-reconcile-tags --catalog data/catalog.json --output data/tag_aliases.json`
+asks the configured LLM to propose canonical tag groups, then the dashboard
+uses that alias map without rewriting the raw catalog.
 The embed step adds Gemini embeddings to each entity. The Kuzu build step
 loads the catalog into an embedded graph DB with a BM25 FTS index and an
 HNSW vector index. The MCP server fuses dense + lexical retrieval (RRF,
