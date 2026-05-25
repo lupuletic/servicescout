@@ -210,6 +210,40 @@ class RunTickTests(unittest.TestCase):
             self.assertTrue(any(event.get("event") == "repo_done" for event in log["events"]))
             self.assertFalse(lock_path.exists())
 
+    def test_forced_reindex_reports_selected_count_not_workspace_scan(self) -> None:
+        # A manual re-index of one repo must report repos_checked = the selected
+        # set (1), not the whole-workspace scan count (2).
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            workspace, catalog = self._setup_workspace(tmp_p)
+            run_log_dir = tmp_p / "run_logs"
+            lock_path = tmp_p / "crawl_lock"
+            all_repos = [
+                {"name": "alpha", "id": "org/alpha", "absolute_path": str(workspace / "alpha")},
+                {"name": "beta", "id": "org/beta", "absolute_path": str(workspace / "beta")},
+            ]
+            forced = [{"repo": "alpha", "id": "org/alpha", "path": str(workspace / "alpha"), "reason": "manual_reindex"}]
+
+            def fake_crawler(cmd, *, run_id, log):
+                return {"returncode": 0, "stdout_tail": "", "stderr_tail": ""}
+
+            with mock.patch("servicescout.scheduler.find_repos", return_value=all_repos), \
+                 mock.patch("servicescout.scheduler.forced_repo_changes", return_value=forced), \
+                 mock.patch("servicescout.scheduler._run_crawler_command", side_effect=fake_crawler):
+                log = scheduler.run_tick(
+                    workspace_root=workspace,
+                    catalog_dir=catalog,
+                    workspace_path=tmp_p / "workspace.json",
+                    run_log_dir=run_log_dir,
+                    lock_path=lock_path,
+                    budget_usd=10.0,
+                    provider="codex", model="gpt-5.4-mini", effort="medium",
+                    trigger="manual-reindex",
+                    force_repos=["alpha"],
+                )
+            self.assertEqual(log["repos_checked"], 1)   # selected set, not the 2-repo workspace
+            self.assertEqual(len(log["repos_changed"]), 1)
+
     def test_tick_skips_when_lock_already_held(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_p = Path(tmp)

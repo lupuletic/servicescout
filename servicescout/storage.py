@@ -41,6 +41,9 @@ _KIND_PRIORITY = {"Component": 0, "Provider": 1, "Resource": 2, "API": 3, "Syste
 # "unspecified" — treated as somewhere between low and medium.
 CONFIDENCE_WEIGHT = {"high": 1.0, "medium": 0.7, "low": 0.4, "review": 0.1, None: 0.5}
 _CONFIDENCE_ORDER = {"review": 0, "low": 1, None: 1, "medium": 2, "high": 3}
+# Safety cap on total hops emitted by a single trace(); branch-aware tracing has
+# no global visited set, so a dense graph at high max_hops can expand without bound.
+_MAX_TRACE_HOPS = 5000
 
 
 def _kind_rank(entity: dict[str, Any]) -> int:
@@ -404,6 +407,8 @@ class JSONBackend(Backend):
         next_seq = [1]
         frontier: list[tuple[str, str, int, frozenset[str]]] = [(start_ref, "0", 0, frozenset({start_ref}))]
         while frontier:
+            if len(hops) >= _MAX_TRACE_HOPS:
+                break
             next_frontier: list[tuple[str, str, int, frozenset[str]]] = []
             for node_ref, branch_id, current_depth, path in frontier:
                 if current_depth >= max_hops:

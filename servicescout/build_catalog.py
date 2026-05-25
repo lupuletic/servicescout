@@ -72,6 +72,10 @@ GENERIC_BROKER_ENDPOINT_KEYS = {
     for value in GENERIC_BROKER_ENDPOINTS
 }
 
+# Deterministic kind order for resolve_alias when no explicit kinds are given.
+# Services (Components/APIs) are preferred targets over Resources/Providers.
+_ALIAS_RESOLUTION_KIND_ORDER = ["Component", "API", "Provider", "Resource", "System", "Domain", "Group"]
+
 
 def canonical_key(name: str) -> str:
     if not name:
@@ -124,7 +128,14 @@ class Catalog:
         self.entities: dict[str, dict[str, Any]] = {}
         self.relations: list[dict[str, Any]] = []
         self._relation_keys: set[str] = set()
-        self._alias_index: dict[str, dict[str, str]] = {}
+        # kind -> {canonical_key -> (priority, ref)}. Priority breaks ties so a
+        # canonical key resolves deterministically regardless of load order:
+        #   3 = a real (non-external) entity's own name   (strongest claim)
+        #   2 = an external/placeholder entity's own name
+        #   1 = an alias / endpoint key
+        # A higher-priority claim reclaims a key from a lower one; equal-priority
+        # collisions keep the first (sorted-filename load order → deterministic).
+        self._alias_index: dict[str, dict[str, tuple[int, str]]] = {}
 
     def upsert(self, entity: dict[str, Any]) -> dict[str, Any]:
         key = entity_ref(entity)
@@ -137,12 +148,26 @@ class Catalog:
         self._index_aliases(existing)
         return existing
 
+    def _claim_key(self, kind: str, key: str, ref: str, *, priority: int) -> None:
+        if not key:
+            return
+        index = self._alias_index.setdefault(kind, {})
+        existing = index.get(key)
+        # Overwrite only on a strictly higher-priority claim; equal/lower keeps
+        # the incumbent so the result is independent of insertion order.
+        if existing is None or priority > existing[0]:
+            index[key] = (priority, ref)
+
     def _index_aliases(self, entity: dict[str, Any]) -> None:
         kind = entity["kind"]
         name = entity["metadata"]["name"]
         ref = entity_ref(entity)
-        self._alias_index.setdefault(kind, {}).setdefault(canonical_key(name), ref)
         annotations = entity["metadata"].setdefault("annotations", {})
+        is_external = str(annotations.get("external") or "").lower() == "true"
+        # A real entity's own name outranks a placeholder's name, which outranks
+        # any alias — so the real `payments-api` reclaims the `payment` key even
+        # if some component's alias grabbed it first.
+        self._claim_key(kind, canonical_key(name), ref, priority=2 if is_external else 3)
         aliases = annotations.get("aliases") or []
         if isinstance(aliases, str):
             aliases = [a.strip() for a in aliases.split(",") if a.strip()]
@@ -155,8 +180,7 @@ class Catalog:
             ]
         for alias in aliases:
             key = canonical_key(alias) or host_to_key(alias)
-            if key:
-                self._alias_index.setdefault(kind, {}).setdefault(key, ref)
+            self._claim_key(kind, key, ref, priority=1)
 
     def add_relation(self, relation: dict[str, Any]) -> None:
         relation = copy.deepcopy(relation)
@@ -172,11 +196,18 @@ class Catalog:
         key = canonical_key(label) or host_to_key(label)
         if not key:
             return None
-        search_kinds = list(kinds or self._alias_index.keys())
+        if kinds is not None:
+            search_kinds: list[str] = list(kinds)
+        else:
+            # Deterministic order so resolution doesn't depend on which repo
+            # happened to be processed first (dict-insertion order).
+            present = self._alias_index.keys()
+            search_kinds = [k for k in _ALIAS_RESOLUTION_KIND_ORDER if k in present]
+            search_kinds += sorted(k for k in present if k not in _ALIAS_RESOLUTION_KIND_ORDER)
         for kind in search_kinds:
-            ref = self._alias_index.get(kind, {}).get(key)
-            if ref:
-                return ref
+            entry = self._alias_index.get(kind, {}).get(key)
+            if entry:
+                return entry[1]
         return None
 
     def to_json(self) -> dict[str, Any]:
@@ -1101,6 +1132,18 @@ def filter_evidence_required(catalog: Catalog) -> int:
         kept.append(relation)
     catalog.relations = kept
     catalog._relation_keys = {relation_key(r) for r in kept}
+    return dropped
+
+
+def filter_payload_evidence_required(payload: dict[str, Any]) -> int:
+    """Payload-level twin of filter_evidence_required, re-applied after the
+    derivation passes (normalize_api_granularity etc.) that can introduce
+    high-confidence edges lacking evidence — so the invariant holds on the
+    final written catalog, not just on the pre-derivation Catalog."""
+    relations = payload.get("relations") or []
+    kept = [r for r in relations if not (r.get("confidence") == "high" and not r.get("evidence"))]
+    dropped = len(relations) - len(kept)
+    payload["relations"] = kept
     return dropped
 
 
@@ -2270,6 +2313,13 @@ def build(
     payload["summary"]["derived_broker_resources"] = derived_broker_resources
     derived_communication_flows = derive_communication_flows(payload)
     payload["summary"]["derived_communication_flows"] = derived_communication_flows
+    # Re-enforce "high-confidence edges must carry evidence" on the final graph:
+    # the derivation passes above can mint high edges (e.g. merged providesApi)
+    # that lack evidence, which the earlier Catalog-level filter never saw.
+    payload["summary"]["dropped_for_missing_evidence"] = (
+        payload["summary"].get("dropped_for_missing_evidence", 0)
+        + filter_payload_evidence_required(payload)
+    )
     refresh_summary_counts(payload)
 
     write_catalog(output_path, payload)

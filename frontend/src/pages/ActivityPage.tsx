@@ -951,14 +951,25 @@ function BatchSummary({
       </section>
     );
   }
+  const batchN = numeric(latestBatch.n) ?? 0;
+  const workerLimit = numeric(latestBatch.parallelism);
+  const staleRemaining = numeric(latestBatch.stale_remaining);
+  // stale_remaining is counted *before* this batch is sliced off, so it
+  // includes the repos already in the batch — subtract them to get what's
+  // actually still waiting.
+  const queued = staleRemaining != null ? Math.max(staleRemaining - batchN, 0) : null;
+  const workersBusy = workerLimit != null ? Math.min(batchN, workerLimit) : null;
+  // One compact line: repo count, workers busy / limit, and queued only when
+  // there's actually a backlog — no "0 queued" noise on small re-indexes.
+  const segments = [
+    `${batchN} repo${batchN === 1 ? "" : "s"}`,
+    workerLimit != null ? `${workersBusy}/${workerLimit} workers` : null,
+    queued ? `${queued} queued` : null,
+  ].filter(Boolean) as string[];
   return (
     <section className="rounded border border-border bg-bg px-3 py-2">
       <div className="text-xs uppercase tracking-wider text-fg-dim">Current batch</div>
-      <div className="mt-2 grid grid-cols-3 gap-2 text-sm text-fg-muted">
-        <div><span className="text-fg">{String(latestBatch.n || "-")}</span> repos</div>
-        <div><span className="text-fg">{String(latestBatch.parallelism || "-")}</span> workers</div>
-        <div><span className="text-fg">{String(latestBatch.stale_remaining || "-")}</span> queued</div>
-      </div>
+      <div className="mt-1 text-sm text-fg">{segments.join(" · ")}</div>
       <div className="mt-2 text-xs text-fg-dim">
         {currentRunSpend != null ? `${fmtMoney(currentRunSpend)} spent this run` : "Run spend pending"}
         {budgetUsd != null ? ` · $${budgetUsd} budget` : ""}

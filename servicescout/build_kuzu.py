@@ -141,6 +141,7 @@ def build(catalog_path: Path, db_path: Path, *, dim: int, build_fts: bool, build
             ref STRING,
             kind STRING,
             name STRING,
+            confidence STRING,
             summary_text STRING,
             tagline STRING,
             haystack STRING,
@@ -184,11 +185,12 @@ def build(catalog_path: Path, db_path: Path, *, dim: int, build_fts: bool, build
         if not emb or len(emb) != int(dim):
             emb = zero_vec
         conn.execute(
-            "CREATE (n:Entity {ref: $ref, kind: $kind, name: $name, summary_text: $summary, tagline: $tagline, haystack: $haystack, capability_sheet: $cap, aliases: $aliases, source_repos: $repos, spec_json: $spec, annotations_json: $ann, embedding: $emb})",
+            "CREATE (n:Entity {ref: $ref, kind: $kind, name: $name, confidence: $confidence, summary_text: $summary, tagline: $tagline, haystack: $haystack, capability_sheet: $cap, aliases: $aliases, source_repos: $repos, spec_json: $spec, annotations_json: $ann, embedding: $emb})",
             {
                 "ref": ref,
                 "kind": kind,
                 "name": name,
+                "confidence": entity.get("confidence") or "",
                 "summary": meta.get("description") or "",
                 "tagline": annotations.get("tagline") or "",
                 "haystack": _entity_haystack(entity),

@@ -92,11 +92,13 @@ def _apply_run_event(log: dict[str, Any], event: dict[str, Any]) -> None:
                 log["repos_ok_count"] = int(log.get("repos_ok_count") or 0) + 1
             elif status:
                 log["failures_count"] = int(log.get("failures_count") or 0) + 1
-        cost = event.get("cost_usd")
-        if isinstance(cost, (int, float)):
-            value = round(float(log.get("run_cost_usd") or 0.0) + float(cost), 4)
-            log["run_cost_usd"] = value
-            log["cost_usd"] = value
+            # Sum cost inside the dedup guard so a re-emitted repo_done for the
+            # same repo can't double-count its spend.
+            cost = event.get("cost_usd")
+            if isinstance(cost, (int, float)):
+                value = round(float(log.get("run_cost_usd") or 0.0) + float(cost), 4)
+                log["run_cost_usd"] = value
+                log["cost_usd"] = value
         return
     if name == "crawl_done":
         spent = event.get("spent")
@@ -438,7 +440,9 @@ def run_tick(
             workspace.get("repo_units") or [],
         )
         changed = forced_repo_changes(workspace_root, repos, force_repos or []) if force_repos else detect_changed_repos(workspace_root, catalog_dir, repos)
-        log["repos_checked"] = len(repos)
+        # For a targeted re-index "checked" is the set the user asked for; the
+        # whole-workspace scan count is only meaningful for change-detection (cron).
+        log["repos_checked"] = len(changed) if force_repos else len(repos)
         log["repos_changed"] = changed
         event_name = "manual_reindex_selected" if force_repos else "change_detected"
         log["events"].append({"event": event_name, "count": len(changed), "requested": force_repos or []})
