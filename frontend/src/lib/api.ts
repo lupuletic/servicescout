@@ -67,6 +67,9 @@ export type CrawlRunSummary = {
   repos_checked?: number;
   repos_changed_count: number;
   repos_completed_count?: number;
+  repos_ok_count?: number;
+  failures_count?: number;
+  run_cost_usd?: number;
   budget_usd?: number;
   cost_usd?: number;
   catalog_cost_usd?: number;

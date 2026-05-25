@@ -76,6 +76,12 @@ def _pid_alive(pid: int) -> bool:
         os.kill(pid, 0)
     except OSError:
         return False
+    try:
+        ps = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], text=True, capture_output=True, check=False, timeout=3)
+        if "Z" in ps.stdout.strip():
+            return False
+    except (OSError, subprocess.SubprocessError):
+        pass
     return True
 
 
@@ -198,7 +204,14 @@ class ActivityRun:
                 }
                 if isinstance(cost, (int, float)):
                     entry["cost_usd"] = float(cost)
+                    self._doc["cost_usd"] = round(float(self._doc.get("cost_usd") or 0.0) + float(cost), 4)
                 changed.append({key: value for key, value in entry.items() if value is not None})
+                self._doc["repos_completed_count"] = int(self._doc.get("repos_completed_count") or 0) + 1
+                status = str(event.get("status") or "")
+                if status in {"ok", "no_changes"}:
+                    self._doc["repos_ok_count"] = int(self._doc.get("repos_ok_count") or 0) + 1
+                elif status:
+                    self._doc["failures_count"] = int(self._doc.get("failures_count") or 0) + 1
         elif name == "build_catalog_done":
             self._doc["catalog_summary"] = {
                 key: value
@@ -258,6 +271,11 @@ def repo_total_cost(catalog_dir: Path) -> float:
         if isinstance(cost, (int, float)):
             total += float(cost)
     return round(total, 4)
+
+
+def extractor_result_cost(result: dict[str, Any]) -> float | None:
+    cost = (((result.get("run") or {}).get("cost") or {}).get("estimated_usd"))
+    return float(cost) if isinstance(cost, (int, float)) else None
 
 
 def run_extractor(
@@ -535,6 +553,73 @@ def find_missing_repos(
                     matched_from="communication_endpoint",
                     allow_namespace_roles=True,
                 )
+    return list(candidates.values())
+
+
+def find_missing_repos_scoped(
+    catalog_dir: Path,
+    repo_names: list[str],
+    org_repo_index: dict[str, str],
+    cloned_ids: set[str],
+    endpoint_role_suffixes: list[str] | None = None,
+) -> list[dict[str, str]]:
+    """Discovery candidates derived only from the given repos' own catalog
+    files — their ``dependencies`` and ``resources`` references — so a targeted
+    crawl follows *those* repos' dependency tree rather than every unresolved
+    reference in the whole catalog. Mirrors the matching in
+    :func:`find_missing_repos` but reads per-repo extraction records.
+    """
+    candidates: dict[str, dict[str, str]] = {}
+
+    def add_candidate(label: str, *, matched_via: str, matched_from: str, allow_namespace_roles: bool = False) -> None:
+        if not label:
+            return
+        keys = [(canonical_key(label), "canonical"), (host_to_key(label), "host")]
+        keys.extend(
+            (key, source)
+            for key, source in communication_endpoint_keys(
+                label,
+                allow_namespace_roles=allow_namespace_roles,
+                role_suffixes=endpoint_role_suffixes or [],
+            )
+        )
+        for key, key_source in keys:
+            if not key:
+                continue
+            match = org_repo_index.get(key)
+            if match and match not in cloned_ids and match not in candidates:
+                candidates[match] = {
+                    "repo": match,
+                    "matched_label": label,
+                    "matched_via": matched_via,
+                    "matched_from": matched_from,
+                    "matched_key": key,
+                    "matched_key_source": key_source,
+                }
+                return
+
+    for name in repo_names:
+        path = catalog_dir / f"{name}.json"
+        if not path.is_file():
+            continue
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for dep in doc.get("dependencies") or []:
+            if not isinstance(dep, dict):
+                continue
+            add_candidate(str(dep.get("target") or ""), matched_via=name, matched_from="dependency")
+            for alias in dep.get("aliases") or []:
+                add_candidate(str(alias), matched_via=name, matched_from="dependency", allow_namespace_roles=True)
+            add_candidate(str(dep.get("message_or_event_name") or ""), matched_via=name, matched_from="dependency", allow_namespace_roles=True)
+        for res in doc.get("resources") or []:
+            if not isinstance(res, dict):
+                continue
+            for label in (res.get("name"), res.get("subscribes_to"), res.get("datasource_url"), res.get("host_or_instance")):
+                add_candidate(str(label or ""), matched_via=name, matched_from="resource", allow_namespace_roles=True)
+            for key in res.get("env_or_config_keys") or []:
+                add_candidate(str(key), matched_via=name, matched_from="resource", allow_namespace_roles=True)
     return list(candidates.values())
 
 
@@ -841,11 +926,14 @@ def crawl(
         clone_seeds(seeds, root)
 
     # `scope` lets a workspace define its own crawl bounds (so a UI-built config
-    # is self-contained); explicit CLI args still win when the caller set them.
+    # is self-contained). A targeted --repos run stays exact unless the caller
+    # explicitly also passed --discover.
     scope = workspace.get("scope") or {}
-    if scope.get("discover"):
+    targeted_run = bool(repos_filter)
+    explicit_discover = discover
+    if scope.get("discover") and not targeted_run:
         discover = True
-    if scope.get("max_discovery_rounds") is not None:
+    if scope.get("max_discovery_rounds") is not None and (not targeted_run or explicit_discover):
         max_discovery_rounds = int(scope["max_discovery_rounds"])
 
     repos = find_repos(
@@ -854,9 +942,18 @@ def crawl(
         workspace.get("excluded_repos") or [],
         workspace.get("repo_units") or [],
     )
-    if repos_filter:
-        wanted = set(repos_filter)
-        repos = [r for r in repos if r["name"] in wanted or r["id"] in wanted]
+    # `wanted` bounds the crawl to a target set (a manual/targeted re-index).
+    # It is *sticky*: repos discovered + cloned from the in-scope repos'
+    # references are added to it so the dependency tree is followed, but
+    # unrelated repos already on disk are never swept in just for being stale
+    # by age. `None` means an unbounded crawl (refresh everything).
+    wanted: set[str] | None = set(repos_filter) if repos_filter else None
+
+    def in_scope(repo: dict[str, Any]) -> bool:
+        return wanted is None or repo["name"] in wanted or repo["id"] in wanted
+
+    if wanted is not None:
+        repos = [r for r in repos if in_scope(r)]
 
     org_repo_index: dict[str, str] = {}
     if discover:
@@ -915,6 +1012,11 @@ def crawl(
     applied_runtime_config: tuple[int, int, str] | None = None
     initial_total_cost = repo_total_cost(catalog_dir)
     state["initial_total_cost_usd"] = initial_total_cost
+    # Actual money spent by *this* run = sum of per-repo extraction costs. The
+    # catalog-delta (current_total - initial_total_cost) is wrong for re-index
+    # runs because re-extracting a repo overwrites its stored cost instead of
+    # adding to it, so the delta measures net catalog growth, not spend.
+    run_actual_spend = 0.0
 
     batches_done = 0
     while batches_done < max_batches:
@@ -954,13 +1056,29 @@ def crawl(
             emit({"event": "frontier_empty"})
             if not discover or discovery_rounds >= max_discovery_rounds:
                 break
-            cloned_ids = {r["id"] for r in repos}
-            missing = find_missing_repos(
-                catalog_output,
-                org_repo_index,
-                cloned_ids,
-                list(workspace.get("communication_discovery_role_suffixes") or []),
+            # `cloned_ids` must reflect *everything* physically on disk (not just
+            # the in-scope subset), so discovery only targets genuinely-missing
+            # repos and never re-attempts clones of repos we already have.
+            on_disk = find_repos(
+                root,
+                workspace.get("orgs") or [],
+                workspace.get("excluded_repos") or [],
+                workspace.get("repo_units") or [],
             )
+            cloned_ids = {r["id"] for r in on_disk}
+            role_suffixes = list(workspace.get("communication_discovery_role_suffixes") or [])
+            if wanted is None:
+                # Unbounded crawl: follow every unresolved reference in the catalog.
+                missing = find_missing_repos(catalog_output, org_repo_index, cloned_ids, role_suffixes)
+            else:
+                # Targeted crawl: follow only the in-scope repos' dependency tree.
+                missing = find_missing_repos_scoped(
+                    catalog_dir,
+                    [r["name"] for r in repos],
+                    org_repo_index,
+                    cloned_ids,
+                    role_suffixes,
+                )
             if not missing:
                 emit({"event": "discovery_no_new_repos"})
                 break
@@ -976,21 +1094,28 @@ def crawl(
             if not cloned_now:
                 emit({"event": "discovery_round_no_clones"})
                 break
+            # Newly-cloned repos enter the scope so their own dependencies are
+            # followed on the next round; unrelated on-disk repos stay excluded.
+            if wanted is not None:
+                wanted.update(cloned_now)
             repos = find_repos(
                 root,
                 workspace.get("orgs") or [],
                 workspace.get("excluded_repos") or [],
                 workspace.get("repo_units") or [],
             )
+            if wanted is not None:
+                repos = [r for r in repos if in_scope(r)]
             emit({"event": "discovery_round_done", "workspace_repos_now": len(repos)})
             continue
 
         current_total = repo_total_cost(catalog_dir)
-        run_spent = max(current_total - initial_total_cost, 0.0)
         state["total_cost_usd"] = current_total
-        state["run_cost_usd"] = run_spent
-        if run_spent >= budget_usd:
-            emit({"event": "budget_exhausted", "spent": current_total, "run_spent": run_spent, "budget": budget_usd})
+        state["run_cost_usd"] = run_actual_spend
+        # Budget is enforced against money this run actually spent, not the
+        # net catalog-cost delta (which a re-index drives near zero).
+        if run_actual_spend >= budget_usd:
+            emit({"event": "budget_exhausted", "spent": current_total, "run_spent": run_actual_spend, "budget": budget_usd})
             break
 
         batch = stale[:current_batch_size]
@@ -1005,7 +1130,7 @@ def crawl(
             "batch_size": current_batch_size,
             "stale_remaining": len(stale),
             "spent_so_far": current_total,
-            "run_spent_so_far": run_spent,
+            "run_spent_so_far": run_actual_spend,
             "budget_usd": budget_usd,
         })
         results: list[dict[str, Any]] = []
@@ -1032,8 +1157,9 @@ def crawl(
                 except Exception as exc:  # noqa: BLE001
                     result = {"repo": repo["id"], "status": "error", "error": str(exc)}
                 results.append(result)
-                cost = ((result.get("cost") or {}).get("estimated_usd")
-                        if isinstance(result.get("cost"), dict) else None)
+                cost = extractor_result_cost(result)
+                if cost is not None:
+                    run_actual_spend += cost
                 emit({
                     "event": "repo_done",
                     "repo": result["repo"],
@@ -1041,6 +1167,7 @@ def crawl(
                     "duration_seconds": result.get("duration_seconds"),
                     "returncode": result.get("returncode"),
                     "cost_usd": cost,
+                    "run_spent_so_far": run_actual_spend,
                     "error": result.get("error"),
                 })
 
@@ -1062,15 +1189,13 @@ def crawl(
         batches_done += 1
 
     if reconcile_tags:
-        current_total = repo_total_cost(catalog_dir)
-        run_spent = max(current_total - initial_total_cost, 0.0)
-        if run_spent >= budget_usd:
+        if run_actual_spend >= budget_usd:
             emit({
                 "event": "tag_reconcile_done",
                 "returncode": None,
                 "skipped": True,
                 "reason": "budget_exhausted",
-                "run_spent": run_spent,
+                "run_spent": run_actual_spend,
                 "budget": budget_usd,
             })
         elif catalog_output.exists():
@@ -1116,9 +1241,11 @@ def crawl(
 
     state["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
     state["total_cost_usd"] = repo_total_cost(catalog_dir)
-    state["run_cost_usd"] = max(state["total_cost_usd"] - initial_total_cost, 0.0)
+    state["run_cost_usd"] = run_actual_spend
     write_state(state_path, state)
-    emit({"event": "crawl_done", "spent": state["total_cost_usd"], "run_spent": state["run_cost_usd"]})
+    # `spent` = cumulative catalog cost (all repos' latest extraction);
+    # `run_spent` = money this run actually spent (sum of per-repo costs).
+    emit({"event": "crawl_done", "spent": state["total_cost_usd"], "run_spent": run_actual_spend})
     return state
 
 

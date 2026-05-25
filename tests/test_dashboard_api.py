@@ -510,7 +510,7 @@ class DashboardApiTests(unittest.TestCase):
             self.assertEqual(status["active_run"]["repos_checked"], 2)
             self.assertEqual(status["active_run"]["event_count"], len(events))
             self.assertTrue(status["active_run"]["events_truncated"])
-            self.assertEqual(len(status["active_run"]["events"]), 2000)
+            self.assertEqual(len(status["active_run"]["events"]), 300)
             self.assertEqual(status["active_run"]["latest_batch"]["parallelism"], 12)
             self.assertEqual(status["active_run"]["active_workers"][0]["repo"], "orders")
             self.assertEqual(status["active_run"]["active_workers"][0]["pid"], 12345)
@@ -596,6 +596,49 @@ class DashboardApiTests(unittest.TestCase):
             self.assertEqual(active_run["active_workers"][0]["elapsed_seconds"], 60.0)
             self.assertEqual(active_run["recent_completions"][0]["repo"], "orders")
             self.assertEqual(active_run["recent_completions"][0]["cost_usd"], 0.42)
+
+    def test_crawl_status_counts_failures_from_full_log_not_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog_path = _write_catalog(root)
+            started_at = "2026-05-25T08:40:30+00:00"
+            (root / "crawl_lock").write_text(
+                f"{os.getpid()} localhost {started_at}\n",
+                encoding="utf-8",
+            )
+            events = [
+                {"event": "tick_start", "run_id": "active-run", "ts": started_at},
+                {"event": "crawler_invoke", "run_id": "active-run", "repos": ["repo-a"], "ts": started_at},
+            ]
+            events.extend(
+                {
+                    "event": "repo_done",
+                    "repo": f"repo-{index}",
+                    "status": "error" if index % 2 else "ok",
+                    "cost_usd": 0.1,
+                    "ts": "2026-05-25T08:41:00+00:00",
+                }
+                for index in range(450)
+            )
+            (root / "crawl_trigger.log").write_text(
+                "\n".join(json.dumps(event) for event in events) + "\n",
+                encoding="utf-8",
+            )
+            app = dashboard.create_app(
+                catalog_path=catalog_path,
+                extraction_log=root / "extractions.jsonl",
+                decisions_path=root / "decisions.jsonl",
+            )
+            client = TestClient(app)
+
+            status = client.get("/api/crawl/status").json()
+            active_run = status["active_run"]
+
+            self.assertLessEqual(len(status["active_log_tail"]), 200)
+            self.assertLessEqual(len(active_run["events"]), 300)
+            self.assertEqual(active_run["repos_completed_count"], 450)
+            self.assertEqual(active_run["failures_count"], 225)
+            self.assertEqual(active_run["cost_usd"], 45.0)
 
     def test_trigger_requires_mounted_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -779,6 +822,61 @@ class OnboardingApiTests(unittest.TestCase):
                 self.assertTrue(entry["token_stored"])
                 self.assertEqual(entry["after"]["seeds"], ["acme/storefront", "acme/mobile"])
                 self.assertNotIn("ghp_secret", json.dumps(entry))  # the secret VALUE is never written
+
+
+class OperationalTallyTests(unittest.TestCase):
+    """Failures and run cost are tallied over the full event stream, so long
+    runs whose early events are truncated from the UI tail are not undercounted."""
+
+    def test_activity_event_cache_reparses_same_size_rewrite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "crawl_trigger.log"
+            path.write_text(json.dumps({"event": "a"}) + "\n", encoding="utf-8")
+            os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+            dashboard._ACTIVITY_EVENT_CACHE.clear()
+
+            self.assertEqual(dashboard.cached_activity_log_events(path)[0]["event"], "a")
+
+            path.write_text(json.dumps({"event": "b"}) + "\n", encoding="utf-8")
+            os.utime(path, ns=(2_000_000_000, 2_000_000_000))
+
+            self.assertEqual(dashboard.cached_activity_log_events(path)[0]["event"], "b")
+
+    def test_failures_and_cost_over_full_events(self) -> None:
+        events = [
+            {"event": "repo_done", "repo": "a", "status": "ok", "cost_usd": 0.5},
+            {"event": "repo_done", "repo": "b", "status": "error", "cost_usd": 0.2},
+            {"event": "repo_clone_failed", "repo": "acme/c"},
+            {"event": "seed_clone_failed", "seed": "acme/d"},  # no repo field
+        ]
+        state = dashboard._activity_run_operational_state(events)
+        self.assertEqual(state["repos_completed_count"], 2)
+        self.assertEqual(state["repos_ok_count"], 1)
+        self.assertEqual(state["failures_count"], 3)  # b(error) + two clone failures
+        self.assertAlmostEqual(state["run_cost_usd"], 0.7)
+
+    def test_no_cost_events_yields_none(self) -> None:
+        state = dashboard._activity_run_operational_state(
+            [{"event": "repo_done", "repo": "a", "status": "ok"}]
+        )
+        self.assertIsNone(state["run_cost_usd"])
+        self.assertEqual(state["failures_count"], 0)
+
+    def test_truncated_persisted_run_does_not_promote_tail_counts(self) -> None:
+        doc = {
+            "run_id": "old",
+            "status": "ok",
+            "events_truncated": True,
+            "events": [
+                {"event": "repo_done", "repo": "a", "status": "error", "cost_usd": 3.0},
+            ],
+            "repos_changed": [{"repo": "a", "status": "ok"}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            enriched = dashboard._enrich_activity_run_doc(doc, Path(tmp))
+
+        self.assertNotIn("failures_count", enriched)
+        self.assertNotIn("run_cost_usd", enriched)
 
 
 if __name__ == "__main__":

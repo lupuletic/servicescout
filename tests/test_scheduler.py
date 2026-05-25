@@ -267,7 +267,7 @@ class RunTickTests(unittest.TestCase):
             popen_mock.return_value = self._FakeCrawlerProcess(lines=[
                 json.dumps({"event": "extractor_process_start", "repo": "alpha"}),
                 json.dumps({"event": "extractor_child_event", "repo": "alpha", "line": "{\"event\":\"turn_completed\"}"}),
-                json.dumps({"event": "repo_done", "repo": "alpha", "status": "ok"}),
+                json.dumps({"event": "repo_done", "repo": "alpha", "status": "ok", "cost_usd": 0.42}),
             ])
             result = scheduler._run_crawler_command(["crawler"], run_id="run-1", log=log)
 
@@ -277,6 +277,22 @@ class RunTickTests(unittest.TestCase):
         self.assertEqual(streamed[0]["repo"], "alpha")
         self.assertEqual(streamed[0]["run_id"], "run-1")
         self.assertTrue(any(event.get("event") == "extractor_child_event" for event in log["events"]))
+        self.assertEqual(log["repos_completed_count"], 1)
+        self.assertEqual(log["repos_ok_count"], 1)
+        self.assertEqual(log["run_cost_usd"], 0.42)
+
+    def test_crawler_command_downsamples_child_event_noise(self) -> None:
+        log: dict[str, object] = {"events": []}
+        emitted: list[dict[str, object]] = []
+        noisy = json.dumps({"event": "extractor_child_event", "repo": "alpha", "line": "{\"event\":\"item_started\"}"})
+        with mock.patch("servicescout.scheduler.subprocess.Popen") as popen_mock, \
+             mock.patch("servicescout.scheduler.emit", side_effect=lambda event: emitted.append(dict(event))), \
+             mock.patch("servicescout.scheduler.time.monotonic", side_effect=[100.0, 101.0, 102.0]):
+            popen_mock.return_value = self._FakeCrawlerProcess(lines=[noisy, noisy, json.dumps({"event": "repo_done", "repo": "alpha", "status": "ok"})])
+            scheduler._run_crawler_command(["crawler"], run_id="run-1", log=log)
+
+        child_events = [event for event in emitted if event.get("event") == "extractor_child_event"]
+        self.assertEqual(len(child_events), 1)
 
 
 class WorkspaceReposTests(unittest.TestCase):

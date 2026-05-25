@@ -49,6 +49,7 @@ DEFAULT_WORKSPACE = HERE / "workspace.json"
 DEFAULT_CATALOG_DIR = HERE / "data" / "catalog"
 RUN_EVENT_LIMIT = 2000
 TAIL_CHARS = 4000
+CHILD_EVENT_SAMPLE_SECONDS = 15.0
 
 
 def emit(event: dict[str, Any]) -> None:
@@ -68,12 +69,66 @@ def _append_run_event(log: dict[str, Any], event: dict[str, Any]) -> None:
         log["events_truncated"] = True
 
 
+def _apply_run_event(log: dict[str, Any], event: dict[str, Any]) -> None:
+    name = event.get("event")
+    if name == "batch_start":
+        log["latest_batch"] = {
+            key: event.get(key)
+            for key in ("n", "parallelism", "batch_size", "stale_remaining", "spent_so_far", "run_spent_so_far", "budget_usd", "ts")
+            if event.get(key) is not None
+        }
+        return
+    if name in {"repo_clone_failed", "seed_clone_failed", "gh_repo_api_error", "gh_repo_list_error"}:
+        log["failures_count"] = int(log.get("failures_count") or 0) + 1
+        return
+    if name == "repo_done":
+        repo = event.get("repo")
+        seen = log.setdefault("_repo_done_seen", [])
+        if isinstance(repo, str) and repo not in seen:
+            seen.append(repo)
+            log["repos_completed_count"] = int(log.get("repos_completed_count") or 0) + 1
+            status = str(event.get("status") or "")
+            if status in {"ok", "no_changes"}:
+                log["repos_ok_count"] = int(log.get("repos_ok_count") or 0) + 1
+            elif status:
+                log["failures_count"] = int(log.get("failures_count") or 0) + 1
+        cost = event.get("cost_usd")
+        if isinstance(cost, (int, float)):
+            value = round(float(log.get("run_cost_usd") or 0.0) + float(cost), 4)
+            log["run_cost_usd"] = value
+            log["cost_usd"] = value
+        return
+    if name == "crawl_done":
+        spent = event.get("spent")
+        run_spent = event.get("run_spent")
+        if isinstance(spent, (int, float)):
+            log["catalog_cost_usd"] = float(spent)
+        if isinstance(run_spent, (int, float)):
+            log["run_cost_usd"] = float(run_spent)
+            log["cost_usd"] = float(run_spent)
+
+
 def _parse_event_line(line: str) -> dict[str, Any] | None:
     try:
         event = json.loads(line)
     except json.JSONDecodeError:
         return None
     return event if isinstance(event, dict) else None
+
+
+def _should_keep_child_event(event: dict[str, Any], last_by_repo: dict[str, float]) -> bool:
+    if event.get("event") != "extractor_child_event":
+        return True
+    inner = _parse_event_line(str(event.get("line") or ""))
+    if inner and inner.get("event") in {"turn_completed", "thread_started"}:
+        return True
+    repo = str(event.get("repo") or "")
+    now = time.monotonic()
+    last = last_by_repo.get(repo, 0.0)
+    if now - last < CHILD_EVENT_SAMPLE_SECONDS:
+        return False
+    last_by_repo[repo] = now
+    return True
 
 
 def _run_crawler_command(cmd: list[str], *, run_id: str, log: dict[str, Any]) -> dict[str, Any]:
@@ -86,6 +141,7 @@ def _run_crawler_command(cmd: list[str], *, run_id: str, log: dict[str, Any]) ->
         bufsize=1,
     )
     stdout_tail = ""
+    child_event_last_emit: dict[str, float] = {}
     if proc.stdout is not None:
         for raw_line in proc.stdout:
             line = raw_line.rstrip("\n")
@@ -97,6 +153,9 @@ def _run_crawler_command(cmd: list[str], *, run_id: str, log: dict[str, Any]) ->
                 event = {"event": "crawler_output", "run_id": run_id, "line": line[:1200]}
             else:
                 event.setdefault("run_id", run_id)
+            if not _should_keep_child_event(event, child_event_last_emit):
+                continue
+            _apply_run_event(log, event)
             _append_run_event(log, event)
             emit(event)
     returncode = proc.wait()
@@ -152,6 +211,12 @@ def _pid_alive(pid: int) -> bool:
         os.kill(pid, 0)
     except OSError:
         return False
+    try:
+        ps = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], text=True, capture_output=True, check=False, timeout=3)
+        if "Z" in ps.stdout.strip():
+            return False
+    except (OSError, subprocess.SubprocessError):
+        pass
     return True
 
 
@@ -438,7 +503,8 @@ def _write_run_log(run_log_dir: Path, log: dict[str, Any]) -> Path:
     run_log_dir.mkdir(parents=True, exist_ok=True)
     path = run_log_dir / f"{log['run_id']}.json"
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(log, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    public_log = {key: value for key, value in log.items() if not key.startswith("_")}
+    tmp.write_text(json.dumps(public_log, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(tmp, path)
     return path
 

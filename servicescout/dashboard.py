@@ -259,13 +259,20 @@ def tail_file(path: Path, limit: int = 40) -> list[str]:
     return text.splitlines()[-limit:]
 
 
-def read_lines(path: Path) -> list[str]:
-    if not path.is_file():
+def tail_lines(path: Path, *, limit: int = 200, max_bytes: int = 256 * 1024) -> list[str]:
+    if not path.is_file() or limit <= 0:
         return []
     try:
-        return path.read_text(encoding="utf-8", errors="replace").splitlines()
+        with path.open("rb") as fh:
+            size = fh.seek(0, os.SEEK_END)
+            start = max(size - max_bytes, 0)
+            fh.seek(start)
+            if start:
+                fh.readline()
+            text = fh.read().decode("utf-8", errors="replace")
     except OSError:
         return []
+    return text.splitlines()[-limit:]
 
 
 def pid_alive(pid: int) -> bool:
@@ -273,6 +280,12 @@ def pid_alive(pid: int) -> bool:
         os.kill(pid, 0)
     except OSError:
         return False
+    try:
+        ps = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], text=True, capture_output=True, check=False, timeout=3)
+        if "Z" in ps.stdout.strip():
+            return False
+    except (OSError, subprocess.SubprocessError):
+        pass
     return True
 
 
@@ -539,6 +552,67 @@ def _activity_log_events(lines: list[str]) -> list[dict[str, Any]]:
     return events
 
 
+_ACTIVITY_EVENT_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def cached_activity_log_events(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    try:
+        stat = path.stat()
+    except OSError:
+        return []
+    key = str(path)
+    cached = _ACTIVITY_EVENT_CACHE.get(key)
+    cache_identity = (stat.st_dev, stat.st_ino)
+    if (
+        cached
+        and cached.get("identity") == cache_identity
+        and cached.get("size") == stat.st_size
+        and cached.get("mtime_ns") == stat.st_mtime_ns
+    ):
+        return list(cached.get("events") or [])
+
+    text = ""
+    events: list[dict[str, Any]]
+    partial = ""
+    if (
+        cached
+        and cached.get("identity") == cache_identity
+        and isinstance(cached.get("size"), int)
+        and int(cached["size"]) < stat.st_size
+    ):
+        events = list(cached.get("events") or [])
+        partial = str(cached.get("partial") or "")
+        try:
+            with path.open("rb") as fh:
+                fh.seek(int(cached["size"]))
+                text = fh.read().decode("utf-8", errors="replace")
+        except OSError:
+            return events
+        text = partial + text
+    else:
+        events = []
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+
+    lines = text.splitlines()
+    new_partial = ""
+    if text and not text.endswith("\n") and lines:
+        new_partial = lines.pop()
+    events.extend(_activity_log_events(lines))
+    _ACTIVITY_EVENT_CACHE[key] = {
+        "identity": cache_identity,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "events": events,
+        "partial": new_partial,
+    }
+    return list(events)
+
+
 def _last_event(events: list[dict[str, Any]], *names: str) -> dict[str, Any] | None:
     allowed = set(names)
     for event in reversed(events):
@@ -599,11 +673,19 @@ def _activity_child_message(event: dict[str, Any]) -> tuple[str, str]:
     return name.replace("_", " "), name.replace("_", " ")
 
 
+_SUCCESS_COMPLETION_STATUSES = {"ok", "no_changes", "completed", "running", "in_progress", "started", "queued"}
+
+
+def _is_failure_status(status: Any) -> bool:
+    return bool(status) and str(status) not in _SUCCESS_COMPLETION_STATUSES
+
+
 def _activity_run_operational_state(events: list[dict[str, Any]], *, recent_limit: int = 20) -> dict[str, Any]:
     active: dict[str, dict[str, Any]] = {}
     recent: list[dict[str, Any]] = []
     recent_index: dict[str, int] = {}
     batch: dict[str, Any] | None = None
+    clone_failures = 0
 
     def ensure_worker(repo: str, event: dict[str, Any]) -> dict[str, Any]:
         worker = active.get(repo)
@@ -657,6 +739,9 @@ def _activity_run_operational_state(events: list[dict[str, Any]], *, recent_limi
                 if event.get(key) is not None
             }
             continue
+        if name in {"repo_clone_failed", "seed_clone_failed", "gh_repo_api_error", "gh_repo_list_error"}:
+            clone_failures += 1
+            continue
         if not repo:
             continue
         if name == "extractor_process_start":
@@ -698,11 +783,21 @@ def _activity_run_operational_state(events: list[dict[str, Any]], *, recent_limi
     )
     for index, worker in enumerate(workers, start=1):
         worker["worker_id"] = f"W{index}"
+    # Tally over the *full* completion set (recent is deduped per repo but not
+    # capped), not just the trailing window the UI renders — otherwise failures
+    # and spend are undercounted on long runs whose early events are truncated.
+    ok_count = sum(1 for item in recent if item.get("status") in {"ok", "no_changes"})
+    failed_count = sum(1 for item in recent if _is_failure_status(item.get("status"))) + clone_failures
+    costs = [item["cost_usd"] for item in recent if isinstance(item.get("cost_usd"), (int, float))]
+    run_cost = round(sum(costs), 4) if costs else None
     return {
         "active_workers": workers,
         "recent_completions": list(reversed(recent[-recent_limit:])),
         "latest_batch": batch,
         "repos_completed_count": len(recent),
+        "repos_ok_count": ok_count,
+        "failures_count": failed_count,
+        "run_cost_usd": run_cost,
     }
 
 
@@ -712,18 +807,17 @@ def _active_run_doc(
     catalog_dir: Path,
     lock_info: dict[str, Any],
     scheduler_payload: dict[str, Any],
-    active_log_lines: list[str],
-    event_limit: int = 2000,
+    active_events: list[dict[str, Any]],
+    event_limit: int = 300,
 ) -> dict[str, Any] | None:
     if not lock_info.get("held"):
         return None
 
-    events = _activity_log_events(active_log_lines)
     last_tick_index = next(
-        (idx for idx in range(len(events) - 1, -1, -1) if events[idx].get("event") == "tick_start"),
+        (idx for idx in range(len(active_events) - 1, -1, -1) if active_events[idx].get("event") == "tick_start"),
         -1,
     )
-    run_events_all = events[last_tick_index:] if last_tick_index >= 0 else events
+    run_events_all = active_events[last_tick_index:] if last_tick_index >= 0 else active_events
     run_events_tail = run_events_all[-event_limit:] if event_limit > 0 else run_events_all
     operational = _activity_run_operational_state(run_events_all)
     tick_start = _last_event(run_events_all, "tick_start")
@@ -745,7 +839,14 @@ def _active_run_doc(
         if isinstance(repo, str) and repo
     ] if isinstance((invoked or {}).get("repos"), list) else []
     selected_count = (selected or {}).get("count")
-    repos_checked = selected_count if isinstance(selected_count, int) else (len(invoked_repos) or None)
+    latest_batch = operational.get("latest_batch") if isinstance(operational.get("latest_batch"), dict) else {}
+    batch_scope = _event_number(latest_batch, "stale_remaining") or 0
+    observed_scope = max(
+        len(invoked_repos),
+        int(operational.get("repos_completed_count") or 0) + len(operational.get("active_workers") or []),
+        int(batch_scope),
+    )
+    repos_checked = max(selected_count, observed_scope) if isinstance(selected_count, int) else (observed_scope or None)
 
     seen: set[str] = set()
     repos_changed: list[dict[str, Any]] = []
@@ -816,15 +917,31 @@ def _enrich_activity_run_doc(doc: dict[str, Any], catalog_dir: Path) -> dict[str
     completed_count = doc.get("repos_completed_count")
     if not isinstance(completed_count, int):
         completed_count = max(len(repos), int(operational.get("repos_completed_count") or 0))
+    derived_operational = {
+        key: value
+        for key, value in operational.items()
+        if key not in doc
+    }
+    if doc.get("events_truncated"):
+        for key in ("repos_completed_count", "repos_ok_count", "failures_count", "run_cost_usd"):
+            derived_operational.pop(key, None)
     out = {
         **doc,
-        **{key: value for key, value in operational.items() if key not in doc},
+        **derived_operational,
         "repos_changed": repos,
         "repos_changed_count": len(repos),
         "repos_completed_count": completed_count,
     }
-    if out.get("cost_usd") is None and saw_cost:
-        out["cost_usd"] = round(total_cost, 4)
+    if out.get("cost_usd") is None:
+        # Prefer money actually spent this run (summed repo_done costs) over the
+        # catalog-metric sum, which can include re-used costs from prior runs.
+        event_run_cost = doc.get("run_cost_usd")
+        if not isinstance(event_run_cost, (int, float)):
+            event_run_cost = None if doc.get("events_truncated") else operational.get("run_cost_usd")
+        if isinstance(event_run_cost, (int, float)):
+            out["cost_usd"] = event_run_cost
+        elif saw_cost:
+            out["cost_usd"] = round(total_cost, 4)
     if out.get("worker_duration_seconds") is None and saw_duration:
         out["worker_duration_seconds"] = round(total_duration, 1)
     return out
@@ -841,6 +958,9 @@ def _activity_run_summary(doc: dict[str, Any], path: Path) -> dict[str, Any]:
         "repos_checked": doc.get("repos_checked"),
         "repos_changed_count": len(doc.get("repos_changed") or []),
         "repos_completed_count": doc.get("repos_completed_count"),
+        "repos_ok_count": doc.get("repos_ok_count"),
+        "failures_count": doc.get("failures_count"),
+        "run_cost_usd": doc.get("run_cost_usd"),
         "budget_usd": doc.get("budget_usd"),
         "cost_usd": doc.get("cost_usd"),
         "catalog_cost_usd": doc.get("catalog_cost_usd"),
@@ -1818,19 +1938,19 @@ def create_app(
             if extraction_runs:
                 last_run = extraction_runs[0]
         active_log_path = str(trigger_log) if trigger_log.is_file() else None
-        active_log_lines = read_lines(trigger_log)
-        active_log_tail = active_log_lines[-2000:]
-        if not active_log_lines:
-            activity_log_path, activity_log_tail = latest_activity_log(data_dir, 2000)
+        active_log_events = cached_activity_log_events(trigger_log)
+        active_log_tail = tail_lines(trigger_log, limit=200)
+        if not active_log_events:
+            activity_log_path, activity_log_tail = latest_activity_log(data_dir, 200)
             if activity_log_path:
                 active_log_path = str(activity_log_path)
-                active_log_lines = activity_log_tail
+                active_log_events = _activity_log_events(activity_log_tail)
         active_run = _active_run_doc(
             data_dir=data_dir,
             catalog_dir=_repo_record_dir(catalog_path.parent),
             lock_info=lock_info,
             scheduler_payload=scheduler_payload,
-            active_log_lines=active_log_lines,
+            active_events=active_log_events,
         )
         return JSONResponse({
             "lock": lock_info,

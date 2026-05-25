@@ -305,9 +305,11 @@ function summariseRun(detail?: CrawlRunDetail) {
     }
     if ((name === "extractor_process_exit" || name === "repo_done") && repo) active.delete(repo);
   }
-  const failures = failureItems(repos, events).length;
+  // Prefer the backend tally (computed over the full event stream); the
+  // client-side scan only sees the truncated event tail and undercounts.
+  const failures = detail?.failures_count ?? failureItems(repos, events).length;
   const recentCompletions = detail?.recent_completions || [];
-  const ok = Math.max(
+  const ok = detail?.repos_ok_count ?? Math.max(
     repos.filter((repo) => repo.status === "ok").length,
     recentCompletions.filter((repo) => repo.status === "ok").length,
   );
@@ -492,7 +494,7 @@ export function ActivityPage() {
   const runCompleted = selectedDetail ? runStats.completed : status?.last_run?.repos_changed_count || 0;
   const runProgress = runChecked ? Math.min(100, Math.round((runCompleted / runChecked) * 100)) : null;
   const runBudget = selectedDetail?.budget_usd ?? status?.last_run?.budget_usd ?? schedulerBudget;
-  const runCost = selectedDetail?.cost_usd ?? status?.last_run?.cost_usd;
+  const runCost = selectedDetail?.run_cost_usd ?? selectedDetail?.cost_usd ?? status?.last_run?.run_cost_usd ?? status?.last_run?.cost_usd;
   const runSpendSoFar = numeric(runStats.latestBatch?.run_spent_so_far);
   const catalogSpend = numeric(runStats.latestBatch?.spent_so_far) ?? selectedDetail?.catalog_cost_usd ?? status?.last_run?.catalog_cost_usd;
   const spendValue = runCost ?? runSpendSoFar ?? catalogSpend;
@@ -816,7 +818,7 @@ function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReinde
       reason: repo.reason,
       error: repo.error,
     }));
-  const currentRunSpend = detail.cost_usd ?? numeric(stats.latestBatch?.run_spent_so_far);
+  const currentRunSpend = detail.run_cost_usd ?? detail.cost_usd ?? numeric(stats.latestBatch?.run_spent_so_far);
   const batchCatalogSpend = numeric(stats.latestBatch?.spent_so_far);
   const observedFinish = detail.finished_at || detail.observed_at;
   const eventCount = detail.event_count ?? events.length;
@@ -840,8 +842,8 @@ function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReinde
       </div>
 
       <div className="grid grid-cols-2 gap-2">
-        <MiniMetric label="Selected" value={detail.repos_checked ?? "-"} />
-        <MiniMetric label="Completed" value={stats.completed || "-"} />
+        <MiniMetric label="Scope" value={detail.repos_checked ?? "-"} />
+        <MiniMetric label="Done" value={stats.completed || "-"} />
         <MiniMetric label="Running" value={stats.activeCount} />
         <MiniMetric label="Duration" value={runDuration(detail)} />
         <MiniMetric label="Spend" value={fmtMoney(currentRunSpend)} />

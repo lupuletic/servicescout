@@ -238,6 +238,59 @@ class TagReconcileCommandTests(unittest.TestCase):
         )
 
 
+class CrawlAccountingTests(unittest.TestCase):
+    def test_nested_extractor_cost_is_authoritative_run_spend(self) -> None:
+        self.assertEqual(
+            crawler.extractor_result_cost({"run": {"cost": {"estimated_usd": 0.75}}}),
+            0.75,
+        )
+        self.assertIsNone(crawler.extractor_result_cost({"cost": {"estimated_usd": 9.99}}))
+
+    def test_targeted_reindex_does_not_inherit_workspace_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch("servicescout.crawler.find_repos") as find_repos, \
+             mock.patch("servicescout.crawler.build_org_repo_index") as build_index, \
+             mock.patch("servicescout.crawler.is_stale", return_value=None), \
+             mock.patch("servicescout.crawler.emit"):
+            root = Path(tmp)
+            workspace = root / "workspace.json"
+            workspace.write_text(json.dumps({"orgs": ["acme"], "scope": {"discover": True}}), encoding="utf-8")
+            find_repos.return_value = [
+                {"name": "alpha", "id": "acme/alpha", "absolute_path": str(root / "alpha")},
+                {"name": "beta", "id": "acme/beta", "absolute_path": str(root / "beta")},
+            ]
+
+            crawler.crawl(
+                root=root,
+                catalog_dir=root / "catalog",
+                catalog_output=root / "catalog.json",
+                workspace_path=workspace,
+                seeds_dir=root / "seeds",
+                state_path=root / "state.json",
+                provider="codex",
+                model=None,
+                effort="medium",
+                timeout_seconds=600,
+                max_age_hours=24,
+                parallelism=1,
+                batch_size=1,
+                runtime_config_path=None,
+                max_batches=1,
+                budget_usd=10,
+                repos_filter=["alpha"],
+                embed=False,
+                build_kuzu=False,
+                stream_logs=False,
+                discover=False,
+                max_discovery_rounds=0,
+                reconcile_after_build=False,
+                reconcile_llm=False,
+                reconcile_tags=False,
+            )
+
+        build_index.assert_not_called()
+
+
 class ActivityRunTests(unittest.TestCase):
     def test_repo_done_records_operator_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -269,6 +322,105 @@ class ActivityRunTests(unittest.TestCase):
             self.assertEqual(doc["repos_changed"][0]["repo"], "acme/orders")
             self.assertEqual(doc["repos_changed"][0]["duration_seconds"], 12.5)
             self.assertEqual(doc["repos_changed"][0]["cost_usd"], 0.42)
+
+
+class RunSpendTests(unittest.TestCase):
+    """Run spend = sum of per-repo extraction costs, read from the extractor's
+    nested run.cost — not the net catalog-cost delta, which collapses for
+    re-index runs because re-extracting a repo overwrites its stored cost."""
+
+    def _run_crawl(self, *, budget_usd: float, repos_filter=None, parallelism=2, batch_size=4):
+        repos = [
+            {"id": "acme/a", "name": "a", "commit": "c1", "absolute_path": "/ws/a"},
+            {"id": "acme/b", "name": "b", "commit": "c2", "absolute_path": "/ws/b"},
+        ]
+
+        def fake_extract(repo, **kwargs):
+            return {
+                "repo": repo["id"],
+                "status": "ok",
+                "duration_seconds": 1.0,
+                "returncode": 0,
+                # The real extractor nests cost here, not at result["cost"].
+                "run": {"cost": {"estimated_usd": 0.5}},
+            }
+
+        captured: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace.json"
+            workspace.write_text(json.dumps({"orgs": ["acme"]}), encoding="utf-8")
+            with mock.patch("servicescout.crawler.find_repos", return_value=repos), \
+                 mock.patch("servicescout.crawler.is_stale", return_value="stale"), \
+                 mock.patch("servicescout.crawler.run_extractor", side_effect=fake_extract), \
+                 mock.patch("servicescout.crawler.build_catalog", return_value={}), \
+                 mock.patch("servicescout.crawler.write_state"), \
+                 mock.patch("servicescout.crawler.repo_total_cost", return_value=100.0), \
+                 mock.patch("servicescout.crawler.emit", side_effect=lambda e: captured.append(e)):
+                crawler.crawl(
+                    root=root, catalog_dir=root / "catalog", catalog_output=root / "catalog.json",
+                    workspace_path=workspace, seeds_dir=root / "seeds", state_path=root / "state.json",
+                    provider="codex", model=None, effort="medium", timeout_seconds=600,
+                    max_age_hours=24, parallelism=parallelism, batch_size=batch_size, runtime_config_path=None,
+                    max_batches=5, budget_usd=budget_usd, repos_filter=repos_filter, embed=False,
+                    build_kuzu=False, stream_logs=False, discover=False, max_discovery_rounds=0,
+                    reconcile_after_build=False, reconcile_llm=False, reconcile_tags=False,
+                )
+        return captured
+
+    def test_repo_done_carries_cost_and_run_spent_sums_them(self) -> None:
+        captured = self._run_crawl(budget_usd=100.0)
+        repo_done = [e for e in captured if e.get("event") == "repo_done"]
+        self.assertEqual(len(repo_done), 2)
+        self.assertTrue(all(e["cost_usd"] == 0.5 for e in repo_done))
+        crawl_done = next(e for e in captured if e.get("event") == "crawl_done")
+        # 2 repos x $0.5 = $1.0 actually spent, even though catalog total is flat.
+        self.assertAlmostEqual(crawl_done["run_spent"], 1.0)
+        self.assertAlmostEqual(crawl_done["spent"], 100.0)
+
+    def test_budget_guard_uses_actual_spend(self) -> None:
+        # One repo per batch so the guard is re-evaluated before batch 2; the
+        # $0.4 budget must trip on summed spend ($0.5 after batch 1), even
+        # though the (mocked) catalog total never moves.
+        captured = self._run_crawl(budget_usd=0.4, parallelism=1, batch_size=1)
+        self.assertTrue(any(e.get("event") == "budget_exhausted" for e in captured))
+
+
+class ScopedDiscoveryTests(unittest.TestCase):
+    """A targeted crawl follows only the in-scope repos' dependency tree."""
+
+    def _write_repo(self, catalog_dir: Path, name: str, deps: list[str]) -> None:
+        catalog_dir.mkdir(parents=True, exist_ok=True)
+        (catalog_dir / f"{name}.json").write_text(
+            json.dumps({"dependencies": [{"target": d} for d in deps], "resources": []}),
+            encoding="utf-8",
+        )
+
+    def test_follows_in_scope_refs_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog_dir = Path(tmp)
+            self._write_repo(catalog_dir, "x", ["Payments"])   # in scope
+            self._write_repo(catalog_dir, "y", ["Shipping"])   # out of scope
+            org_index = {
+                crawler.canonical_key("Payments"): "acme/payments",
+                crawler.canonical_key("Shipping"): "acme/shipping",
+            }
+            missing = {
+                m["repo"]
+                for m in crawler.find_missing_repos_scoped(catalog_dir, ["x"], org_index, set())
+            }
+            self.assertIn("acme/payments", missing)
+            self.assertNotIn("acme/shipping", missing)
+
+    def test_skips_already_cloned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog_dir = Path(tmp)
+            self._write_repo(catalog_dir, "x", ["Payments"])
+            org_index = {crawler.canonical_key("Payments"): "acme/payments"}
+            missing = crawler.find_missing_repos_scoped(
+                catalog_dir, ["x"], org_index, cloned_ids={"acme/payments"}
+            )
+            self.assertEqual(missing, [])
 
 
 if __name__ == "__main__":
