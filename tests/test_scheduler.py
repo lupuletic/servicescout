@@ -133,6 +133,14 @@ class RunTickTests(unittest.TestCase):
     mocked so no real LLM is called.
     """
 
+    class _FakeCrawlerProcess:
+        def __init__(self, *, returncode: int = 0, lines: list[str] | None = None) -> None:
+            self.returncode = returncode
+            self.stdout = iter([f"{line}\n" for line in lines or []])
+
+        def wait(self) -> int:
+            return self.returncode
+
     def _setup_workspace(self, tmp: Path) -> tuple[Path, Path]:
         workspace = tmp / "workspace"
         workspace.mkdir()
@@ -177,9 +185,12 @@ class RunTickTests(unittest.TestCase):
                 {"repo": "alpha", "path": str(workspace / "alpha"),
                  "last_extracted_sha": None, "remote_sha": "aaa", "local_sha": "aaa", "fetch_ok": True},
             ]
+            def fake_crawler(cmd: list[str], *, run_id: str, log: dict[str, object]) -> dict[str, object]:
+                log.setdefault("events", []).append({"event": "repo_done", "repo": "alpha", "status": "ok", "run_id": run_id})
+                return {"returncode": 0, "stdout_tail": "", "stderr_tail": ""}
+
             with mock.patch("servicescout.scheduler.detect_changed_repos", return_value=changed), \
-                 mock.patch("servicescout.scheduler.subprocess.run") as run_mock:
-                run_mock.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+                 mock.patch("servicescout.scheduler._run_crawler_command", side_effect=fake_crawler) as crawler_mock:
                 log = scheduler.run_tick(
                     workspace_root=workspace,
                     catalog_dir=catalog,
@@ -191,10 +202,12 @@ class RunTickTests(unittest.TestCase):
                 )
             self.assertEqual(log["status"], "ok")
             self.assertEqual(log["repos_changed"], changed)
-            cmd = run_mock.call_args[0][0]
+            cmd = crawler_mock.call_args[0][0]
             self.assertIn("--repos", cmd)
             self.assertIn("alpha", cmd)
             self.assertNotIn("beta", cmd)
+            self.assertIn("--stream-logs", cmd)
+            self.assertTrue(any(event.get("event") == "repo_done" for event in log["events"]))
             self.assertFalse(lock_path.exists())
 
     def test_tick_skips_when_lock_already_held(self) -> None:
@@ -229,9 +242,10 @@ class RunTickTests(unittest.TestCase):
                         "last_extracted_sha": None, "remote_sha": "a",
                         "local_sha": "a", "fetch_ok": True}]
             with mock.patch("servicescout.scheduler.detect_changed_repos", return_value=changed), \
-                 mock.patch("servicescout.scheduler.subprocess.run") as run_mock:
-                run_mock.return_value = mock.Mock(returncode=2,
-                                                  stdout="", stderr="boom")
+                 mock.patch(
+                     "servicescout.scheduler._run_crawler_command",
+                     return_value={"returncode": 2, "stdout_tail": "boom", "stderr_tail": ""},
+                 ):
                 log = scheduler.run_tick(
                     workspace_root=workspace,
                     catalog_dir=catalog,
@@ -243,7 +257,26 @@ class RunTickTests(unittest.TestCase):
                 )
             self.assertEqual(log["status"], "crawler_failed")
             self.assertEqual(log["crawler_returncode"], 2)
-            self.assertIn("boom", log["crawler_stderr_tail"])
+            self.assertIn("boom", log["crawler_stdout_tail"])
+
+    def test_crawler_command_streams_crawler_events_to_stdout(self) -> None:
+        log: dict[str, object] = {"events": []}
+        emitted: list[dict[str, object]] = []
+        with mock.patch("servicescout.scheduler.subprocess.Popen") as popen_mock, \
+             mock.patch("servicescout.scheduler.emit", side_effect=lambda event: emitted.append(dict(event))):
+            popen_mock.return_value = self._FakeCrawlerProcess(lines=[
+                json.dumps({"event": "extractor_process_start", "repo": "alpha"}),
+                json.dumps({"event": "extractor_child_event", "repo": "alpha", "line": "{\"event\":\"turn_completed\"}"}),
+                json.dumps({"event": "repo_done", "repo": "alpha", "status": "ok"}),
+            ])
+            result = scheduler._run_crawler_command(["crawler"], run_id="run-1", log=log)
+
+        streamed = [event for event in emitted if event.get("event") == "repo_done"]
+        self.assertEqual(result["returncode"], 0)
+        self.assertEqual(len(streamed), 1)
+        self.assertEqual(streamed[0]["repo"], "alpha")
+        self.assertEqual(streamed[0]["run_id"], "run-1")
+        self.assertTrue(any(event.get("event") == "extractor_child_event" for event in log["events"]))
 
 
 class WorkspaceReposTests(unittest.TestCase):

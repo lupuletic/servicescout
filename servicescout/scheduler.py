@@ -47,6 +47,8 @@ DEFAULT_RUN_LOG_DIR = HERE / "data" / "crawl_runs"
 DEFAULT_LOCK_PATH = HERE / "data" / "crawl_lock"
 DEFAULT_WORKSPACE = HERE / "workspace.json"
 DEFAULT_CATALOG_DIR = HERE / "data" / "catalog"
+RUN_EVENT_LIMIT = 2000
+TAIL_CHARS = 4000
 
 
 def emit(event: dict[str, Any]) -> None:
@@ -56,6 +58,54 @@ def emit(event: dict[str, Any]) -> None:
     event.setdefault("ts", dt.datetime.now(dt.timezone.utc).isoformat())
     sys.stdout.write(json.dumps(event, sort_keys=True) + "\n")
     sys.stdout.flush()
+
+
+def _append_run_event(log: dict[str, Any], event: dict[str, Any]) -> None:
+    events = log.setdefault("events", [])
+    events.append(event)
+    if len(events) > RUN_EVENT_LIMIT:
+        del events[: len(events) - RUN_EVENT_LIMIT]
+        log["events_truncated"] = True
+
+
+def _parse_event_line(line: str) -> dict[str, Any] | None:
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return event if isinstance(event, dict) else None
+
+
+def _run_crawler_command(cmd: list[str], *, run_id: str, log: dict[str, Any]) -> dict[str, Any]:
+    """Run the crawler and tee its structured events into scheduler stdout."""
+    proc = subprocess.Popen(
+        cmd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+    )
+    stdout_tail = ""
+    if proc.stdout is not None:
+        for raw_line in proc.stdout:
+            line = raw_line.rstrip("\n")
+            if not line:
+                continue
+            stdout_tail = (stdout_tail + line + "\n")[-TAIL_CHARS:]
+            event = _parse_event_line(line)
+            if event is None:
+                event = {"event": "crawler_output", "run_id": run_id, "line": line[:1200]}
+            else:
+                event.setdefault("run_id", run_id)
+            _append_run_event(log, event)
+            emit(event)
+    returncode = proc.wait()
+    return {
+        "returncode": returncode,
+        "stdout_tail": stdout_tail,
+        # stderr is merged into stdout so the Activity log receives one ordered stream.
+        "stderr_tail": "",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -348,6 +398,7 @@ def run_tick(
             "--provider", provider,
             "--effort", effort,
             "--no-activity",
+            "--stream-logs",
         ]
         if model:
             cmd.extend(["--model", model])
@@ -356,13 +407,13 @@ def run_tick(
         log["events"].append({"event": "crawler_invoke", "cmd": cmd})
         emit({"event": "crawler_invoke", "run_id": run_id, "repos": repo_names})
 
-        proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        log["crawler_returncode"] = proc.returncode
-        log["crawler_stdout_tail"] = (proc.stdout or "")[-4000:]
-        log["crawler_stderr_tail"] = (proc.stderr or "")[-2000:]
-        if proc.returncode != 0:
+        result = _run_crawler_command(cmd, run_id=run_id, log=log)
+        log["crawler_returncode"] = result["returncode"]
+        log["crawler_stdout_tail"] = result["stdout_tail"]
+        log["crawler_stderr_tail"] = result["stderr_tail"]
+        if result["returncode"] != 0:
             log["status"] = "crawler_failed"
-            emit({"event": "tick_failed", "run_id": run_id, "rc": proc.returncode})
+            emit({"event": "tick_failed", "run_id": run_id, "rc": result["returncode"]})
         else:
             log["status"] = "ok"
             emit({"event": "tick_done_ok", "run_id": run_id, "repos_extracted": len(repo_names)})

@@ -337,6 +337,23 @@ test("activity surfaces an in-flight manual re-index before the final run log ex
         budget_usd: 100,
       },
       crawler: { running: true, pid: 76257, uptime: "00:30" },
+      active_run: {
+        run_id: "20260525T084030Z-7a1cf39e",
+        trigger: "manual-reindex",
+        started_at: "2026-05-25T08:40:30+00:00",
+        observed_at: "2026-05-25T08:55:00+00:00",
+        status: "running",
+        repos_checked: 77,
+        repos_changed_count: 1,
+        budget_usd: 100,
+        duration_seconds: 870,
+        repos_changed: [{ repo: "payments", reason: "crawler_extraction", status: "ok" }],
+        events: [
+          { event: "tick_start", run_id: "20260525T084030Z-7a1cf39e", ts: "2026-05-25T08:40:30+00:00" },
+          { event: "manual_reindex_selected", run_id: "20260525T084030Z-7a1cf39e", count: 77, requested: ["orders", "payments"] },
+          { event: "crawler_invoke", run_id: "20260525T084030Z-7a1cf39e", repos: ["orders", "payments"] },
+        ],
+      },
       active_log_path: "/tmp/crawl_trigger.log",
       active_log_tail: [
         "{\"event\":\"tick_start\",\"run_id\":\"20260525T084030Z-7a1cf39e\",\"ts\":\"2026-05-25T08:40:30+00:00\"}",
@@ -348,7 +365,7 @@ test("activity surfaces an in-flight manual re-index before the final run log ex
 
   await page.goto("/activity");
   await expect(page.getByText("20260525T084030Z-7a1cf39e").first()).toBeVisible();
-  await expect(page.getByText("0/77")).toBeVisible();
+  await expect(page.getByText("1/77")).toBeVisible();
   await expect(page.getByText("Manual re-index selected: 77 repos").first()).toBeVisible();
 });
 

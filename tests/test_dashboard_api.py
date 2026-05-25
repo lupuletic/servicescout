@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -295,6 +296,69 @@ class DashboardApiTests(unittest.TestCase):
             self.assertEqual(status["last_run"]["repos_checked"], 8)
             self.assertEqual(status["last_run"]["status"], "abandoned")
             self.assertEqual(status["last_run"]["cost_usd"], 1.25)
+
+    def test_crawl_status_counts_active_catalog_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog_path = _write_catalog(root)
+            started_at = "2026-05-25T08:40:30+00:00"
+            (root / "crawl_lock").write_text(
+                f"{os.getpid()} localhost {started_at}\n",
+                encoding="utf-8",
+            )
+            (root / "crawl_trigger.log").write_text(
+                "\n".join([
+                    json.dumps({
+                        "event": "tick_start",
+                        "run_id": "20260525T084030Z-active",
+                        "ts": started_at,
+                    }),
+                    json.dumps({
+                        "event": "manual_reindex_selected",
+                        "run_id": "20260525T084030Z-active",
+                        "count": 2,
+                        "requested": ["orders", "payments"],
+                        "ts": "2026-05-25T08:41:00+00:00",
+                    }),
+                    json.dumps({
+                        "event": "crawler_invoke",
+                        "run_id": "20260525T084030Z-active",
+                        "repos": ["orders", "payments"],
+                        "ts": "2026-05-25T08:41:00+00:00",
+                    }),
+                ]) + "\n",
+                encoding="utf-8",
+            )
+            (root / "catalog" / "payments.json").write_text(
+                json.dumps({
+                    "_meta": {
+                        "extracted_at": "2026-05-25T08:55:00+00:00",
+                        "provider": "codex",
+                        "model": "gpt-5.4-mini",
+                    },
+                    "repo": {"id": "acme/payments"},
+                    "components": [],
+                    "apis": [],
+                    "resources": [],
+                    "dependencies": [],
+                }),
+                encoding="utf-8",
+            )
+            app = dashboard.create_app(
+                catalog_path=catalog_path,
+                extraction_log=root / "extractions.jsonl",
+                decisions_path=root / "decisions.jsonl",
+            )
+            client = TestClient(app)
+
+            status = client.get("/api/crawl/status").json()
+
+            self.assertEqual(status["active_run"]["run_id"], "20260525T084030Z-active")
+            self.assertEqual(status["active_run"]["repos_checked"], 2)
+            self.assertEqual(status["active_run"]["repos_changed_count"], 1)
+            self.assertEqual(status["active_run"]["repos_changed"][0]["repo"], "payments")
+            self.assertEqual(status["active_run"]["repos_changed"][0]["status"], "ok")
+            self.assertEqual(status["active_run"]["status"], "running")
 
     def test_trigger_requires_mounted_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

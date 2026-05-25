@@ -296,6 +296,7 @@ function summariseRun(detail?: CrawlRunDetail) {
 
 function activeRunFromStatus(status?: CrawlStatusPayload): CrawlRunDetail | null {
   if (!status?.lock?.held) return null;
+  if (status.active_run) return status.active_run;
   const events = parseLogEvents(status.active_log_tail);
   const tickStart = [...events].reverse().find((event) => event.event === "tick_start");
   const selected = [...events].reverse().find((event) => event.event === "manual_reindex_selected" || event.event === "change_detected");

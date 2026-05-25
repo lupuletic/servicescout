@@ -95,6 +95,7 @@ export type CrawlStatusPayload = {
   };
   crawler?: { running: boolean; pid: number | null; uptime?: string };
   crawler_runtime?: { parallelism: number; batch_size: number; source?: string; path?: string; updated_at?: string };
+  active_run?: CrawlRunDetail | null;
   last_run?: CrawlRunSummary | null;
   interval_minutes: number;
   budget_usd: number;

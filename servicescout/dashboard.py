@@ -487,11 +487,14 @@ def _repo_catalog_metrics(catalog_dir: Path, repo: str, *, started_at: str | Non
     meta = payload.get("_meta") or {}
     extracted_at = _aware_dt(_parse_dt(meta.get("extracted_at")))
     started = _aware_dt(_parse_dt(started_at))
-    if started is not None and extracted_at is not None and extracted_at < started:
-        return {}
+    if started is not None:
+        if extracted_at is None or extracted_at < started:
+            return {}
     run = meta.get("run") or {}
     cost = (run.get("cost") or {}).get("estimated_usd")
     out: dict[str, Any] = {}
+    if extracted_at is not None:
+        out["extracted_at"] = extracted_at.isoformat()
     if isinstance(cost, (int, float)):
         out["cost_usd"] = float(cost)
     duration = run.get("duration_seconds")
@@ -499,7 +502,110 @@ def _repo_catalog_metrics(catalog_dir: Path, repo: str, *, started_at: str | Non
         out["duration_seconds"] = float(duration)
     if run.get("status"):
         out["status"] = run.get("status")
+    elif extracted_at is not None:
+        out["status"] = "ok"
     return out
+
+
+def _activity_log_events(lines: list[str]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for line in lines:
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            start = raw.find("{")
+            if start < 0:
+                continue
+            try:
+                event = json.loads(raw[start:])
+            except json.JSONDecodeError:
+                continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def _last_event(events: list[dict[str, Any]], *names: str) -> dict[str, Any] | None:
+    allowed = set(names)
+    for event in reversed(events):
+        if event.get("event") in allowed:
+            return event
+    return None
+
+
+def _active_run_doc(
+    *,
+    data_dir: Path,
+    catalog_dir: Path,
+    lock_info: dict[str, Any],
+    scheduler_payload: dict[str, Any],
+    active_log_tail: list[str],
+) -> dict[str, Any] | None:
+    if not lock_info.get("held"):
+        return None
+
+    events = _activity_log_events(active_log_tail)
+    last_tick_index = next(
+        (idx for idx in range(len(events) - 1, -1, -1) if events[idx].get("event") == "tick_start"),
+        -1,
+    )
+    run_events = events[last_tick_index:] if last_tick_index >= 0 else events
+    tick_start = _last_event(run_events, "tick_start")
+    selected = _last_event(run_events, "manual_reindex_selected", "change_detected")
+    invoked = _last_event(run_events, "crawler_invoke")
+    run_id = (
+        (tick_start or {}).get("run_id")
+        or (selected or {}).get("run_id")
+        or (invoked or {}).get("run_id")
+        or f"active-{lock_info.get('pid') or 'crawl'}"
+    )
+    started_at = (
+        (tick_start or {}).get("ts")
+        or (selected or {}).get("ts")
+        or lock_info.get("acquired_at")
+    )
+    invoked_repos = [
+        repo for repo in (invoked or {}).get("repos", [])
+        if isinstance(repo, str) and repo
+    ] if isinstance((invoked or {}).get("repos"), list) else []
+    selected_count = (selected or {}).get("count")
+    repos_checked = selected_count if isinstance(selected_count, int) else (len(invoked_repos) or None)
+
+    seen: set[str] = set()
+    repos_changed: list[dict[str, Any]] = []
+    for repo in invoked_repos:
+        if repo in seen:
+            continue
+        seen.add(repo)
+        metrics = _repo_catalog_metrics(catalog_dir, repo, started_at=str(started_at) if started_at else None)
+        if not metrics:
+            continue
+        repos_changed.append({
+            "repo": repo,
+            "reason": "crawler_extraction",
+            **metrics,
+        })
+
+    doc: dict[str, Any] = {
+        "run_id": str(run_id),
+        "trigger": "manual-reindex" if (selected or {}).get("event") == "manual_reindex_selected" else "manual",
+        "started_at": started_at,
+        "status": "running",
+        "workspace_root": os.environ.get("WORKSPACE_ROOT") or "",
+        "workspace_config": os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json"),
+        "budget_usd": float(scheduler_payload.get("budget_usd") or 20.0),
+        "pid": lock_info.get("pid"),
+        "events": run_events,
+        "repos_changed": repos_changed,
+    }
+    if repos_checked is not None:
+        doc["repos_checked"] = repos_checked
+    if data_dir:
+        doc["active_log_path"] = str(data_dir / "crawl_trigger.log")
+    return _enrich_activity_run_doc(doc, catalog_dir)
 
 
 def _enrich_activity_run_doc(doc: dict[str, Any], catalog_dir: Path) -> dict[str, Any]:
@@ -528,7 +634,7 @@ def _enrich_activity_run_doc(doc: dict[str, Any], catalog_dir: Path) -> dict[str
             total_duration += float(duration)
             saw_duration = True
         repos.append(merged)
-    out = {**doc, "repos_changed": repos}
+    out = {**doc, "repos_changed": repos, "repos_changed_count": len(repos)}
     if out.get("cost_usd") is None and saw_cost:
         out["cost_usd"] = round(total_cost, 4)
     if out.get("worker_duration_seconds") is None and saw_duration:
@@ -1502,16 +1608,24 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             if extraction_runs:
                 last_run = extraction_runs[0]
         active_log_path = str(trigger_log) if trigger_log.is_file() else None
-        active_log_tail = tail_file(trigger_log)
+        active_log_tail = tail_file(trigger_log, 2000)
         if not active_log_tail:
-            activity_log_path, activity_log_tail = latest_activity_log(data_dir)
+            activity_log_path, activity_log_tail = latest_activity_log(data_dir, 2000)
             if activity_log_path:
                 active_log_path = str(activity_log_path)
                 active_log_tail = activity_log_tail
+        active_run = _active_run_doc(
+            data_dir=data_dir,
+            catalog_dir=_repo_record_dir(catalog_path.parent),
+            lock_info=lock_info,
+            scheduler_payload=scheduler_payload,
+            active_log_tail=active_log_tail,
+        )
         return JSONResponse({
             "lock": lock_info,
             "scheduler": scheduler_payload,
             "crawler": crawler_status(),
+            "active_run": active_run,
             "last_run": last_run,
             "interval_minutes": int(scheduler_payload.get("interval_minutes") or 360),
             "budget_usd": float(scheduler_payload.get("budget_usd") or 20.0),
