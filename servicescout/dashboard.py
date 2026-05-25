@@ -546,6 +546,165 @@ def _last_event(events: list[dict[str, Any]], *names: str) -> dict[str, Any] | N
     return None
 
 
+def _event_repo(event: dict[str, Any]) -> str:
+    repo = event.get("repo")
+    return repo if isinstance(repo, str) else ""
+
+
+def _event_ts(event: dict[str, Any]) -> str | None:
+    value = event.get("ts")
+    return value if isinstance(value, str) and value else None
+
+
+def _event_number(event: dict[str, Any], key: str) -> float | None:
+    value = event.get(key)
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _parse_child_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    line = event.get("line")
+    if not isinstance(line, str):
+        return None
+    try:
+        parsed = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _activity_child_message(event: dict[str, Any]) -> tuple[str, str]:
+    inner = _parse_child_event(event)
+    if not inner:
+        return "agent output", "agent emitted output"
+    name = str(inner.get("event") or "agent_event")
+    item_type = str(inner.get("item_type") or "").replace("_", " ")
+    status = str(inner.get("status") or "").replace("_", " ")
+    if name == "item_started":
+        label = item_type or "item"
+        return label, f"{label} running"
+    if name == "item_completed":
+        label = item_type or "item"
+        suffix = f" {status}" if status else ""
+        return label, f"{label}{suffix}"
+    if name == "turn_started":
+        return "agent turn", "agent turn started"
+    if name == "turn_completed":
+        usage = inner.get("usage") if isinstance(inner.get("usage"), dict) else {}
+        output_tokens = usage.get("output_tokens") if isinstance(usage, dict) else None
+        suffix = f" · {output_tokens} output tokens" if isinstance(output_tokens, int) else ""
+        return "agent turn", f"agent turn completed{suffix}"
+    if name == "thread_started":
+        return "agent session", "agent session started"
+    return name.replace("_", " "), name.replace("_", " ")
+
+
+def _activity_run_operational_state(events: list[dict[str, Any]], *, recent_limit: int = 20) -> dict[str, Any]:
+    active: dict[str, dict[str, Any]] = {}
+    recent: list[dict[str, Any]] = []
+    recent_index: dict[str, int] = {}
+    batch: dict[str, Any] | None = None
+
+    def ensure_worker(repo: str, event: dict[str, Any]) -> dict[str, Any]:
+        worker = active.get(repo)
+        if worker is None:
+            worker = {
+                "repo": repo,
+                "phase": "running",
+                "started_at": _event_ts(event),
+                "last_event": str(event.get("event") or "event"),
+                "last_at": _event_ts(event),
+                "last_message": "running",
+            }
+            active[repo] = worker
+        return worker
+
+    def update_worker(repo: str, event: dict[str, Any], **fields: Any) -> None:
+        worker = ensure_worker(repo, event)
+        worker.update({key: value for key, value in fields.items() if value is not None})
+        worker["last_event"] = str(event.get("event") or worker.get("last_event") or "event")
+        worker["last_at"] = _event_ts(event) or worker.get("last_at")
+
+    def record_completion(repo: str, event: dict[str, Any]) -> None:
+        active.pop(repo, None)
+        cost = _event_number(event, "cost_usd")
+        duration_seconds = _event_number(event, "duration_seconds")
+        payload = {
+            "repo": repo,
+            "status": event.get("status") or ("ok" if event.get("returncode") == 0 else None),
+            "duration_seconds": duration_seconds,
+            "cost_usd": cost,
+            "completed_at": _event_ts(event),
+            "returncode": event.get("returncode"),
+            "error": event.get("error"),
+            "reason": "crawler_extraction",
+        }
+        payload = {key: value for key, value in payload.items() if value is not None}
+        if repo in recent_index:
+            index = recent_index[repo]
+            recent[index] = {**recent[index], **payload}
+            return
+        recent_index[repo] = len(recent)
+        recent.append(payload)
+
+    for event in events:
+        name = str(event.get("event") or "")
+        repo = _event_repo(event)
+        if name == "batch_start":
+            batch = {
+                key: event.get(key)
+                for key in ("n", "parallelism", "batch_size", "stale_remaining", "spent_so_far", "run_spent_so_far", "budget_usd", "ts")
+                if event.get(key) is not None
+            }
+            continue
+        if not repo:
+            continue
+        if name == "extractor_process_start":
+            update_worker(
+                repo,
+                event,
+                phase="starting",
+                started_at=_event_ts(event),
+                timeout_seconds=event.get("timeout_seconds"),
+                last_message="extractor starting",
+            )
+        elif name == "extractor_process_pid":
+            update_worker(
+                repo,
+                event,
+                phase="extracting",
+                pid=event.get("pid"),
+                last_message="extractor process running",
+            )
+        elif name == "extractor_heartbeat":
+            update_worker(
+                repo,
+                event,
+                phase="extracting",
+                pid=event.get("pid"),
+                elapsed_seconds=_event_number(event, "elapsed_seconds"),
+                result_file_present=event.get("result_file_present"),
+                last_message="heartbeat",
+            )
+        elif name == "extractor_child_event":
+            phase, message = _activity_child_message(event)
+            update_worker(repo, event, phase=phase, last_message=message)
+        elif name in {"extractor_process_exit", "repo_done"}:
+            record_completion(repo, event)
+
+    workers = sorted(
+        active.values(),
+        key=lambda worker: (worker.get("started_at") or worker.get("last_at") or "", worker.get("repo") or ""),
+    )
+    for index, worker in enumerate(workers, start=1):
+        worker["worker_id"] = f"W{index}"
+    return {
+        "active_workers": workers,
+        "recent_completions": list(reversed(recent[-recent_limit:])),
+        "latest_batch": batch,
+        "repos_completed_count": len(recent),
+    }
+
+
 def _active_run_doc(
     *,
     data_dir: Path,
@@ -565,6 +724,7 @@ def _active_run_doc(
     )
     run_events_all = events[last_tick_index:] if last_tick_index >= 0 else events
     run_events_tail = run_events_all[-event_limit:] if event_limit > 0 else run_events_all
+    operational = _activity_run_operational_state(run_events_all)
     tick_start = _last_event(run_events_all, "tick_start")
     selected = _last_event(run_events_all, "manual_reindex_selected", "change_detected")
     invoked = _last_event(run_events_all, "crawler_invoke")
@@ -612,6 +772,7 @@ def _active_run_doc(
         "pid": lock_info.get("pid"),
         "events": run_events_tail,
         "event_count": len(run_events_all),
+        **operational,
         "repos_changed": repos_changed,
     }
     if len(run_events_tail) < len(run_events_all):
@@ -626,6 +787,8 @@ def _active_run_doc(
 def _enrich_activity_run_doc(doc: dict[str, Any], catalog_dir: Path) -> dict[str, Any]:
     doc = normalise_activity_run_doc(doc)
     started_at = doc.get("started_at")
+    events = [event for event in (doc.get("events") or []) if isinstance(event, dict)]
+    operational = _activity_run_operational_state(events) if events else {}
     repos = []
     total_cost = 0.0
     saw_cost = False
@@ -649,7 +812,16 @@ def _enrich_activity_run_doc(doc: dict[str, Any], catalog_dir: Path) -> dict[str
             total_duration += float(duration)
             saw_duration = True
         repos.append(merged)
-    out = {**doc, "repos_changed": repos, "repos_changed_count": len(repos)}
+    completed_count = doc.get("repos_completed_count")
+    if not isinstance(completed_count, int):
+        completed_count = max(len(repos), int(operational.get("repos_completed_count") or 0))
+    out = {
+        **doc,
+        **{key: value for key, value in operational.items() if key not in doc},
+        "repos_changed": repos,
+        "repos_changed_count": len(repos),
+        "repos_completed_count": completed_count,
+    }
     if out.get("cost_usd") is None and saw_cost:
         out["cost_usd"] = round(total_cost, 4)
     if out.get("worker_duration_seconds") is None and saw_duration:
@@ -667,6 +839,7 @@ def _activity_run_summary(doc: dict[str, Any], path: Path) -> dict[str, Any]:
         "status": doc.get("status"),
         "repos_checked": doc.get("repos_checked"),
         "repos_changed_count": len(doc.get("repos_changed") or []),
+        "repos_completed_count": doc.get("repos_completed_count"),
         "budget_usd": doc.get("budget_usd"),
         "cost_usd": doc.get("cost_usd"),
         "catalog_cost_usd": doc.get("catalog_cost_usd"),

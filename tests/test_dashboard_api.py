@@ -384,11 +384,31 @@ class DashboardApiTests(unittest.TestCase):
                     "repos": ["orders", "payments"],
                     "ts": "2026-05-25T08:41:00+00:00",
                 },
+                {
+                    "event": "batch_start",
+                    "n": 2,
+                    "parallelism": 12,
+                    "batch_size": 48,
+                    "stale_remaining": 0,
+                    "ts": "2026-05-25T08:41:05+00:00",
+                },
+                {
+                    "event": "extractor_process_start",
+                    "repo": "orders",
+                    "timeout_seconds": 1500,
+                    "ts": "2026-05-25T08:41:06+00:00",
+                },
+                {
+                    "event": "extractor_process_pid",
+                    "repo": "orders",
+                    "pid": 12345,
+                    "ts": "2026-05-25T08:41:06+00:00",
+                },
                 *[
                     {
                         "event": "extractor_child_event",
                         "repo": "orders",
-                        "line": "{\"event\":\"item_started\"}",
+                        "line": "{\"event\":\"item_started\",\"item_type\":\"command_execution\",\"status\":\"in_progress\"}",
                         "ts": f"2026-05-25T08:42:{idx % 60:02d}+00:00",
                     }
                     for idx in range(2105)
@@ -412,6 +432,91 @@ class DashboardApiTests(unittest.TestCase):
             self.assertEqual(status["active_run"]["event_count"], len(events))
             self.assertTrue(status["active_run"]["events_truncated"])
             self.assertEqual(len(status["active_run"]["events"]), 2000)
+            self.assertEqual(status["active_run"]["latest_batch"]["parallelism"], 12)
+            self.assertEqual(status["active_run"]["active_workers"][0]["repo"], "orders")
+            self.assertEqual(status["active_run"]["active_workers"][0]["pid"], 12345)
+            self.assertEqual(status["active_run"]["active_workers"][0]["worker_id"], "W1")
+            self.assertEqual(status["active_run"]["active_workers"][0]["last_message"], "command execution running")
+
+    def test_crawl_status_reports_active_workers_and_recent_completions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog_path = _write_catalog(root)
+            started_at = "2026-05-25T08:40:30+00:00"
+            (root / "crawl_lock").write_text(
+                f"{os.getpid()} localhost {started_at}\n",
+                encoding="utf-8",
+            )
+            events = [
+                {"event": "tick_start", "run_id": "20260525T084030Z-active", "ts": started_at},
+                {
+                    "event": "manual_reindex_selected",
+                    "run_id": "20260525T084030Z-active",
+                    "count": 2,
+                    "requested": ["orders", "payments"],
+                    "ts": "2026-05-25T08:41:00+00:00",
+                },
+                {
+                    "event": "crawler_invoke",
+                    "run_id": "20260525T084030Z-active",
+                    "repos": ["orders", "payments"],
+                    "ts": "2026-05-25T08:41:01+00:00",
+                },
+                {
+                    "event": "extractor_process_start",
+                    "repo": "orders",
+                    "ts": "2026-05-25T08:41:02+00:00",
+                },
+                {
+                    "event": "extractor_process_exit",
+                    "repo": "orders",
+                    "status": "ok",
+                    "duration_seconds": 12.5,
+                    "returncode": 0,
+                    "ts": "2026-05-25T08:41:14+00:00",
+                },
+                {
+                    "event": "repo_done",
+                    "repo": "orders",
+                    "status": "ok",
+                    "duration_seconds": 12.5,
+                    "cost_usd": 0.42,
+                    "returncode": 0,
+                    "ts": "2026-05-25T08:41:14+00:00",
+                },
+                {
+                    "event": "extractor_process_start",
+                    "repo": "payments",
+                    "ts": "2026-05-25T08:41:15+00:00",
+                },
+                {
+                    "event": "extractor_heartbeat",
+                    "repo": "payments",
+                    "pid": 45678,
+                    "elapsed_seconds": 60.0,
+                    "result_file_present": False,
+                    "ts": "2026-05-25T08:42:15+00:00",
+                },
+            ]
+            (root / "crawl_trigger.log").write_text(
+                "\n".join(json.dumps(event) for event in events) + "\n",
+                encoding="utf-8",
+            )
+            app = dashboard.create_app(
+                catalog_path=catalog_path,
+                extraction_log=root / "extractions.jsonl",
+                decisions_path=root / "decisions.jsonl",
+            )
+            client = TestClient(app)
+
+            active_run = client.get("/api/crawl/status").json()["active_run"]
+
+            self.assertEqual(active_run["repos_completed_count"], 1)
+            self.assertEqual(active_run["active_workers"][0]["repo"], "payments")
+            self.assertEqual(active_run["active_workers"][0]["pid"], 45678)
+            self.assertEqual(active_run["active_workers"][0]["elapsed_seconds"], 60.0)
+            self.assertEqual(active_run["recent_completions"][0]["repo"], "orders")
+            self.assertEqual(active_run["recent_completions"][0]["cost_usd"], 0.42)
 
     def test_trigger_requires_mounted_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

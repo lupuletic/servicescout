@@ -66,6 +66,7 @@ export type CrawlRunSummary = {
   status?: string;
   repos_checked?: number;
   repos_changed_count: number;
+  repos_completed_count?: number;
   budget_usd?: number;
   cost_usd?: number;
   catalog_cost_usd?: number;
@@ -107,6 +108,42 @@ export type CrawlStatusPayload = {
 
 export type CrawlRunDetail = CrawlRunSummary & {
   workspace_root?: string;
+  active_log_path?: string;
+  event_count?: number;
+  events_truncated?: boolean;
+  latest_batch?: {
+    n?: number;
+    parallelism?: number;
+    batch_size?: number;
+    stale_remaining?: number;
+    spent_so_far?: number;
+    run_spent_so_far?: number;
+    budget_usd?: number;
+    ts?: string;
+  } | null;
+  active_workers?: Array<{
+    worker_id?: string;
+    repo: string;
+    pid?: number;
+    phase?: string;
+    started_at?: string;
+    last_at?: string;
+    last_event?: string;
+    last_message?: string;
+    elapsed_seconds?: number;
+    result_file_present?: boolean;
+    timeout_seconds?: number;
+  }>;
+  recent_completions?: Array<{
+    repo: string;
+    status?: string;
+    duration_seconds?: number;
+    cost_usd?: number;
+    completed_at?: string;
+    returncode?: number;
+    error?: string;
+    reason?: string;
+  }>;
   repos_changed?: Array<{
     repo: string;
     path?: string;
