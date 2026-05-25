@@ -328,10 +328,9 @@ def build_server(
                     "owning_component": entity.get("name"),
                     "owning_ref": ref,
                 })
-                if len(hits) >= limit * 4:
-                    break
-            if len(hits) >= limit * 4:
-                break
+        # Score every candidate before truncating — an early break (when the
+        # first matches happen to be weak definition hits) could otherwise drop
+        # a higher-scoring exact term match that appears later in the scan.
         hits.sort(key=lambda h: (-h["score"], h["term"]))
         return {
             "term": term,

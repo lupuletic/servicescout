@@ -125,6 +125,7 @@ services:
       --discover
       --max-discovery-rounds 10
       --reconcile
+      --reconcile-tags
       --embed
       --build-kuzu
       --stream-logs
@@ -156,6 +157,7 @@ services:
       --model ${LLM_MODEL:-gpt-5.4-mini}
       --effort ${LLM_EFFORT:-medium}
       --crawler-arg=--reconcile
+      --crawler-arg=--reconcile-tags
       --crawler-arg=--embed
       --crawler-arg=--build-kuzu
     volumes:

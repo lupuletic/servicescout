@@ -28,6 +28,7 @@ import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -40,6 +41,7 @@ from pydantic import BaseModel, Field
 
 from servicescout import github_client
 from servicescout.repo_discovery import load_workspace_config, write_workspace_config
+from servicescout.tags import canonical_tags, load_tag_aliases
 
 
 class GithubTokenBody(BaseModel):
@@ -257,11 +259,33 @@ def tail_file(path: Path, limit: int = 40) -> list[str]:
     return text.splitlines()[-limit:]
 
 
+def tail_lines(path: Path, *, limit: int = 200, max_bytes: int = 256 * 1024) -> list[str]:
+    if not path.is_file() or limit <= 0:
+        return []
+    try:
+        with path.open("rb") as fh:
+            size = fh.seek(0, os.SEEK_END)
+            start = max(size - max_bytes, 0)
+            fh.seek(start)
+            if start:
+                fh.readline()
+            text = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    return text.splitlines()[-limit:]
+
+
 def pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
     except OSError:
         return False
+    try:
+        ps = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], text=True, capture_output=True, check=False, timeout=3)
+        if "Z" in ps.stdout.strip():
+            return False
+    except (OSError, subprocess.SubprocessError):
+        pass
     return True
 
 
@@ -487,11 +511,14 @@ def _repo_catalog_metrics(catalog_dir: Path, repo: str, *, started_at: str | Non
     meta = payload.get("_meta") or {}
     extracted_at = _aware_dt(_parse_dt(meta.get("extracted_at")))
     started = _aware_dt(_parse_dt(started_at))
-    if started is not None and extracted_at is not None and extracted_at < started:
-        return {}
+    if started is not None:
+        if extracted_at is None or extracted_at < started:
+            return {}
     run = meta.get("run") or {}
     cost = (run.get("cost") or {}).get("estimated_usd")
     out: dict[str, Any] = {}
+    if extracted_at is not None:
+        out["extracted_at"] = extracted_at.isoformat()
     if isinstance(cost, (int, float)):
         out["cost_usd"] = float(cost)
     duration = run.get("duration_seconds")
@@ -499,12 +526,371 @@ def _repo_catalog_metrics(catalog_dir: Path, repo: str, *, started_at: str | Non
         out["duration_seconds"] = float(duration)
     if run.get("status"):
         out["status"] = run.get("status")
+    elif extracted_at is not None:
+        out["status"] = "ok"
     return out
+
+
+def _activity_log_events(lines: list[str]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for line in lines:
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            start = raw.find("{")
+            if start < 0:
+                continue
+            try:
+                event = json.loads(raw[start:])
+            except json.JSONDecodeError:
+                continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+_ACTIVITY_EVENT_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def cached_activity_log_events(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    try:
+        stat = path.stat()
+    except OSError:
+        return []
+    key = str(path)
+    cached = _ACTIVITY_EVENT_CACHE.get(key)
+    cache_identity = (stat.st_dev, stat.st_ino)
+    if (
+        cached
+        and cached.get("identity") == cache_identity
+        and cached.get("size") == stat.st_size
+        and cached.get("mtime_ns") == stat.st_mtime_ns
+    ):
+        return list(cached.get("events") or [])
+
+    text = ""
+    events: list[dict[str, Any]]
+    partial = ""
+    if (
+        cached
+        and cached.get("identity") == cache_identity
+        and isinstance(cached.get("size"), int)
+        and int(cached["size"]) < stat.st_size
+    ):
+        events = list(cached.get("events") or [])
+        partial = str(cached.get("partial") or "")
+        try:
+            with path.open("rb") as fh:
+                fh.seek(int(cached["size"]))
+                text = fh.read().decode("utf-8", errors="replace")
+        except OSError:
+            return events
+        text = partial + text
+    else:
+        events = []
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+
+    lines = text.splitlines()
+    new_partial = ""
+    if text and not text.endswith("\n") and lines:
+        new_partial = lines.pop()
+    events.extend(_activity_log_events(lines))
+    _ACTIVITY_EVENT_CACHE[key] = {
+        "identity": cache_identity,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "events": events,
+        "partial": new_partial,
+    }
+    return list(events)
+
+
+def _last_event(events: list[dict[str, Any]], *names: str) -> dict[str, Any] | None:
+    allowed = set(names)
+    for event in reversed(events):
+        if event.get("event") in allowed:
+            return event
+    return None
+
+
+def _event_repo(event: dict[str, Any]) -> str:
+    repo = event.get("repo")
+    return repo if isinstance(repo, str) else ""
+
+
+def _event_ts(event: dict[str, Any]) -> str | None:
+    value = event.get("ts")
+    return value if isinstance(value, str) and value else None
+
+
+def _event_number(event: dict[str, Any], key: str) -> float | None:
+    value = event.get(key)
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _parse_child_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    line = event.get("line")
+    if not isinstance(line, str):
+        return None
+    try:
+        parsed = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _activity_child_message(event: dict[str, Any]) -> tuple[str, str]:
+    inner = _parse_child_event(event)
+    if not inner:
+        return "agent output", "agent emitted output"
+    name = str(inner.get("event") or "agent_event")
+    item_type = str(inner.get("item_type") or "").replace("_", " ")
+    status = str(inner.get("status") or "").replace("_", " ")
+    if name == "item_started":
+        label = item_type or "item"
+        return label, f"{label} running"
+    if name == "item_completed":
+        label = item_type or "item"
+        suffix = f" {status}" if status else ""
+        return label, f"{label}{suffix}"
+    if name == "turn_started":
+        return "agent turn", "agent turn started"
+    if name == "turn_completed":
+        usage = inner.get("usage") if isinstance(inner.get("usage"), dict) else {}
+        output_tokens = usage.get("output_tokens") if isinstance(usage, dict) else None
+        suffix = f" · {output_tokens} output tokens" if isinstance(output_tokens, int) else ""
+        return "agent turn", f"agent turn completed{suffix}"
+    if name == "thread_started":
+        return "agent session", "agent session started"
+    return name.replace("_", " "), name.replace("_", " ")
+
+
+_SUCCESS_COMPLETION_STATUSES = {"ok", "no_changes", "completed", "running", "in_progress", "started", "queued"}
+
+
+def _is_failure_status(status: Any) -> bool:
+    return bool(status) and str(status) not in _SUCCESS_COMPLETION_STATUSES
+
+
+def _activity_run_operational_state(events: list[dict[str, Any]], *, recent_limit: int = 20) -> dict[str, Any]:
+    active: dict[str, dict[str, Any]] = {}
+    recent: list[dict[str, Any]] = []
+    recent_index: dict[str, int] = {}
+    batch: dict[str, Any] | None = None
+    clone_failures = 0
+
+    def ensure_worker(repo: str, event: dict[str, Any]) -> dict[str, Any]:
+        worker = active.get(repo)
+        if worker is None:
+            worker = {
+                "repo": repo,
+                "phase": "running",
+                "started_at": _event_ts(event),
+                "last_event": str(event.get("event") or "event"),
+                "last_at": _event_ts(event),
+                "last_message": "running",
+            }
+            active[repo] = worker
+        return worker
+
+    def update_worker(repo: str, event: dict[str, Any], **fields: Any) -> None:
+        worker = ensure_worker(repo, event)
+        worker.update({key: value for key, value in fields.items() if value is not None})
+        worker["last_event"] = str(event.get("event") or worker.get("last_event") or "event")
+        worker["last_at"] = _event_ts(event) or worker.get("last_at")
+
+    def record_completion(repo: str, event: dict[str, Any]) -> None:
+        active.pop(repo, None)
+        cost = _event_number(event, "cost_usd")
+        duration_seconds = _event_number(event, "duration_seconds")
+        payload = {
+            "repo": repo,
+            "status": event.get("status") or ("ok" if event.get("returncode") == 0 else None),
+            "duration_seconds": duration_seconds,
+            "cost_usd": cost,
+            "completed_at": _event_ts(event),
+            "returncode": event.get("returncode"),
+            "error": event.get("error"),
+            "reason": "crawler_extraction",
+        }
+        payload = {key: value for key, value in payload.items() if value is not None}
+        if repo in recent_index:
+            index = recent_index[repo]
+            recent[index] = {**recent[index], **payload}
+            return
+        recent_index[repo] = len(recent)
+        recent.append(payload)
+
+    for event in events:
+        name = str(event.get("event") or "")
+        repo = _event_repo(event)
+        if name == "batch_start":
+            batch = {
+                key: event.get(key)
+                for key in ("n", "parallelism", "batch_size", "stale_remaining", "spent_so_far", "run_spent_so_far", "budget_usd", "ts")
+                if event.get(key) is not None
+            }
+            continue
+        if name in {"repo_clone_failed", "seed_clone_failed", "gh_repo_api_error", "gh_repo_list_error"}:
+            clone_failures += 1
+            continue
+        if not repo:
+            continue
+        if name == "extractor_process_start":
+            update_worker(
+                repo,
+                event,
+                phase="starting",
+                started_at=_event_ts(event),
+                timeout_seconds=event.get("timeout_seconds"),
+                last_message="extractor starting",
+            )
+        elif name == "extractor_process_pid":
+            update_worker(
+                repo,
+                event,
+                phase="extracting",
+                pid=event.get("pid"),
+                last_message="extractor process running",
+            )
+        elif name == "extractor_heartbeat":
+            update_worker(
+                repo,
+                event,
+                phase="extracting",
+                pid=event.get("pid"),
+                elapsed_seconds=_event_number(event, "elapsed_seconds"),
+                result_file_present=event.get("result_file_present"),
+                last_message="heartbeat",
+            )
+        elif name == "extractor_child_event":
+            phase, message = _activity_child_message(event)
+            update_worker(repo, event, phase=phase, last_message=message)
+        elif name in {"extractor_process_exit", "repo_done"}:
+            record_completion(repo, event)
+
+    workers = sorted(
+        active.values(),
+        key=lambda worker: (worker.get("started_at") or worker.get("last_at") or "", worker.get("repo") or ""),
+    )
+    for index, worker in enumerate(workers, start=1):
+        worker["worker_id"] = f"W{index}"
+    # Tally over the *full* completion set (recent is deduped per repo but not
+    # capped), not just the trailing window the UI renders — otherwise failures
+    # and spend are undercounted on long runs whose early events are truncated.
+    ok_count = sum(1 for item in recent if item.get("status") in {"ok", "no_changes"})
+    failed_count = sum(1 for item in recent if _is_failure_status(item.get("status"))) + clone_failures
+    costs = [item["cost_usd"] for item in recent if isinstance(item.get("cost_usd"), (int, float))]
+    run_cost = round(sum(costs), 4) if costs else None
+    return {
+        "active_workers": workers,
+        "recent_completions": list(reversed(recent[-recent_limit:])),
+        "latest_batch": batch,
+        "repos_completed_count": len(recent),
+        "repos_ok_count": ok_count,
+        "failures_count": failed_count,
+        "run_cost_usd": run_cost,
+    }
+
+
+def _active_run_doc(
+    *,
+    data_dir: Path,
+    catalog_dir: Path,
+    lock_info: dict[str, Any],
+    scheduler_payload: dict[str, Any],
+    active_events: list[dict[str, Any]],
+    event_limit: int = 300,
+) -> dict[str, Any] | None:
+    if not lock_info.get("held"):
+        return None
+
+    last_tick_index = next(
+        (idx for idx in range(len(active_events) - 1, -1, -1) if active_events[idx].get("event") == "tick_start"),
+        -1,
+    )
+    run_events_all = active_events[last_tick_index:] if last_tick_index >= 0 else active_events
+    run_events_tail = run_events_all[-event_limit:] if event_limit > 0 else run_events_all
+    operational = _activity_run_operational_state(run_events_all)
+    tick_start = _last_event(run_events_all, "tick_start")
+    selected = _last_event(run_events_all, "manual_reindex_selected", "change_detected")
+    invoked = _last_event(run_events_all, "crawler_invoke")
+    run_id = (
+        (tick_start or {}).get("run_id")
+        or (selected or {}).get("run_id")
+        or (invoked or {}).get("run_id")
+        or f"active-{lock_info.get('pid') or 'crawl'}"
+    )
+    started_at = (
+        (tick_start or {}).get("ts")
+        or (selected or {}).get("ts")
+        or lock_info.get("acquired_at")
+    )
+    invoked_repos = [
+        repo for repo in (invoked or {}).get("repos", [])
+        if isinstance(repo, str) and repo
+    ] if isinstance((invoked or {}).get("repos"), list) else []
+    selected_count = (selected or {}).get("count")
+    latest_batch = operational.get("latest_batch") if isinstance(operational.get("latest_batch"), dict) else {}
+    batch_scope = _event_number(latest_batch, "stale_remaining") or 0
+    observed_scope = max(
+        len(invoked_repos),
+        int(operational.get("repos_completed_count") or 0) + len(operational.get("active_workers") or []),
+        int(batch_scope),
+    )
+    repos_checked = max(selected_count, observed_scope) if isinstance(selected_count, int) else (observed_scope or None)
+
+    seen: set[str] = set()
+    repos_changed: list[dict[str, Any]] = []
+    for repo in invoked_repos:
+        if repo in seen:
+            continue
+        seen.add(repo)
+        metrics = _repo_catalog_metrics(catalog_dir, repo, started_at=str(started_at) if started_at else None)
+        if not metrics:
+            continue
+        repos_changed.append({
+            "repo": repo,
+            "reason": "crawler_extraction",
+            **metrics,
+        })
+
+    doc: dict[str, Any] = {
+        "run_id": str(run_id),
+        "trigger": "manual-reindex" if (selected or {}).get("event") == "manual_reindex_selected" else "manual",
+        "started_at": started_at,
+        "status": "running",
+        "workspace_root": os.environ.get("WORKSPACE_ROOT") or "",
+        "workspace_config": os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json"),
+        "budget_usd": float(scheduler_payload.get("budget_usd") or 20.0),
+        "pid": lock_info.get("pid"),
+        "events": run_events_tail,
+        "event_count": len(run_events_all),
+        **operational,
+        "repos_changed": repos_changed,
+    }
+    if len(run_events_tail) < len(run_events_all):
+        doc["events_truncated"] = True
+    if repos_checked is not None:
+        doc["repos_checked"] = repos_checked
+    if data_dir:
+        doc["active_log_path"] = str(data_dir / "crawl_trigger.log")
+    return _enrich_activity_run_doc(doc, catalog_dir)
 
 
 def _enrich_activity_run_doc(doc: dict[str, Any], catalog_dir: Path) -> dict[str, Any]:
     doc = normalise_activity_run_doc(doc)
     started_at = doc.get("started_at")
+    events = [event for event in (doc.get("events") or []) if isinstance(event, dict)]
+    operational = _activity_run_operational_state(events) if events else {}
     repos = []
     total_cost = 0.0
     saw_cost = False
@@ -528,9 +914,34 @@ def _enrich_activity_run_doc(doc: dict[str, Any], catalog_dir: Path) -> dict[str
             total_duration += float(duration)
             saw_duration = True
         repos.append(merged)
-    out = {**doc, "repos_changed": repos}
-    if out.get("cost_usd") is None and saw_cost:
-        out["cost_usd"] = round(total_cost, 4)
+    completed_count = doc.get("repos_completed_count")
+    if not isinstance(completed_count, int):
+        completed_count = max(len(repos), int(operational.get("repos_completed_count") or 0))
+    derived_operational = {
+        key: value
+        for key, value in operational.items()
+        if key not in doc
+    }
+    if doc.get("events_truncated"):
+        for key in ("repos_completed_count", "repos_ok_count", "failures_count", "run_cost_usd"):
+            derived_operational.pop(key, None)
+    out = {
+        **doc,
+        **derived_operational,
+        "repos_changed": repos,
+        "repos_changed_count": len(repos),
+        "repos_completed_count": completed_count,
+    }
+    if out.get("cost_usd") is None:
+        # Prefer money actually spent this run (summed repo_done costs) over the
+        # catalog-metric sum, which can include re-used costs from prior runs.
+        event_run_cost = doc.get("run_cost_usd")
+        if not isinstance(event_run_cost, (int, float)):
+            event_run_cost = None if doc.get("events_truncated") else operational.get("run_cost_usd")
+        if isinstance(event_run_cost, (int, float)):
+            out["cost_usd"] = event_run_cost
+        elif saw_cost:
+            out["cost_usd"] = round(total_cost, 4)
     if out.get("worker_duration_seconds") is None and saw_duration:
         out["worker_duration_seconds"] = round(total_duration, 1)
     return out
@@ -546,6 +957,10 @@ def _activity_run_summary(doc: dict[str, Any], path: Path) -> dict[str, Any]:
         "status": doc.get("status"),
         "repos_checked": doc.get("repos_checked"),
         "repos_changed_count": len(doc.get("repos_changed") or []),
+        "repos_completed_count": doc.get("repos_completed_count"),
+        "repos_ok_count": doc.get("repos_ok_count"),
+        "failures_count": doc.get("failures_count"),
+        "run_cost_usd": doc.get("run_cost_usd"),
         "budget_usd": doc.get("budget_usd"),
         "cost_usd": doc.get("cost_usd"),
         "catalog_cost_usd": doc.get("catalog_cost_usd"),
@@ -617,11 +1032,15 @@ def _read_lock(lock_path: Path) -> dict[str, Any]:
     try:
         parts = lock_path.read_text(encoding="utf-8").strip().split()
         if len(parts) >= 3:
+            pid = int(parts[0])
+            host = parts[1]
+            stale = host == socket.gethostname() and not pid_alive(pid)
             return {
                 "held": True,
-                "pid": int(parts[0]),
-                "host": parts[1],
+                "pid": pid,
+                "host": host,
                 "acquired_at": parts[2],
+                "stale_or_corrupt": stale,
             }
     except (OSError, ValueError):
         pass
@@ -880,8 +1299,15 @@ def _entity_brief(entity: dict[str, Any]) -> dict[str, Any]:
 
 # ---------- app factory ----------
 
-def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path) -> FastAPI:
+def create_app(
+    *,
+    catalog_path: Path,
+    extraction_log: Path,
+    decisions_path: Path,
+    tag_aliases_path: Path | None = None,
+) -> FastAPI:
     app = FastAPI(title="ServiceScout dashboard")
+    tag_aliases_path = tag_aliases_path or (catalog_path.parent / "tag_aliases.json")
 
     def scheduler_command(*, interval_minutes: int, budget_usd: float, trigger: str | None = None, force_repos: list[str] | None = None) -> list[str]:
         data_dir = catalog_path.parent.resolve()
@@ -903,6 +1329,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             "--provider", provider,
             "--effort", effort,
             "--crawler-arg=--reconcile",
+            "--crawler-arg=--reconcile-tags",
             "--crawler-arg=--embed",
             "--crawler-arg=--build-kuzu",
             "--crawler-arg=--runtime-config",
@@ -952,17 +1379,19 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         tag: list[str] | None = Query(default=None),
         runtime: list[str] | None = Query(default=None),
         confidence: list[str] | None = Query(default=None),
-        limit: int = 500,
+        limit: int = Query(default=500, ge=1, le=10000),
     ) -> JSONResponse:
         catalog = load_catalog(catalog_path)
         q = (query or "").lower().strip()
         owners_filter = set(owner or [])
         lifecycles_filter = set(lifecycle or [])
         envs_filter = set(environment or [])
-        tags_filter = set(tag or [])
         runtimes_filter = set(runtime or [])
         confidence_filter = set(confidence or [])
+        tag_aliases = load_tag_aliases(tag_aliases_path)
+        tags_filter = set(canonical_tags(tag, tag_aliases))
         out: list[dict[str, Any]] = []
+        total = 0
         for entity in catalog.get("entities") or []:
             if kind and entity.get("kind") != kind:
                 continue
@@ -976,7 +1405,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 continue
             if envs_filter and not envs_filter.intersection(spec.get("environments") or []):
                 continue
-            if tags_filter and not tags_filter.intersection(meta.get("tags") or []):
+            if tags_filter and not tags_filter.intersection(canonical_tags(meta.get("tags"), tag_aliases)):
                 continue
             if runtimes_filter and (spec.get("runtime") or "") not in runtimes_filter:
                 continue
@@ -992,10 +1421,16 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 ])
                 if q not in haystack:
                     continue
-            out.append(brief)
-            if len(out) >= limit:
-                break
-        return JSONResponse({"count": len(out), "entities": out})
+            total += 1
+            if len(out) < limit:
+                out.append(brief)
+        return JSONResponse({
+            "count": total,
+            "returned": len(out),
+            "limit": limit,
+            "truncated": len(out) < total,
+            "entities": out,
+        })
 
     @app.get("/api/facets")
     def api_facets() -> JSONResponse:
@@ -1009,6 +1444,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
         tags_count: dict[str, int] = {}
         runtimes_count: dict[str, int] = {}
         confidence_count: dict[str, int] = {}
+        tag_aliases = load_tag_aliases(tag_aliases_path)
         for entity in catalog.get("entities") or []:
             kind = entity.get("kind") or ""
             kinds_count[kind] = kinds_count.get(kind, 0) + 1
@@ -1027,7 +1463,7 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
                 lifecycles_count[lc] = lifecycles_count.get(lc, 0) + 1
             for env in spec.get("environments") or []:
                 envs_count[env] = envs_count.get(env, 0) + 1
-            for tg in meta.get("tags") or []:
+            for tg in canonical_tags(meta.get("tags"), tag_aliases):
                 tags_count[tg] = tags_count.get(tg, 0) + 1
             rt = spec.get("runtime") or ""
             if rt:
@@ -1502,16 +1938,25 @@ def create_app(*, catalog_path: Path, extraction_log: Path, decisions_path: Path
             if extraction_runs:
                 last_run = extraction_runs[0]
         active_log_path = str(trigger_log) if trigger_log.is_file() else None
-        active_log_tail = tail_file(trigger_log)
-        if not active_log_tail:
-            activity_log_path, activity_log_tail = latest_activity_log(data_dir)
+        active_log_events = cached_activity_log_events(trigger_log)
+        active_log_tail = tail_lines(trigger_log, limit=200)
+        if not active_log_events:
+            activity_log_path, activity_log_tail = latest_activity_log(data_dir, 200)
             if activity_log_path:
                 active_log_path = str(activity_log_path)
-                active_log_tail = activity_log_tail
+                active_log_events = _activity_log_events(activity_log_tail)
+        active_run = _active_run_doc(
+            data_dir=data_dir,
+            catalog_dir=_repo_record_dir(catalog_path.parent),
+            lock_info=lock_info,
+            scheduler_payload=scheduler_payload,
+            active_events=active_log_events,
+        )
         return JSONResponse({
             "lock": lock_info,
             "scheduler": scheduler_payload,
             "crawler": crawler_status(),
+            "active_run": active_run,
             "last_run": last_run,
             "interval_minutes": int(scheduler_payload.get("interval_minutes") or 360),
             "budget_usd": float(scheduler_payload.get("budget_usd") or 20.0),
@@ -1874,12 +2319,18 @@ def main() -> int:
     parser.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
     parser.add_argument("--extraction-log", type=Path, default=DEFAULT_EXTRACTION_LOG)
     parser.add_argument("--decisions", type=Path, default=DEFAULT_DECISIONS)
+    parser.add_argument("--tag-aliases", type=Path, default=None, help="Optional tag alias map generated by servicescout-reconcile-tags.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8788)
     args = parser.parse_args()
 
     import uvicorn
-    app = create_app(catalog_path=args.catalog, extraction_log=args.extraction_log, decisions_path=args.decisions)
+    app = create_app(
+        catalog_path=args.catalog,
+        extraction_log=args.extraction_log,
+        decisions_path=args.decisions,
+        tag_aliases_path=args.tag_aliases,
+    )
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 

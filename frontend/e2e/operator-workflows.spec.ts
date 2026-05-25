@@ -337,6 +337,58 @@ test("activity surfaces an in-flight manual re-index before the final run log ex
         budget_usd: 100,
       },
       crawler: { running: true, pid: 76257, uptime: "00:30" },
+      active_run: {
+        run_id: "20260525T084030Z-7a1cf39e",
+        trigger: "manual-reindex",
+        started_at: "2026-05-25T08:40:30+00:00",
+        observed_at: "2026-05-25T08:55:00+00:00",
+        status: "running",
+        repos_checked: 77,
+        repos_changed_count: 1,
+        repos_completed_count: 1,
+        budget_usd: 100,
+        duration_seconds: 870,
+        repos_changed: [{ repo: "payments", reason: "crawler_extraction", status: "ok" }],
+        latest_batch: { n: 12, parallelism: 12, batch_size: 48, stale_remaining: 65 },
+        active_workers: [
+          {
+            worker_id: "W1",
+            repo: "orders",
+            pid: 1001,
+            phase: "command execution",
+            last_message: "command execution running",
+            elapsed_seconds: 120,
+            last_at: "2026-05-25T08:54:30+00:00",
+          },
+          {
+            worker_id: "W2",
+            repo: "payments-api",
+            pid: 1002,
+            phase: "agent turn",
+            last_message: "agent turn completed",
+            elapsed_seconds: 95,
+            last_at: "2026-05-25T08:54:45+00:00",
+          },
+        ],
+        recent_completions: [
+          {
+            repo: "payments",
+            status: "ok",
+            duration_seconds: 54,
+            cost_usd: 0.42,
+            reason: "crawler_extraction",
+            completed_at: "2026-05-25T08:53:00+00:00",
+          },
+        ],
+        events: [
+          { event: "tick_start", run_id: "20260525T084030Z-7a1cf39e", ts: "2026-05-25T08:40:30+00:00" },
+          { event: "manual_reindex_selected", run_id: "20260525T084030Z-7a1cf39e", count: 77, requested: ["orders", "payments"] },
+          { event: "crawler_invoke", run_id: "20260525T084030Z-7a1cf39e", repos: ["orders", "payments"] },
+          { event: "extractor_process_start", repo: "orders", ts: "2026-05-25T08:52:30+00:00" },
+          { event: "extractor_child_event", repo: "orders", line: "{\"event\":\"item_started\",\"item_type\":\"command_execution\",\"status\":\"in_progress\"}", ts: "2026-05-25T08:54:00+00:00" },
+          { event: "repo_done", repo: "payments", status: "ok", duration_seconds: 54, cost_usd: 0.42, ts: "2026-05-25T08:53:00+00:00" },
+        ],
+      },
       active_log_path: "/tmp/crawl_trigger.log",
       active_log_tail: [
         "{\"event\":\"tick_start\",\"run_id\":\"20260525T084030Z-7a1cf39e\",\"ts\":\"2026-05-25T08:40:30+00:00\"}",
@@ -348,7 +400,11 @@ test("activity surfaces an in-flight manual re-index before the final run log ex
 
   await page.goto("/activity");
   await expect(page.getByText("20260525T084030Z-7a1cf39e").first()).toBeVisible();
-  await expect(page.getByText("0/77")).toBeVisible();
+  await expect(page.getByText("1/77")).toBeVisible();
+  await expect(page.getByText("Workers", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("orders", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("command execution running").first()).toBeVisible();
+  await page.getByRole("button", { name: "Events" }).click();
   await expect(page.getByText("Manual re-index selected: 77 repos").first()).toBeVisible();
 });
 

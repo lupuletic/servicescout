@@ -1,16 +1,21 @@
 import { useMemo, useState, type ReactNode } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import { AlertCircle, CheckCircle2, Clock3, GitBranch, Loader2, Pause, Play, RefreshCw, RotateCw, Settings2, XCircle } from "lucide-react";
+import { AlertCircle, CheckCircle2, Clock3, GitBranch, Loader2, Pause, Play, RefreshCw, RotateCw, Settings2, TerminalSquare, XCircle } from "lucide-react";
 import { type CrawlRunDetail, type CrawlRunsPayload, type CrawlStatusPayload } from "@/lib/api";
 import { Button, Card, CardTitle, CardValue, Input, PageHeader, StatusBadge } from "@/components/ui";
 import { cn } from "@/lib/cn";
 
 type ChangedRepo = NonNullable<CrawlRunDetail["repos_changed"]>[number];
+type CompletionItem = NonNullable<CrawlRunDetail["recent_completions"]>[number];
 type ActiveWorker = {
   repo: string;
+  workerId?: string;
   pid?: number;
   elapsedSeconds?: number;
-  lastEvent: string;
+  phase?: string;
+  startedAt?: string | null;
+  lastEvent?: string;
+  lastMessage?: string;
   lastAt?: string | null;
 };
 type FailureItem = {
@@ -94,6 +99,10 @@ function shortRepo(value?: unknown) {
   return text.includes("/") ? text.split("/").pop() || text : text;
 }
 
+function workerLabel(worker: ActiveWorker) {
+  return worker.lastMessage || worker.phase || worker.lastEvent || "running";
+}
+
 function eventTimestamp(event: Record<string, unknown>) {
   return typeof event.ts === "string" ? event.ts : null;
 }
@@ -125,6 +134,13 @@ function formatEvent(event: Record<string, unknown>) {
   }
   if (name === "runtime_config_applied") {
     return `Runtime limits applied: ${event.parallelism || "-"} workers, batch ${event.batch_size || "-"}`;
+  }
+  if (name === "tag_reconcile_start") {
+    return `Tag reconciliation started${event.llm_assist ? " with LLM assist" : ""}`;
+  }
+  if (name === "tag_reconcile_done") {
+    if (event.skipped) return `Tag reconciliation skipped: ${event.reason || "unchanged"}`;
+    return `Tag reconciliation finished${event.returncode === 0 ? "" : ` with exit ${event.returncode}`}`;
   }
   if (name === "extractor_process_start") {
     return `${shortRepo(repo)} started`;
@@ -222,7 +238,10 @@ function failureItems(repos: ChangedRepo[], events: Array<Record<string, unknown
   }
   for (const event of events) {
     const name = String(event.event || "");
-    if (!["repo_clone_failed", "seed_clone_failed", "gh_repo_api_error", "gh_repo_list_error"].includes(name)) continue;
+    if (
+      !["repo_clone_failed", "seed_clone_failed", "gh_repo_api_error", "gh_repo_list_error"].includes(name)
+      && !(["repo_done", "extractor_process_exit"].includes(name) && isFailureStatus(String(event.status || "")))
+    ) continue;
     failures.push(classifyFailure({
       repo: event.repo || event.seed || event.org,
       status: name,
@@ -242,7 +261,7 @@ function summariseRun(detail?: CrawlRunDetail) {
   const events = detail?.events || [];
   const repos = withRepoMetadata(detail?.repos_changed || [], events);
   const active = new Map<string, ActiveWorker>();
-  let latestBatch: Record<string, unknown> | null = null;
+  let latestBatch: Record<string, unknown> | null = detail?.latest_batch || null;
   for (const event of events) {
     const name = String(event.event || "");
     const repo = typeof event.repo === "string" ? event.repo : "";
@@ -251,8 +270,11 @@ function summariseRun(detail?: CrawlRunDetail) {
       active.set(repo, {
         repo,
         pid: numeric(event.pid) ?? undefined,
+        phase: "extracting",
         lastEvent: "started",
+        lastMessage: "extractor starting",
         lastAt: eventTimestamp(event),
+        startedAt: eventTimestamp(event),
       });
     }
     if (name === "extractor_heartbeat" && repo) {
@@ -261,34 +283,59 @@ function summariseRun(detail?: CrawlRunDetail) {
         repo,
         pid: numeric(event.pid) ?? existing?.pid,
         elapsedSeconds: numeric(event.elapsed_seconds) ?? existing?.elapsedSeconds,
+        phase: "extracting",
         lastEvent: "heartbeat",
+        lastMessage: "heartbeat",
         lastAt: eventTimestamp(event),
+        startedAt: existing?.startedAt,
       });
     }
     if (name === "extractor_child_event" && repo) {
       const existing = active.get(repo);
       if (existing) {
+        const inner = parseJson(event.line);
         active.set(repo, {
           ...existing,
+          phase: String(inner?.item_type || inner?.event || existing.phase || "").replace(/_/g, " "),
           lastEvent: formatEvent(event),
+          lastMessage: formatEvent(event),
           lastAt: eventTimestamp(event),
         });
       }
     }
     if ((name === "extractor_process_exit" || name === "repo_done") && repo) active.delete(repo);
   }
-  const failures = failureItems(repos, events).length;
-  const ok = repos.filter((repo) => repo.status === "ok").length;
+  // Prefer the backend tally (computed over the full event stream); the
+  // client-side scan only sees the truncated event tail and undercounts.
+  const failures = detail?.failures_count ?? failureItems(repos, events).length;
+  const recentCompletions = detail?.recent_completions || [];
+  const ok = detail?.repos_ok_count ?? Math.max(
+    repos.filter((repo) => repo.status === "ok").length,
+    recentCompletions.filter((repo) => repo.status === "ok").length,
+  );
   const totalDuration = repos.reduce((sum, repo) => sum + (repo.duration_seconds || 0), 0);
-  const activeWorkers = [...active.values()].slice(-12).reverse();
+  const activeWorkers = detail?.active_workers?.length
+    ? detail.active_workers.map((worker) => ({
+      repo: worker.repo,
+      workerId: worker.worker_id,
+      pid: worker.pid,
+      elapsedSeconds: worker.elapsed_seconds,
+      phase: worker.phase,
+      startedAt: worker.started_at,
+      lastAt: worker.last_at,
+      lastEvent: worker.last_event,
+      lastMessage: worker.last_message,
+    }))
+    : [...active.values()].slice(-12).reverse();
+  const completed = detail?.repos_completed_count ?? (recentCompletions.length || repos.length || detail?.repos_changed_count || 0);
   return {
     checked: detail?.repos_checked,
-    completed: repos.length || detail?.repos_changed_count || 0,
+    completed,
     ok,
     failures,
     activeWorkers,
     activeRepos: activeWorkers.map((worker) => worker.repo),
-    activeCount: active.size,
+    activeCount: detail?.active_workers?.length ?? active.size,
     latestBatch,
     avgDurationSeconds: repos.length ? totalDuration / repos.length : null,
   };
@@ -296,6 +343,7 @@ function summariseRun(detail?: CrawlRunDetail) {
 
 function activeRunFromStatus(status?: CrawlStatusPayload): CrawlRunDetail | null {
   if (!status?.lock?.held) return null;
+  if (status.active_run) return status.active_run;
   const events = parseLogEvents(status.active_log_tail);
   const tickStart = [...events].reverse().find((event) => event.event === "tick_start");
   const selected = [...events].reverse().find((event) => event.event === "manual_reindex_selected" || event.event === "change_detected");
@@ -446,7 +494,7 @@ export function ActivityPage() {
   const runCompleted = selectedDetail ? runStats.completed : status?.last_run?.repos_changed_count || 0;
   const runProgress = runChecked ? Math.min(100, Math.round((runCompleted / runChecked) * 100)) : null;
   const runBudget = selectedDetail?.budget_usd ?? status?.last_run?.budget_usd ?? schedulerBudget;
-  const runCost = selectedDetail?.cost_usd ?? status?.last_run?.cost_usd;
+  const runCost = selectedDetail?.run_cost_usd ?? selectedDetail?.cost_usd ?? status?.last_run?.run_cost_usd ?? status?.last_run?.cost_usd;
   const runSpendSoFar = numeric(runStats.latestBatch?.run_spent_so_far);
   const catalogSpend = numeric(runStats.latestBatch?.spent_so_far) ?? selectedDetail?.catalog_cost_usd ?? status?.last_run?.catalog_cost_usd;
   const spendValue = runCost ?? runSpendSoFar ?? catalogSpend;
@@ -651,8 +699,12 @@ export function ActivityPage() {
             <div className="px-4 py-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-fg-dim">Live events</div>
-                  <div className="text-xs text-fg-dim">{logPath || "No scheduler or trigger log yet"}</div>
+                  <div className="text-xs uppercase tracking-wider text-fg-dim">Worker snapshot</div>
+                  <div className="text-xs text-fg-dim">
+                    {runStats.activeCount
+                      ? `${runStats.activeCount} active · ${status?.crawler_runtime?.parallelism || "-"} worker limit`
+                      : logPath || "No active workers yet"}
+                  </div>
                 </div>
                 {status?.crawler?.running && (
                   <div className="rounded border border-accent/30 bg-accent/10 px-2 py-1 text-xs text-fg">
@@ -660,12 +712,25 @@ export function ActivityPage() {
                   </div>
                 )}
               </div>
-              {logTail.length > 0 ? (
-                <div className="mt-3 max-h-48 overflow-auto rounded border border-border bg-bg">
-                  {logTail.slice(-12).reverse().map((line, index) => (
+              {runStats.activeWorkers.length > 0 ? (
+                <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                  {runStats.activeWorkers.slice(0, 12).map((worker) => (
+                    <div key={worker.repo} className="min-w-0 rounded border border-border bg-bg px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-fg-dim">
+                          {worker.workerId || "W"}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">{worker.repo}</span>
+                      </div>
+                      <div className="mt-1 truncate text-xs text-fg-dim">{workerLabel(worker)}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : logTail.length > 0 ? (
+                <div className="mt-3 rounded border border-border bg-bg">
+                  {logTail.slice(-3).reverse().map((line, index) => (
                     <div key={index} className="border-b border-border px-3 py-2 last:border-b-0">
-                      <div className="text-sm text-fg-muted">{formatLogLine(line)}</div>
-                      <div className="mt-0.5 truncate font-mono text-[11px] text-fg-dim">{line}</div>
+                      <div className="truncate text-sm text-fg-muted">{formatLogLine(line)}</div>
                     </div>
                   ))}
                 </div>
@@ -716,7 +781,7 @@ export function ActivityPage() {
                         <StatusGlyph status={run.status} />
                         <StatusBadge status={run.status || "unknown"} />
                       </div>
-                      <div className="text-fg-muted">{run.repos_changed_count}</div>
+                      <div className="text-fg-muted">{run.repos_completed_count ?? run.repos_changed_count}</div>
                       <div className="text-right text-fg-muted tabular-nums">{fmtMoney(run.cost_usd)}</div>
                       <div className="text-right text-fg-muted">{runDuration(run)}</div>
                     </button>
@@ -737,19 +802,34 @@ export function ActivityPage() {
 }
 
 function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReindexRepo: (repo: string) => void }) {
+  const [tab, setTab] = useState<"overview" | "workers" | "events" | "failures">("overview");
+  const [selectedWorkerRepo, setSelectedWorkerRepo] = useState<string | null>(null);
   const events = detail.events || [];
   const changedRepos = withRepoMetadata(detail.repos_changed || [], events);
-  const visibleChangedRepos = changedRepos.slice(-20).reverse();
-  const visibleEvents = events.slice(-40).reverse();
   const stats = summariseRun(detail);
   const failures = failureItems(changedRepos, events);
-  const visibleFailures = failures.slice(-12).reverse();
-  const currentRunSpend = detail.cost_usd ?? numeric(stats.latestBatch?.run_spent_so_far);
+  const completions: CompletionItem[] = detail.recent_completions?.length
+    ? detail.recent_completions
+    : changedRepos.slice(-20).reverse().map((repo) => ({
+      repo: repo.repo,
+      status: repo.status,
+      duration_seconds: repo.duration_seconds,
+      cost_usd: repo.cost_usd,
+      reason: repo.reason,
+      error: repo.error,
+    }));
+  const currentRunSpend = detail.run_cost_usd ?? detail.cost_usd ?? numeric(stats.latestBatch?.run_spent_so_far);
   const batchCatalogSpend = numeric(stats.latestBatch?.spent_so_far);
   const observedFinish = detail.finished_at || detail.observed_at;
+  const eventCount = detail.event_count ?? events.length;
+  const filteredEvents = selectedWorkerRepo
+    ? events.filter((event) => event.repo === selectedWorkerRepo)
+    : events;
+  const visibleEvents = filteredEvents.slice(-80).reverse();
+  const progress = stats.checked ? Math.min(100, Math.round((stats.completed / stats.checked) * 100)) : null;
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[auto_auto_auto_minmax(0,1fr)] gap-5 p-6 text-sm">
+    <div className="grid h-full min-h-0 grid-rows-[auto_auto_auto_minmax(0,1fr)] gap-4 p-6 text-sm">
       <div>
         <div className="flex items-center gap-2">
           <StatusGlyph status={detail.status} className="text-fg-muted" />
@@ -762,136 +842,83 @@ function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReinde
       </div>
 
       <div className="grid grid-cols-2 gap-2">
-        <MiniMetric label="Checked" value={detail.repos_checked ?? "-"} />
-        <MiniMetric label="Completed" value={stats.completed || detail.repos_changed_count || "-"} />
-        <MiniMetric label="Active" value={stats.activeCount} />
+        <MiniMetric label="Scope" value={detail.repos_checked ?? "-"} />
+        <MiniMetric label="Done" value={stats.completed || "-"} />
+        <MiniMetric label="Running" value={stats.activeCount} />
         <MiniMetric label="Duration" value={runDuration(detail)} />
         <MiniMetric label="Spend" value={fmtMoney(currentRunSpend)} />
         <MiniMetric label="Failures" value={stats.failures} />
       </div>
 
+      <div className="space-y-3">
+        <div className="h-1.5 overflow-hidden rounded bg-bg">
+          <div className="h-full rounded bg-accent transition-all" style={{ width: `${progress ?? 0}%` }} />
+        </div>
+        <div className="grid grid-cols-4 gap-1 rounded border border-border bg-bg p-1">
+          {[
+            ["overview", "Overview"],
+            ["workers", "Workers"],
+            ["events", "Events"],
+            ["failures", "Failures"],
+          ].map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setTab(value as "overview" | "workers" | "events" | "failures")}
+              className={cn(
+                "rounded px-2 py-1.5 text-xs text-fg-muted hover:text-fg",
+                tab === value && "bg-accent/20 text-fg",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="min-h-0 overflow-auto pr-1 space-y-5">
-        {stats.latestBatch && (
-          <section className="rounded border border-border bg-bg px-3 py-2">
-            <div className="text-xs uppercase tracking-wider text-fg-dim">Current batch</div>
-            <div className="mt-1 grid grid-cols-3 gap-2 text-sm text-fg-muted">
-              <div><span className="text-fg">{String(stats.latestBatch.n || "-")}</span> repos</div>
-              <div><span className="text-fg">{String(stats.latestBatch.parallelism || "-")}</span> workers</div>
-              <div><span className="text-fg">{String(stats.latestBatch.stale_remaining || "-")}</span> queued</div>
-            </div>
-            <div className="mt-2 text-xs text-fg-dim">
-              {currentRunSpend != null ? `${fmtMoney(currentRunSpend)} spent this run` : "Run spend pending"}
-              {detail.budget_usd != null ? ` · $${detail.budget_usd} budget` : ""}
-              {batchCatalogSpend != null ? ` · ${fmtMoney(batchCatalogSpend)} catalog spend` : ""}
-            </div>
-          </section>
+        {tab === "overview" && (
+          <>
+            <BatchSummary
+              latestBatch={stats.latestBatch}
+              currentRunSpend={currentRunSpend}
+              batchCatalogSpend={batchCatalogSpend}
+              budgetUsd={detail.budget_usd}
+            />
+            <WorkerList
+              workers={stats.activeWorkers}
+              selectedRepo={selectedWorkerRepo}
+              onSelect={(repo) => {
+                setSelectedWorkerRepo(repo);
+                setTab("events");
+              }}
+              compact
+            />
+            <CompletionList completions={completions.slice(0, 8)} onReindexRepo={onReindexRepo} compact />
+            <FailureList failures={failures.slice(0, 6)} />
+          </>
         )}
 
-        {stats.activeWorkers.length > 0 && (
-          <section>
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <h3 className="text-xs uppercase tracking-wider text-fg-dim">Active workers</h3>
-              <span className="text-xs text-fg-dim">Latest {stats.activeWorkers.length} of {stats.activeCount}</span>
-            </div>
-            <div className="space-y-1">
-              {stats.activeWorkers.map((worker) => (
-                <div key={worker.repo} className="rounded border border-border bg-bg px-3 py-2">
-                  <div className="flex items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">{worker.repo}</span>
-                    {worker.pid && <span className="text-[11px] text-fg-dim">PID {worker.pid}</span>}
-                  </div>
-                  <div className="mt-1 flex items-center gap-2 text-xs text-fg-dim">
-                    <span>{worker.elapsedSeconds != null ? formatSeconds(worker.elapsedSeconds) : "running"}</span>
-                    <span>·</span>
-                    <span className="truncate">{worker.lastEvent}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
+        {tab === "workers" && (
+          <WorkerList
+            workers={stats.activeWorkers}
+            selectedRepo={selectedWorkerRepo}
+            onSelect={setSelectedWorkerRepo}
+          />
         )}
 
-        {failures.length > 0 && (
-          <section>
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <h3 className="text-xs uppercase tracking-wider text-fg-dim">Needs attention</h3>
-              {failures.length > visibleFailures.length && (
-                <span className="text-xs text-fg-dim">Latest {visibleFailures.length} of {failures.length}</span>
-              )}
-            </div>
-            <div className="space-y-1">
-              {visibleFailures.map((failure, index) => (
-                <div key={`${failure.repo}-${failure.event || failure.status}-${index}`} className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2">
-                  <div className="flex items-center gap-2 text-fg">
-                    <XCircle size={13} className="text-red-400" />
-                    <span className="min-w-0 flex-1 truncate font-mono text-xs">{failure.repo}</span>
-                    <span className="rounded border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-red-300">
-                      {failure.category}
-                    </span>
-                  </div>
-                  <div className="mt-1 text-xs text-fg-dim">
-                    {[failure.status.replaceAll("_", " "), failure.detail].filter(Boolean).join(" · ")}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
+        {tab === "events" && (
+          <EventList
+            events={visibleEvents}
+            selectedRepo={selectedWorkerRepo}
+            eventCount={eventCount}
+            shownCount={visibleEvents.length}
+            truncated={Boolean(detail.events_truncated)}
+            onClearFilter={() => setSelectedWorkerRepo(null)}
+          />
         )}
 
-        {changedRepos.length > 0 && (
-          <section>
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <h3 className="text-xs uppercase tracking-wider text-fg-dim">Recent completions</h3>
-              {changedRepos.length > visibleChangedRepos.length && (
-                <span className="text-xs text-fg-dim">Latest {visibleChangedRepos.length} of {changedRepos.length}</span>
-              )}
-            </div>
-            <div className="max-h-[42vh] space-y-1 overflow-auto pr-1">
-              {visibleChangedRepos.map((repo, index) => (
-                <div key={`${repo.repo}-${repo.reason || "changed"}-${index}`} className="rounded border border-border bg-bg px-3 py-2">
-                  <div className="flex items-center gap-2 text-fg">
-                    <GitBranch size={13} className="text-fg-dim" />
-                    <span className="font-mono text-xs truncate">{repo.repo}</span>
-                    <StatusBadge status={repo.status || "done"} />
-                    <button
-                      type="button"
-                      onClick={() => onReindexRepo(repo.repo)}
-                      className="ml-auto inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px] text-fg-muted hover:text-fg"
-                    >
-                      <RotateCw size={11} /> Re-index
-                    </button>
-                  </div>
-                  <div className="mt-1 text-xs text-fg-dim">
-                    {[
-                      repo.reason || "crawler extraction",
-                      repo.duration_seconds ? formatSeconds(repo.duration_seconds) : null,
-                      repo.cost_usd != null ? fmtMoney(repo.cost_usd) : null,
-                    ].filter(Boolean).join(" · ")}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {events.length > 0 && (
-          <section>
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <h3 className="text-xs uppercase tracking-wider text-fg-dim">Event stream</h3>
-              {events.length > visibleEvents.length && (
-                <span className="text-xs text-fg-dim">Latest {visibleEvents.length} of {events.length}</span>
-              )}
-            </div>
-            <ol className="max-h-80 space-y-2 overflow-auto pr-1">
-              {visibleEvents.map((event, index) => (
-                <li key={index} className="rounded border border-border bg-bg px-3 py-2">
-                  <div className="text-sm text-fg">{formatEvent(event)}</div>
-                  <div className="mt-1 text-xs text-fg-dim">{formatDate(eventTimestamp(event))}</div>
-                </li>
-              ))}
-            </ol>
-          </section>
-        )}
+        {tab === "failures" && <FailureList failures={failures} />}
 
         {(detail.crawler_stdout_tail || detail.crawler_stderr_tail || detail.error) && (
           <section>
@@ -903,6 +930,263 @@ function RunDetail({ detail, onReindexRepo }: { detail: CrawlRunDetail; onReinde
         )}
       </div>
     </div>
+  );
+}
+
+function BatchSummary({
+  latestBatch,
+  currentRunSpend,
+  batchCatalogSpend,
+  budgetUsd,
+}: {
+  latestBatch: Record<string, unknown> | null;
+  currentRunSpend?: number | null;
+  batchCatalogSpend?: number | null;
+  budgetUsd?: number | null;
+}) {
+  if (!latestBatch) {
+    return (
+      <section className="rounded border border-border bg-bg px-3 py-2 text-sm text-fg-muted">
+        No batch has started for this run yet.
+      </section>
+    );
+  }
+  const batchN = numeric(latestBatch.n) ?? 0;
+  const workerLimit = numeric(latestBatch.parallelism);
+  const staleRemaining = numeric(latestBatch.stale_remaining);
+  // stale_remaining is counted *before* this batch is sliced off, so it
+  // includes the repos already in the batch — subtract them to get what's
+  // actually still waiting.
+  const queued = staleRemaining != null ? Math.max(staleRemaining - batchN, 0) : null;
+  const workersBusy = workerLimit != null ? Math.min(batchN, workerLimit) : null;
+  // One compact line: repo count, workers busy / limit, and queued only when
+  // there's actually a backlog — no "0 queued" noise on small re-indexes.
+  const segments = [
+    `${batchN} repo${batchN === 1 ? "" : "s"}`,
+    workerLimit != null ? `${workersBusy}/${workerLimit} workers` : null,
+    queued ? `${queued} queued` : null,
+  ].filter(Boolean) as string[];
+  return (
+    <section className="rounded border border-border bg-bg px-3 py-2">
+      <div className="text-xs uppercase tracking-wider text-fg-dim">Current batch</div>
+      <div className="mt-1 text-sm text-fg">{segments.join(" · ")}</div>
+      <div className="mt-2 text-xs text-fg-dim">
+        {currentRunSpend != null ? `${fmtMoney(currentRunSpend)} spent this run` : "Run spend pending"}
+        {budgetUsd != null ? ` · $${budgetUsd} budget` : ""}
+        {batchCatalogSpend != null ? ` · ${fmtMoney(batchCatalogSpend)} catalog spend` : ""}
+      </div>
+    </section>
+  );
+}
+
+function WorkerList({
+  workers,
+  selectedRepo,
+  onSelect,
+  compact = false,
+}: {
+  workers: ActiveWorker[];
+  selectedRepo?: string | null;
+  onSelect: (repo: string) => void;
+  compact?: boolean;
+}) {
+  if (!workers.length) {
+    return (
+      <section>
+        <h3 className="mb-2 text-xs uppercase tracking-wider text-fg-dim">Workers</h3>
+        <div className="rounded border border-border bg-bg px-3 py-2 text-sm text-fg-muted">
+          No active workers are reporting yet.
+        </div>
+      </section>
+    );
+  }
+  const visibleWorkers = compact ? workers.slice(0, 6) : workers;
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h3 className="text-xs uppercase tracking-wider text-fg-dim">Workers</h3>
+        <span className="text-xs text-fg-dim">
+          {compact && workers.length > visibleWorkers.length ? `${visibleWorkers.length} of ${workers.length}` : `${workers.length} active`}
+        </span>
+      </div>
+      <div className="space-y-1">
+        {visibleWorkers.map((worker) => (
+          <button
+            key={worker.repo}
+            type="button"
+            onClick={() => onSelect(worker.repo)}
+            className={cn(
+              "w-full rounded border border-border bg-bg px-3 py-2 text-left hover:border-accent/50",
+              selectedRepo === worker.repo && "border-accent/60 bg-accent/10",
+            )}
+          >
+            <div className="flex items-center gap-2">
+              <span className="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-fg-dim">
+                {worker.workerId || "W"}
+              </span>
+              <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">{worker.repo}</span>
+              {worker.pid && <span className="text-[11px] text-fg-dim">PID {worker.pid}</span>}
+            </div>
+            <div className="mt-1 flex items-center gap-2 text-xs text-fg-dim">
+              <span>{worker.elapsedSeconds != null ? formatSeconds(worker.elapsedSeconds) : "running"}</span>
+              <span>·</span>
+              <span className="truncate">{workerLabel(worker)}</span>
+            </div>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function CompletionList({
+  completions,
+  onReindexRepo,
+  compact = false,
+}: {
+  completions: CompletionItem[];
+  onReindexRepo: (repo: string) => void;
+  compact?: boolean;
+}) {
+  if (!completions.length) {
+    return (
+      <section>
+        <h3 className="mb-2 text-xs uppercase tracking-wider text-fg-dim">Recent completions</h3>
+        <div className="rounded border border-border bg-bg px-3 py-2 text-sm text-fg-muted">
+          No repo has completed in this run yet.
+        </div>
+      </section>
+    );
+  }
+  const visible = compact ? completions.slice(0, 6) : completions;
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h3 className="text-xs uppercase tracking-wider text-fg-dim">Recent completions</h3>
+        {completions.length > visible.length && <span className="text-xs text-fg-dim">Latest {visible.length} of {completions.length}</span>}
+      </div>
+      <div className="space-y-1">
+        {visible.map((repo, index) => (
+          <div key={`${repo.repo}-${repo.reason || "done"}-${index}`} className="rounded border border-border bg-bg px-3 py-2">
+            <div className="flex items-center gap-2 text-fg">
+              <GitBranch size={13} className="text-fg-dim" />
+              <span className="min-w-0 flex-1 truncate font-mono text-xs">{repo.repo}</span>
+              <StatusBadge status={repo.status || "done"} />
+              <button
+                type="button"
+                onClick={() => onReindexRepo(repo.repo)}
+                className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px] text-fg-muted hover:text-fg"
+              >
+                <RotateCw size={11} /> Re-index
+              </button>
+            </div>
+            <div className="mt-1 text-xs text-fg-dim">
+              {[
+                repo.reason || "crawler extraction",
+                repo.duration_seconds ? formatSeconds(repo.duration_seconds) : null,
+                repo.cost_usd != null ? fmtMoney(repo.cost_usd) : null,
+              ].filter(Boolean).join(" · ")}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function FailureList({ failures }: { failures: FailureItem[] }) {
+  if (!failures.length) {
+    return (
+      <section>
+        <h3 className="mb-2 text-xs uppercase tracking-wider text-fg-dim">Needs attention</h3>
+        <div className="rounded border border-border bg-bg px-3 py-2 text-sm text-fg-muted">
+          No failures reported for this run.
+        </div>
+      </section>
+    );
+  }
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h3 className="text-xs uppercase tracking-wider text-fg-dim">Needs attention</h3>
+        <span className="text-xs text-fg-dim">{failures.length} failure{failures.length === 1 ? "" : "s"}</span>
+      </div>
+      <div className="space-y-1">
+        {failures.map((failure, index) => (
+          <div key={`${failure.repo}-${failure.event || failure.status}-${index}`} className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2">
+            <div className="flex items-center gap-2 text-fg">
+              <XCircle size={13} className="text-red-400" />
+              <span className="min-w-0 flex-1 truncate font-mono text-xs">{failure.repo}</span>
+              <span className="rounded border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-red-300">
+                {failure.category}
+              </span>
+            </div>
+            <div className="mt-1 text-xs text-fg-dim">
+              {[failure.status.replaceAll("_", " "), failure.detail].filter(Boolean).join(" · ")}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function EventList({
+  events,
+  selectedRepo,
+  eventCount,
+  shownCount,
+  truncated,
+  onClearFilter,
+}: {
+  events: Array<Record<string, unknown>>;
+  selectedRepo?: string | null;
+  eventCount: number;
+  shownCount: number;
+  truncated: boolean;
+  onClearFilter: () => void;
+}) {
+  if (!events.length) {
+    return (
+      <section>
+        <h3 className="mb-2 text-xs uppercase tracking-wider text-fg-dim">Event stream</h3>
+        <div className="rounded border border-border bg-bg px-3 py-2 text-sm text-fg-muted">
+          {selectedRepo ? `No retained events for ${selectedRepo}.` : "No retained events for this run yet."}
+        </div>
+      </section>
+    );
+  }
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h3 className="text-xs uppercase tracking-wider text-fg-dim">Event stream</h3>
+        <span className="text-xs text-fg-dim">
+          Latest {shownCount} of {eventCount}{truncated ? " retained" : ""}
+        </span>
+      </div>
+      {selectedRepo && (
+        <button
+          type="button"
+          onClick={onClearFilter}
+          className="mb-2 rounded border border-border px-2 py-1 text-xs text-fg-muted hover:text-fg"
+        >
+          Showing {selectedRepo}. Clear filter
+        </button>
+      )}
+      <ol className="space-y-2">
+        {events.map((event, index) => (
+          <li key={index} className="rounded border border-border bg-bg px-3 py-2">
+            <div className="flex items-start gap-2">
+              <TerminalSquare size={13} className="mt-0.5 shrink-0 text-fg-dim" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm text-fg">{formatEvent(event)}</div>
+                <div className="mt-1 text-xs text-fg-dim">{formatDate(eventTimestamp(event))}</div>
+              </div>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 

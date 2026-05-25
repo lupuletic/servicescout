@@ -70,6 +70,11 @@ REL_TYPES = [
     "subcomponentOf",
 ]
 
+# Safety cap on total hops emitted by a single trace() — branch-aware tracing
+# revisits nodes via distinct paths, so a dense graph at high max_hops can
+# expand combinatorially without one.
+_MAX_TRACE_HOPS = 5000
+
 
 class KuzuBackend(Backend):
     name = "kuzu"
@@ -95,6 +100,36 @@ class KuzuBackend(Backend):
             except RuntimeError:
                 pass  # already loaded
         self._refresh_in_memory()
+        # Remember the on-disk state we loaded so _maybe_reload() can detect a
+        # rebuild (build_kuzu wipes + recreates the DB, changing its mtime).
+        self._loaded_mtime = self._db_mtime()
+
+    def _db_mtime(self) -> int | None:
+        try:
+            return self.db_path.stat().st_mtime_ns
+        except OSError:
+            return None
+
+    def _close(self) -> None:
+        for attr in ("_conn", "_db"):
+            obj = getattr(self, attr, None)
+            if obj is not None:
+                try:
+                    obj.close()
+                except Exception:  # noqa: BLE001 - best-effort; we re-open next
+                    pass
+                setattr(self, attr, None)
+        import gc
+        gc.collect()  # release the file lock before re-opening the same path
+
+    def _maybe_reload(self) -> None:
+        """Re-open the DB if it was rebuilt on disk, mirroring JSONBackend so a
+        long-running MCP server doesn't serve a stale startup snapshot."""
+        current = self._db_mtime()
+        if current is None or current == getattr(self, "_loaded_mtime", None):
+            return
+        self._close()
+        self._open()
 
     # -- in-memory adjacency (built from Kuzu on startup) -----------------
 
@@ -102,11 +137,22 @@ class KuzuBackend(Backend):
         self._entity_index: dict[str, dict[str, Any]] = {}
         self._by_source: dict[str, list[dict[str, Any]]] = {}
         self._by_target: dict[str, list[dict[str, Any]]] = {}
-        # Hydrate entities (lightweight — no embedding).
-        r = self._conn.execute("MATCH (n:Entity) RETURN n.ref, n.kind, n.name, n.summary_text, n.tagline, n.aliases, n.source_repos, n.spec_json, n.annotations_json")
+        # Hydrate entities (lightweight — no embedding). `confidence` is a newer
+        # column; tolerate DBs built before it existed so search still works
+        # (entities without it just rank/filter as unknown until a rebuild).
+        try:
+            r = self._conn.execute("MATCH (n:Entity) RETURN n.ref, n.kind, n.name, n.confidence, n.summary_text, n.tagline, n.aliases, n.source_repos, n.spec_json, n.annotations_json")
+            has_confidence = True
+        except RuntimeError:
+            r = self._conn.execute("MATCH (n:Entity) RETURN n.ref, n.kind, n.name, n.summary_text, n.tagline, n.aliases, n.source_repos, n.spec_json, n.annotations_json")
+            has_confidence = False
         while r.has_next():
             row = r.get_next()
-            ref, kind, name, desc, tagline, aliases, source_repos, spec_json, annotations_json = row
+            if has_confidence:
+                ref, kind, name, confidence, desc, tagline, aliases, source_repos, spec_json, annotations_json = row
+            else:
+                ref, kind, name, desc, tagline, aliases, source_repos, spec_json, annotations_json = row
+                confidence = ""
             spec = _safe_json(spec_json) or {}
             annotations = _safe_json(annotations_json) or {}
             if aliases:
@@ -117,6 +163,7 @@ class KuzuBackend(Backend):
                 annotations["tagline"] = tagline
             self._entity_index[ref] = {
                 "kind": kind,
+                "confidence": confidence or "",
                 "metadata": {
                     "name": name,
                     "description": desc or "",
@@ -147,6 +194,7 @@ class KuzuBackend(Backend):
     # -- status / list ----------------------------------------------------
 
     def status(self) -> dict[str, Any]:
+        self._maybe_reload()
         counts: dict[str, int] = {}
         r = self._conn.execute("MATCH (n:Entity) RETURN n.kind, count(*)")
         while r.has_next():
@@ -177,6 +225,7 @@ class KuzuBackend(Backend):
         }
 
     def list_entities(self, *, kind: str | None, limit: int) -> list[dict[str, Any]]:
+        self._maybe_reload()
         if kind:
             r = self._conn.execute(
                 "MATCH (n:Entity {kind: $kind}) RETURN n.ref, n.kind, n.name, n.spec_json LIMIT $limit",
@@ -197,9 +246,11 @@ class KuzuBackend(Backend):
     # -- describe / fuzzy_lookup -----------------------------------------
 
     def describe(self, ref: str) -> dict[str, Any] | None:
+        self._maybe_reload()
         return self._entity_index.get(ref)
 
     def fuzzy_lookup(self, needle: str) -> dict[str, Any] | None:
+        self._maybe_reload()
         if not needle:
             return None
         if ":" in needle:
@@ -230,6 +281,7 @@ class KuzuBackend(Backend):
     # -- search ----------------------------------------------------------
 
     def search(self, query: str, *, query_vector: list[float] | None, limit: int, min_confidence: str | None = None) -> list[dict[str, Any]]:
+        self._maybe_reload()
         if not query:
             return []
         candidates: dict[str, dict[str, Any]] = {}
@@ -301,6 +353,7 @@ class KuzuBackend(Backend):
     # built from the Kuzu DB at startup.
 
     def neighbors(self, ref: str, *, direction: str, depth: int, edge_types: list[str] | None, min_confidence: str | None = None) -> list[dict[str, Any]]:
+        self._maybe_reload()
         from servicescout.storage import _confidence_at_least
         visited: set[str] = set()
         frontier = [ref]
@@ -331,6 +384,7 @@ class KuzuBackend(Backend):
         return paths
 
     def trace(self, *, start_ref: str, end_match: str | None, max_hops: int, edge_types: list[str], include_async: bool, fanout_per_node: int, min_confidence: str | None = None) -> dict[str, Any]:
+        self._maybe_reload()
         from servicescout.storage import _confidence_at_least
         def tagline_for(r: str) -> str:
             ent = self._entity_index.get(r)
@@ -359,6 +413,11 @@ class KuzuBackend(Backend):
         next_seq = [1]
         frontier: list[tuple[str, str, int, frozenset[str]]] = [(start_ref, "0", 0, frozenset({start_ref}))]
         while frontier:
+            # Branch-aware tracing intentionally revisits nodes via distinct
+            # paths, so there's no global visited set — but a dense graph at high
+            # max_hops can blow up combinatorially. Cap total hops as a safety valve.
+            if len(hops) >= _MAX_TRACE_HOPS:
+                break
             next_frontier: list[tuple[str, str, int, frozenset[str]]] = []
             for node_ref, branch_id, current_depth, path in frontier:
                 if current_depth >= max_hops:
@@ -429,6 +488,7 @@ class KuzuBackend(Backend):
         return {"hops": hops, "terminal_nodes": sorted(terminal_nodes)}
 
     def evidence(self, src_ref: str, tgt_ref: str | None) -> list[dict[str, Any]]:
+        self._maybe_reload()
         out = []
         for rel in self._by_source.get(src_ref, []):
             if tgt_ref and rel["to"] != tgt_ref:

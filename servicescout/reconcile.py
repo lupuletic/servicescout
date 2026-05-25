@@ -104,19 +104,26 @@ def all_alias_keys(component: dict[str, Any]) -> set[str]:
     annotations = meta.get("annotations", {})
     keys: set[str] = set()
     name = meta.get("name") or ""
-    if name:
-        keys.add(canonical_key(name))
+    name_key = canonical_key(name)
+    # A component's own name is its identity, so it is exempt from the >=5
+    # length filter (which exists to suppress generic *aliases*); only the
+    # stopword guard applies. Without this, short real services like `cart`
+    # or `oms` produce an empty key set and can never be reconciled with their
+    # external twins.
+    if name_key and name_key not in GENERIC_KEY_STOPWORDS:
+        keys.add(name_key)
+    alias_keys: set[str] = set()
     aliases = annotations.get("aliases") or []
     for alias in aliases:
         if not alias:
             continue
-        keys.add(canonical_key(alias))
+        alias_keys.add(canonical_key(alias))
         if looks_like_url(alias):
             host_label = url_to_first_label(alias)
             if host_label:
-                keys.add(canonical_key(host_label))
-    keys.discard("")
-    keys = {k for k in keys if len(k) >= 5 and k not in GENERIC_KEY_STOPWORDS}
+                alias_keys.add(canonical_key(host_label))
+    alias_keys.discard("")
+    keys |= {k for k in alias_keys if len(k) >= 5 and k not in GENERIC_KEY_STOPWORDS}
     return keys
 
 
@@ -140,19 +147,22 @@ def find_merge_candidates(entities: list[dict[str, Any]]) -> list[dict[str, Any]
     real_components = [e for e in entities if e.get("kind") == "Component" and is_real(e)]
     external_components = [e for e in entities if e.get("kind") == "Component" and is_external(e)]
 
-    real_index: dict[str, str] = {}
+    # key -> all real refs that claim it. A set (not first-writer-wins) so a key
+    # owned by two real Components surfaces as ambiguous instead of silently
+    # collapsing an external into whichever real was indexed first.
+    real_index: dict[str, set[str]] = defaultdict(set)
     real_evidence_index: dict[str, set[str]] = defaultdict(set)
     for component in real_components:
         ref = f"Component:{component['metadata']['name']}"
         for key in all_alias_keys(component):
-            real_index.setdefault(key, ref)
+            real_index[key].add(ref)
             real_evidence_index[ref].add(key)
 
     proposals: list[dict[str, Any]] = []
     for component in external_components:
         ref = f"Component:{component['metadata']['name']}"
         ext_keys = all_alias_keys(component)
-        matches = sorted({real_index[k] for k in ext_keys if k in real_index})
+        matches = sorted({r for k in ext_keys if k in real_index for r in real_index[k]})
         if len(matches) == 1:
             target = matches[0]
             if target == ref:
@@ -223,11 +233,14 @@ def apply_merges(catalog: dict[str, Any], proposals: list[dict[str, Any]]) -> di
     for relation in relations:
         f = redirect.get(relation["from"], relation["from"])
         t = redirect.get(relation["to"], relation["to"])
-        if f != relation["from"] or t != relation["to"]:
-            rerouted += 1
+        changed = f != relation["from"] or t != relation["to"]
+        # Self-loops are dropped; count them only as dropped, never also as
+        # rerouted (otherwise the summary double-counts the same edge).
         if f == t:
             dropped += 1
             continue
+        if changed:
+            rerouted += 1
         new_relation = dict(relation)
         new_relation["from"] = f
         new_relation["to"] = t
