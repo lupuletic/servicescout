@@ -35,6 +35,8 @@ DEFAULT_CATALOG = HERE / "data" / "catalog.json"
 DEFAULT_STATE = HERE / "data" / "crawler_state.json"
 DEFAULT_MAX_PARALLELISM = 64
 DEFAULT_MAX_BATCH_SIZE = 500
+TAG_RECONCILE_MIN_CONFIDENCE = "medium"
+TAG_RECONCILE_MAX_TAGS = 500
 _EMIT_LOCK = threading.Lock()
 _ACTIVITY_RUN: "ActivityRun | None" = None
 _ACTIVITY_EVENTS_LIMIT = 2000
@@ -55,6 +57,8 @@ _FORCE_FLUSH_EVENTS = {
     "build_catalog_done",
     "reconcile_start",
     "reconcile_done",
+    "tag_reconcile_start",
+    "tag_reconcile_done",
     "embed_start",
     "embed_done",
     "build_kuzu_start",
@@ -769,6 +773,34 @@ def state_completed_repos(state: dict[str, Any]) -> set[str]:
     return out
 
 
+def run_tag_reconcile(
+    *,
+    catalog_output: Path,
+    provider: str,
+    model: str | None,
+) -> subprocess.CompletedProcess[str]:
+    output_path = catalog_output.parent / "tag_aliases.json"
+    cmd = [
+        sys.executable,
+        "-m",
+        "servicescout.tag_reconcile",
+        "--catalog",
+        str(catalog_output),
+        "--output",
+        str(output_path),
+        "--min-confidence",
+        TAG_RECONCILE_MIN_CONFIDENCE,
+        "--max-tags",
+        str(TAG_RECONCILE_MAX_TAGS),
+        "--skip-unchanged",
+        "--provider",
+        provider,
+    ]
+    if model:
+        cmd.extend(["--model", model])
+    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+
 def crawl(
     *,
     root: Path,
@@ -795,6 +827,7 @@ def crawl(
     max_discovery_rounds: int,
     reconcile_after_build: bool,
     reconcile_llm: bool,
+    reconcile_tags: bool,
     resume: bool = False,
 ) -> dict[str, Any]:
     workspace = load_workspace_config(workspace_path)
@@ -1028,6 +1061,43 @@ def crawl(
 
         batches_done += 1
 
+    if reconcile_tags:
+        current_total = repo_total_cost(catalog_dir)
+        run_spent = max(current_total - initial_total_cost, 0.0)
+        if run_spent >= budget_usd:
+            emit({
+                "event": "tag_reconcile_done",
+                "returncode": None,
+                "skipped": True,
+                "reason": "budget_exhausted",
+                "run_spent": run_spent,
+                "budget": budget_usd,
+            })
+        elif catalog_output.exists():
+            emit({
+                "event": "tag_reconcile_start",
+                "llm_assist": True,
+                "output": str(catalog_output.parent / "tag_aliases.json"),
+            })
+            completed = run_tag_reconcile(
+                catalog_output=catalog_output,
+                provider=provider,
+                model=model,
+            )
+            emit({
+                "event": "tag_reconcile_done",
+                "returncode": completed.returncode,
+                "output": str(catalog_output.parent / "tag_aliases.json"),
+                "tail": completed.stdout[-1200:],
+            })
+        else:
+            emit({
+                "event": "tag_reconcile_done",
+                "returncode": None,
+                "skipped": True,
+                "reason": "catalog_missing",
+            })
+
     if embed:
         emit({"event": "embed_start"})
         embed_cmd = [sys.executable, "-m", "servicescout.embed_catalog", "--catalog", str(catalog_output)]
@@ -1083,6 +1153,7 @@ def main() -> int:
     parser.add_argument("--max-discovery-rounds", type=int, default=10, help="Maximum rounds of discover→clone→extract before stopping. Each round indexes the configured orgs, finds unresolved Components that match an uncloned repo, clones them, then re-enters extraction.")
     parser.add_argument("--reconcile", action="store_true", help="Run reconcile.py after each build_catalog (collapse external duplicates).")
     parser.add_argument("--reconcile-llm", action="store_true", help="Use --llm-assist on reconcile.py (LLM-judgment merges for ambiguous duplicates).")
+    parser.add_argument("--reconcile-tags", action="store_true", help="Generate data/tag_aliases.json once after catalog convergence. Skips LLM work when the tag inventory is unchanged.")
     parser.add_argument(
         "--run-log-dir",
         type=Path,
@@ -1161,6 +1232,7 @@ def main() -> int:
             max_discovery_rounds=args.max_discovery_rounds,
             reconcile_after_build=args.reconcile,
             reconcile_llm=args.reconcile_llm,
+            reconcile_tags=args.reconcile_tags,
             resume=args.resume,
         )
         if activity is not None:

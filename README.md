@@ -114,12 +114,13 @@ eval crawl from overwriting your real catalog.
 
 ```bash
 cp workspace.json.example workspace.json && $EDITOR workspace.json   # add your orgs
-docker compose run --rm crawler                                       # extracts + embeds
+docker compose run --rm crawler                                       # extracts, reconciles, embeds, indexes
 ```
 
 The crawler is auto-convergent: it clones repos referenced by the catalog,
-re-runs extraction, and stops when no new repos are discovered. Budget cap
-in `.env` (`BUDGET_USD=100` by default) is a hard stop.
+re-runs extraction, reconciles the catalog and tags, embeds the result, builds
+the graph index, and stops when no new repos are discovered. Budget cap in
+`.env` (`BUDGET_USD=100` by default) is a hard stop.
 
 **3. Wire it up to your coding agent:**
 
@@ -391,19 +392,29 @@ FastAPI backend serves the built `frontend/dist/` and exposes
 ## How it works
 
 ```
-  GitHub orgs ──► crawler ──► LLM extractor ──► JSON-schema validation
-                                                       │
-                                                       ▼
+  GitHub orgs / journey seeds
+              │
+              ▼
+          scheduler ──► crawler discovery loop ──► extractor workers
+                                                   (Codex / Claude)
+                                                        │
+                                                        ▼
+                                           JSON-schema validation
+                                                        │
+                                                        ▼
                               build_catalog ─► identity reconciliation
-                                                       │
-                                                       ▼
+                                                        │
+                                                        ▼
+                              tag reconciliation ─► data/tag_aliases.json
+                                                        │
+                                                        ▼
                               embed_catalog ─► dense embeddings (Gemini)
-                                                       │
-                                                       ▼
+                                                        │
+                                                        ▼
                               build_kuzu    ─► Kuzu index (FTS + HNSW vectors)
-                                                       │
-                                                       ▼
-                                                  MCP server ──► AI coding agent
+                                                        │
+                                                        ▼
+                                          dashboard + MCP server ──► AI coding agent
 ```
 
 The extractor runs `codex` or `claude` CLI in non-interactive mode against
@@ -411,7 +422,11 @@ each repo, asks for a Backstage-shaped JSON document with `file:line`
 evidence, and emits it through a strict JSON schema. The build step merges
 per-repo extractions into a single catalog and reconciles aliases (service
 names that appear as hostnames, config keys, or generated client classes).
-Tag cleanup is a separate, reviewable hygiene pass:
+The autonomous crawler also runs tag reconciliation once after the catalog
+has converged, before embeddings and Kuzu indexing. It writes
+`data/tag_aliases.json` and skips the LLM call when the tag inventory and
+options are unchanged. The manual command is for ad hoc operator review or
+repair:
 `servicescout-reconcile-tags --catalog data/catalog.json --output data/tag_aliases.json`
 asks the configured LLM to propose canonical tag groups, then the dashboard
 uses that alias map without rewriting the raw catalog.

@@ -649,6 +649,7 @@ class DashboardApiTests(unittest.TestCase):
             self.assertIn("--budget-usd", cmd)
             self.assertIn("7.5", cmd)
             self.assertIn("--crawler-arg=--reconcile", cmd)
+            self.assertIn("--crawler-arg=--reconcile-tags", cmd)
             self.assertIn("--crawler-arg=--build-kuzu", cmd)
 
     def test_scheduler_stop_only_pauses_dashboard_managed_daemon(self) -> None:

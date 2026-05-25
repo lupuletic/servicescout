@@ -29,6 +29,35 @@ Three things that distinguish this from existing tools:
 
 ## Pipeline architecture — current and target
 
+### Autonomous crawl loop
+
+The default product shape is unattended maintenance. Manual triggers exist for
+operators, demos, and repair jobs, but the durable path is the scheduler running
+the same crawler pipeline end to end:
+
+```mermaid
+flowchart TD
+  A[Workspace config: orgs, seeds, scope] --> B[Scheduler]
+  B --> C[Clone journey seeds]
+  C --> D[Discover repos in configured orgs]
+  D --> E[Batch stale or changed repos]
+  E --> F[Extractor workers: Codex or Claude]
+  F --> G[Schema validation and evidence verification]
+  G --> H[Per-repo extraction JSON]
+  H --> I[build_catalog]
+  I --> J[Identity reconciliation]
+  J --> K{Discovery frontier empty?}
+  K -- No --> D
+  K -- Yes --> L[Tag reconciliation: tag_aliases.json]
+  L --> M[Embeddings]
+  M --> N[Kuzu graph index]
+  N --> O[Dashboard and MCP]
+```
+
+Tag reconciliation runs once after catalog convergence and before embedding or
+Kuzu indexing. It fingerprints the tag inventory so repeat scheduler ticks skip
+the LLM call when the tags and reconciliation options have not changed.
+
 ### Current ("extractor-first")
 
 ```

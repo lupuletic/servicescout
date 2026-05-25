@@ -135,6 +135,13 @@ function formatEvent(event: Record<string, unknown>) {
   if (name === "runtime_config_applied") {
     return `Runtime limits applied: ${event.parallelism || "-"} workers, batch ${event.batch_size || "-"}`;
   }
+  if (name === "tag_reconcile_start") {
+    return `Tag reconciliation started${event.llm_assist ? " with LLM assist" : ""}`;
+  }
+  if (name === "tag_reconcile_done") {
+    if (event.skipped) return `Tag reconciliation skipped: ${event.reason || "unchanged"}`;
+    return `Tag reconciliation finished${event.returncode === 0 ? "" : ` with exit ${event.returncode}`}`;
+  }
   if (name === "extractor_process_start") {
     return `${shortRepo(repo)} started`;
   }

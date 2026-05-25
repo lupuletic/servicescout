@@ -168,6 +168,76 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertEqual(config["batch_size"], 16)
 
 
+class TagReconcileCommandTests(unittest.TestCase):
+    def test_tag_reconcile_uses_llm_and_skip_unchanged_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch("servicescout.crawler.subprocess.run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="{}")
+
+            result = crawler.run_tag_reconcile(
+                catalog_output=Path(tmp) / "catalog.json",
+                provider="codex",
+                model="gpt-5.4-mini",
+            )
+
+        self.assertEqual(result.returncode, 0)
+        cmd = run.call_args[0][0]
+        self.assertIn("servicescout.tag_reconcile", cmd)
+        self.assertIn("--skip-unchanged", cmd)
+        self.assertIn("--provider", cmd)
+        self.assertIn("codex", cmd)
+        self.assertIn("--model", cmd)
+        self.assertIn("gpt-5.4-mini", cmd)
+        self.assertIn(str(Path(tmp) / "tag_aliases.json"), cmd)
+        self.assertIn("--min-confidence", cmd)
+        self.assertIn(crawler.TAG_RECONCILE_MIN_CONFIDENCE, cmd)
+        self.assertIn("--max-tags", cmd)
+        self.assertIn(str(crawler.TAG_RECONCILE_MAX_TAGS), cmd)
+
+    def test_tag_reconcile_skips_when_run_budget_is_exhausted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch("servicescout.crawler.emit") as emit, \
+             mock.patch("servicescout.crawler.run_tag_reconcile") as run_tags:
+            root = Path(tmp)
+            workspace = root / "workspace.json"
+            workspace.write_text(json.dumps({"orgs": []}), encoding="utf-8")
+
+            crawler.crawl(
+                root=root,
+                catalog_dir=root / "catalog",
+                catalog_output=root / "catalog.json",
+                workspace_path=workspace,
+                seeds_dir=root / "seeds",
+                state_path=root / "state.json",
+                provider="codex",
+                model=None,
+                effort="medium",
+                timeout_seconds=600,
+                max_age_hours=24,
+                parallelism=2,
+                batch_size=4,
+                runtime_config_path=None,
+                max_batches=1,
+                budget_usd=0,
+                repos_filter=None,
+                embed=False,
+                build_kuzu=False,
+                stream_logs=False,
+                discover=False,
+                max_discovery_rounds=0,
+                reconcile_after_build=False,
+                reconcile_llm=False,
+                reconcile_tags=True,
+            )
+
+        run_tags.assert_not_called()
+        events = [call.args[0] for call in emit.call_args_list]
+        self.assertIn(
+            {"event": "tag_reconcile_done", "returncode": None, "skipped": True, "reason": "budget_exhausted", "run_spent": 0.0, "budget": 0},
+            events,
+        )
+
+
 class ActivityRunTests(unittest.TestCase):
     def test_repo_done_records_operator_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

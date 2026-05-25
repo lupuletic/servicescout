@@ -1209,6 +1209,7 @@ def create_app(
             "--provider", provider,
             "--effort", effort,
             "--crawler-arg=--reconcile",
+            "--crawler-arg=--reconcile-tags",
             "--crawler-arg=--embed",
             "--crawler-arg=--build-kuzu",
             "--crawler-arg=--runtime-config",

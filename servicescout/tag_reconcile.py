@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import shutil
@@ -102,6 +103,54 @@ def automatic_spelling_groups(inventory: list[dict[str, Any]]) -> list[dict[str,
     return groups
 
 
+def tag_inventory_fingerprint(inventory: list[dict[str, Any]]) -> str:
+    """Stable fingerprint of the tag inventory that affects alias output."""
+    payload = [
+        {
+            "tag": item.get("tag"),
+            "normalised": item.get("normalised"),
+            "count": int(item.get("count") or 0),
+            "entity_kinds": sorted(item.get("entity_kinds") or []),
+        }
+        for item in sorted(
+            inventory,
+            key=lambda tag: (str(tag.get("normalised") or ""), str(tag.get("tag") or "")),
+        )
+    ]
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def is_current_alias_document(
+    path: Path,
+    *,
+    inventory_fingerprint: str,
+    provider: str | None,
+    model: str | None,
+    min_confidence: str,
+    llm_assist: bool,
+    max_tags: int,
+) -> bool:
+    if not path.exists():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    options = payload.get("options") or {}
+    return (
+        payload.get("schema_version") == "tag-aliases-v1"
+        and payload.get("inventory_fingerprint") == inventory_fingerprint
+        and payload.get("provider") == provider
+        and payload.get("model") == model
+        and payload.get("min_confidence") == min_confidence
+        and options.get("llm_assist") == llm_assist
+        and int(options.get("max_tags") or 0) == int(max_tags)
+    )
+
+
 def build_alias_document(
     inventory: list[dict[str, Any]],
     llm_groups: list[dict[str, Any]],
@@ -110,6 +159,9 @@ def build_alias_document(
     model: str | None,
     min_confidence: str,
     catalog_path: Path,
+    inventory_fingerprint: str | None = None,
+    llm_assist: bool = True,
+    max_tags: int | None = None,
 ) -> dict[str, Any]:
     min_rank = CONFIDENCE_RANK[min_confidence]
     by_raw = {item["tag"]: item for item in inventory}
@@ -148,9 +200,14 @@ def build_alias_document(
         "schema_version": "tag-aliases-v1",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "source_catalog": str(catalog_path),
+        "inventory_fingerprint": inventory_fingerprint or tag_inventory_fingerprint(inventory),
         "provider": provider,
         "model": model,
         "min_confidence": min_confidence,
+        "options": {
+            "llm_assist": llm_assist,
+            "max_tags": max_tags,
+        },
         "aliases": dict(sorted(aliases.items(), key=lambda item: normalize_tag(item[0]))),
         "groups": groups,
     }
@@ -220,7 +277,9 @@ def _codex_tag_call(prompt: str, model: str, scratch_dir: Path) -> list[dict[str
         model,
         prompt,
     ]
-    subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+    completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+    if completed.returncode != 0:
+        raise SystemExit(f"codex tag reconciliation failed: {(completed.stderr or completed.stdout)[-1000:]}")
     return _read_groups(result_path)
 
 
@@ -245,7 +304,7 @@ def _claude_tag_call(prompt: str, model: str) -> list[dict[str, Any]]:
     ]
     completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
     if completed.returncode != 0:
-        return []
+        raise SystemExit(f"claude tag reconciliation failed: {(completed.stderr or completed.stdout)[-1000:]}")
     try:
         raw = json.loads(completed.stdout)
     except json.JSONDecodeError:
@@ -291,13 +350,39 @@ def main() -> int:
     parser.add_argument("--min-confidence", choices=("high", "medium", "low"), default="medium")
     parser.add_argument("--max-tags", type=int, default=500)
     parser.add_argument("--no-llm", action="store_true", help="Only write casing/separator normalisation aliases.")
+    parser.add_argument("--skip-unchanged", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--dry-run", action="store_true", help="Print the generated alias document instead of writing it.")
     args = parser.parse_args()
 
     catalog = json.loads(args.catalog.read_text(encoding="utf-8"))
     inventory = collect_tag_inventory(catalog)
+    fingerprint = tag_inventory_fingerprint(inventory)
+    llm_assist = not args.no_llm
+    provider = None if args.no_llm else args.provider
+    if args.skip_unchanged and not args.dry_run and is_current_alias_document(
+        args.output,
+        inventory_fingerprint=fingerprint,
+        provider=provider,
+        model=args.model,
+        min_confidence=args.min_confidence,
+        llm_assist=llm_assist,
+        max_tags=args.max_tags,
+    ):
+        existing = json.loads(args.output.read_text(encoding="utf-8"))
+        print(json.dumps({
+            "tags_seen": len(inventory),
+            "aliases": len(existing.get("aliases") or {}),
+            "groups": len(existing.get("groups") or []),
+            "llm_groups_returned": None,
+            "output": str(args.output),
+            "inventory_fingerprint": fingerprint,
+            "skipped": True,
+            "reason": "tag_inventory_unchanged",
+        }, indent=2))
+        return 0
+
     llm_groups: list[dict[str, Any]] = []
-    if not args.no_llm and inventory:
+    if llm_assist and inventory:
         llm_groups = llm_propose_tag_groups(
             inventory,
             provider=args.provider,
@@ -308,10 +393,13 @@ def main() -> int:
     document = build_alias_document(
         inventory,
         llm_groups,
-        provider=None if args.no_llm else args.provider,
+        provider=provider,
         model=args.model,
         min_confidence=args.min_confidence,
         catalog_path=args.catalog,
+        inventory_fingerprint=fingerprint,
+        llm_assist=llm_assist,
+        max_tags=args.max_tags,
     )
 
     summary = {
@@ -320,6 +408,8 @@ def main() -> int:
         "groups": len(document["groups"]),
         "llm_groups_returned": len(llm_groups),
         "output": str(args.output),
+        "inventory_fingerprint": fingerprint,
+        "skipped": False,
     }
     print(json.dumps(summary, indent=2))
     if args.dry_run:
