@@ -4,12 +4,11 @@ import unittest
 from pathlib import Path
 
 from servicescout.storage import (
-    METADATA_MATCH_BOOST_CAP,
-    METADATA_MATCH_BOOST_PER_HIT,
     JSONBackend,
     _entity_haystack,
     _exact_term_boost,
-    _metadata_match_boost,
+    _metadata_hit_count,
+    _metadata_ranking,
     _rrf,
 )
 
@@ -129,7 +128,7 @@ class CapabilitySheetHaystackTests(unittest.TestCase):
         self.assertEqual(hits[0]["ref"], "Component:orders")
 
 
-class MetadataMatchBoostTests(unittest.TestCase):
+class MetadataFusionTests(unittest.TestCase):
     def _entity(self) -> dict:
         return {
             "spec": {
@@ -142,23 +141,16 @@ class MetadataMatchBoostTests(unittest.TestCase):
             }
         }
 
-    def test_boost_counts_attribute_and_glossary_hits(self) -> None:
-        boost = _metadata_match_boost(self._entity(), ["dispatched", "waybill"])
-        self.assertAlmostEqual(boost, 2 * METADATA_MATCH_BOOST_PER_HIT)
+    def test_hit_count_counts_attribute_and_glossary(self) -> None:
+        self.assertEqual(_metadata_hit_count(self._entity(), ["dispatched", "waybill"]), 2)
 
     def test_no_match_and_empty_terms_give_zero(self) -> None:
-        self.assertEqual(_metadata_match_boost(self._entity(), ["unrelated"]), 0.0)
-        self.assertEqual(_metadata_match_boost(self._entity(), []), 0.0)
+        self.assertEqual(_metadata_hit_count(self._entity(), ["unrelated"]), 0)
+        self.assertEqual(_metadata_hit_count(self._entity(), []), 0)
 
-    def test_boost_is_capped(self) -> None:
-        entity = {
-            "spec": {
-                "domain_attributes": [
-                    {"attribute": f"Attr{i}", "values": ["match"], "meaning": ""} for i in range(20)
-                ]
-            }
-        }
-        self.assertEqual(_metadata_match_boost(entity, ["match"]), METADATA_MATCH_BOOST_CAP)
+    def test_metadata_ranking_orders_by_hit_count(self) -> None:
+        # entity 1 has the most hits, then 2, then 0; zero-hit entities are excluded upstream.
+        self.assertEqual(_metadata_ranking({0: 1, 1: 3, 2: 2}), [1, 2, 0])
 
     def test_domain_attribute_match_outranks_lexical_only_decoy(self) -> None:
         catalog = {

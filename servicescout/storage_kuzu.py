@@ -47,10 +47,12 @@ from typing import Any
 from servicescout.storage import (
     Backend,
     LEXICAL_RRF_WEIGHT,
+    METADATA_RRF_WEIGHT,
     SEARCHABLE_KINDS,
     VECTOR_RRF_WEIGHT,
     _edge_record,
     _kind_rank,
+    _metadata_ranking,
     _rrf,
     _search_terms,
 )
@@ -326,6 +328,13 @@ class KuzuBackend(Backend):
                 pass
         if not candidates:
             return []
+        from servicescout.storage import _confidence_at_least, _confidence_weight, _exact_term_boost, _hit_record, _metadata_hit_count  # local import to avoid cycle
+        # Metadata ranking over refs: entities ordered by structured-metadata hit count.
+        meta_rank = [
+            ref for ref in candidates
+            if _metadata_hit_count(candidates[ref]["ent"], terms) > 0
+        ]
+        meta_rank.sort(key=lambda ref: -_metadata_hit_count(candidates[ref]["ent"], terms))
         rank_lists: list[list[str]] = []
         weights: list[float] = []
         if vec_rank:
@@ -333,13 +342,18 @@ class KuzuBackend(Backend):
             weights.append(VECTOR_RRF_WEIGHT)
         if lex_rank:
             rank_lists.append(lex_rank)
-            weights.append(LEXICAL_RRF_WEIGHT)
-        # RRF over refs, weighting dense similarity above lexical/BM25.
+            # Full weight when lexical is the only signal (no embeddings); only
+            # down-weight it when fused with dense similarity.
+            weights.append(LEXICAL_RRF_WEIGHT if vec_rank else 1.0)
+        if meta_rank:
+            rank_lists.append(meta_rank)
+            weights.append(METADATA_RRF_WEIGHT)
+        # Weighted RRF over refs: dense similarity above lexical/BM25, plus the
+        # high-precision (but bounded) metadata signal.
         ref_to_idx = {ref: i for i, ref in enumerate(candidates)}
         ranking_indices = [[ref_to_idx[r] for r in rl if r in ref_to_idx] for rl in rank_lists]
         fused = _rrf(ranking_indices, weights=weights)
         idx_to_ref = {i: r for r, i in ref_to_idx.items()}
-        from servicescout.storage import _confidence_at_least, _confidence_weight, _exact_term_boost, _hit_record, _metadata_match_boost  # local import to avoid cycle
         weighted: dict[int, float] = {}
         for idx, score in fused.items():
             ent = candidates[idx_to_ref[idx]]["ent"]
@@ -349,7 +363,6 @@ class KuzuBackend(Backend):
             weighted[idx] = (
                 (score * _confidence_weight(ent_conf))
                 + _exact_term_boost(ent, terms)
-                + _metadata_match_boost(ent, terms)
             )
         scored = [(s, idx_to_ref[i], candidates[idx_to_ref[i]]) for i, s in sorted(weighted.items(), key=lambda kv: -kv[1])]
         out = []

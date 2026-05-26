@@ -87,10 +87,10 @@ def build_server(
         """Find the most relevant entities for a free-text prompt. Recommended entrypoint.
 
         Hybrid retrieval: weighted Reciprocal Rank Fusion (k=60) over dense embedding
-        similarity (favoured) and BM25-style lexical scoring. The fused score is weighted
-        by the entity's catalog confidence (high=1.0, medium=0.7, low=0.4, review=0.1,
-        unspecified=0.5), then boosted for an exact name/alias/technology match and for
-        query terms that hit the entity's structured metadata (domain attributes / glossary).
+        similarity (favoured), BM25-style lexical scoring, and a structured-metadata
+        ranking (entities ordered by domain-attribute / glossary hits). The fused score is
+        weighted by the entity's catalog confidence (high=1.0, medium=0.7, low=0.4,
+        review=0.1, unspecified=0.5), then boosted for an exact name/alias/technology match.
         Returns the top-N Components / APIs / Resources / Providers with score, tagline,
         source repos, confidence, and any matched domain_attribute or glossary entries.
 
