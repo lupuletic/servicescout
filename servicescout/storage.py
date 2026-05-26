@@ -45,6 +45,26 @@ _CONFIDENCE_ORDER = {"review": 0, "low": 1, None: 1, "medium": 2, "high": 3}
 # no global visited set, so a dense graph at high max_hops can expand without bound.
 _MAX_TRACE_HOPS = 5000
 
+# Cross-list weighting for Reciprocal Rank Fusion. Dense (semantic) similarity is
+# weighted above lexical/BM25: the embedding text includes the full capability
+# sheet and domain attributes, so it is the more reliable signal, whereas lexical
+# matching is easily dominated by short, keyword-dense descriptions (e.g. thin
+# proxy/forwarder services that just echo the query terms).
+VECTOR_RRF_WEIGHT = 1.0
+LEXICAL_RRF_WEIGHT = 0.6
+
+# Additive ranking boost when query terms hit an entity's structured metadata
+# (domain attributes / glossary). These are high-precision relevance signals, so a
+# match nudges the entity up — but the cap keeps it below an exact name/alias match
+# (see _exact_term_boost, which contributes 1.0).
+METADATA_MATCH_BOOST_PER_HIT = 0.04
+METADATA_MATCH_BOOST_CAP = 0.12
+
+# Characters of the capability sheet folded into the lexical haystack. Mirrors the
+# cap used when building embedding text (see embed_catalog.entity_to_text) so dense
+# and lexical retrieval see the same descriptive prose.
+HAYSTACK_CAPABILITY_CHARS = 2000
+
 
 def _kind_rank(entity: dict[str, Any]) -> int:
     return _KIND_PRIORITY.get(entity.get("kind", ""), 9)
@@ -87,7 +107,6 @@ def _exact_term_boost(entity: dict[str, Any], terms: list[str]) -> float:
         meta.get("name", ""),
         spec.get("technology", ""),
         spec.get("host", ""),
-        spec.get("type", ""),
         *list(annotations.get("aliases") or []),
         *list(annotations.get("env_keys") or []),
     ]
@@ -302,22 +321,30 @@ class JSONBackend(Backend):
                     if v > 0:
                         vec_scores[i] = v
         rankings = []
+        weights = []
         if vec_scores:
             rankings.append([i for i, _ in sorted(vec_scores.items(), key=lambda kv: -kv[1])])
+            weights.append(VECTOR_RRF_WEIGHT)
         if lex_scores:
             rankings.append([i for i, _ in sorted(lex_scores.items(), key=lambda kv: -kv[1])])
+            weights.append(LEXICAL_RRF_WEIGHT)
         if not rankings:
             return []
-        fused = _rrf(rankings)
+        fused = _rrf(rankings, weights=weights)
         # Confidence-aware: multiply each fused score by entity confidence
         # weight (high=1.0, medium=0.7, low=0.4, review=0.1, unspecified=0.5).
-        # Drop entities below min_confidence entirely.
+        # Drop entities below min_confidence entirely. An exact name/alias match
+        # and a structured-metadata match add high-precision boosts on top.
         weighted: dict[int, float] = {}
         for idx, score in fused.items():
             ent_conf = self._candidates[idx].get("confidence")
             if not _confidence_at_least(ent_conf, min_confidence):
                 continue
-            weighted[idx] = (score * _confidence_weight(ent_conf)) + _exact_term_boost(self._candidates[idx], terms)
+            weighted[idx] = (
+                (score * _confidence_weight(ent_conf))
+                + _exact_term_boost(self._candidates[idx], terms)
+                + _metadata_match_boost(self._candidates[idx], terms)
+            )
         scored = [(s, vec_scores.get(i, 0.0), lex_scores.get(i, 0.0), self._candidates[i])
                   for i, s in sorted(weighted.items(), key=lambda kv: -kv[1])]
         out = []
@@ -530,11 +557,19 @@ def _idf_lexical_scores(haystacks: list[str], terms: list[str]) -> dict[int, flo
     return scores
 
 
-def _rrf(rankings: list[list[int]], k: int = 60) -> dict[int, float]:
+def _rrf(rankings: list[list[int]], k: int = 60, weights: list[float] | None = None) -> dict[int, float]:
+    """Reciprocal Rank Fusion over one or more ranked lists of entity indices.
+
+    When ``weights`` is given it must be parallel to ``rankings``; each list's
+    contribution is scaled by its weight, letting callers favour one signal
+    (e.g. dense similarity) over another (lexical). With a single ranking the
+    weight only rescales the absolute scores, leaving the order unchanged.
+    """
     out: dict[int, float] = {}
-    for ranking in rankings:
+    for list_index, ranking in enumerate(rankings):
+        weight = weights[list_index] if weights else 1.0
         for rank, idx in enumerate(ranking):
-            out[idx] = out.get(idx, 0.0) + 1.0 / (k + rank + 1)
+            out[idx] = out.get(idx, 0.0) + weight / (k + rank + 1)
     return out
 
 
@@ -571,12 +606,22 @@ def _entity_haystack(entity: dict[str, Any]) -> str:
         parts.append(term.get("term", "") or "")
         parts.append(term.get("definition", "") or "")
         parts.extend([s for s in (term.get("synonyms") or []) if isinstance(s, str)])
+    # The capability sheet is the richest descriptive prose and is already part of
+    # the embedding text; fold it into the lexical haystack too so dense and lexical
+    # retrieval see the same content (truncated to bound BM25 length normalisation).
+    capability_sheet = annotations.get("capability_sheet") or ""
+    if capability_sheet:
+        parts.append(capability_sheet[:HAYSTACK_CAPABILITY_CHARS])
     return " ".join(parts).lower()
 
 
-def _hit_record(entity: dict[str, Any], rrf_score: float, vec: float, lex: float, terms: list[str]) -> dict[str, Any]:
-    annotations = entity["metadata"].get("annotations", {})
-    spec = entity.get("spec", {})
+def _matched_metadata(entity: dict[str, Any], terms: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Domain-attribute and glossary entries whose text contains a query term.
+
+    Shared by ranking (_metadata_match_boost) and presentation (_hit_record) so
+    the signal that lifts a hit is exactly the signal shown to the caller.
+    """
+    spec = entity.get("spec", {}) or {}
     matched_attrs = []
     for attr in (spec.get("domain_attributes") or [])[:30]:
         if not isinstance(attr, dict):
@@ -598,6 +643,28 @@ def _hit_record(entity: dict[str, Any], rrf_score: float, vec: float, lex: float
                 "term": term.get("term", ""),
                 "definition": term.get("definition", ""),
             })
+    return matched_attrs, matched_glossary
+
+
+def _metadata_match_boost(entity: dict[str, Any], terms: list[str]) -> float:
+    """High-precision additive boost when a query hits structured metadata.
+
+    Domain attributes and glossary terms are curated, discriminating signals, but
+    they barely move BM25 inside a long haystack and are invisible to RRF rank
+    position. This surfaces that signal directly, capped so it nudges rather than
+    overrides (an exact name match still dominates via _exact_term_boost == 1.0).
+    """
+    if not terms:
+        return 0.0
+    matched_attrs, matched_glossary = _matched_metadata(entity, terms)
+    hits = len(matched_attrs) + len(matched_glossary)
+    return min(hits * METADATA_MATCH_BOOST_PER_HIT, METADATA_MATCH_BOOST_CAP)
+
+
+def _hit_record(entity: dict[str, Any], rrf_score: float, vec: float, lex: float, terms: list[str]) -> dict[str, Any]:
+    annotations = entity["metadata"].get("annotations", {})
+    spec = entity.get("spec", {})
+    matched_attrs, matched_glossary = _matched_metadata(entity, terms)
     return {
         "kind": entity["kind"],
         "name": entity["metadata"]["name"],

@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from servicescout.storage import HAYSTACK_CAPABILITY_CHARS
+
 
 HERE = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG = HERE / "data" / "catalog.json"
@@ -76,6 +78,9 @@ def _entity_haystack(entity: dict[str, Any]) -> str:
         parts.append(term.get("term", "") or "")
         parts.append(term.get("definition", "") or "")
         parts.extend([s for s in (term.get("synonyms") or []) if isinstance(s, str)])
+    capability_sheet = annotations.get("capability_sheet") or ""
+    if capability_sheet:
+        parts.append(capability_sheet[:HAYSTACK_CAPABILITY_CHARS])
     return " ".join(parts).lower()
 
 

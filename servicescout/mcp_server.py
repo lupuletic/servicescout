@@ -86,9 +86,11 @@ def build_server(
     def servicescout_search(query: str, limit: int = 8, min_confidence: str | None = None) -> dict[str, Any]:
         """Find the most relevant entities for a free-text prompt. Recommended entrypoint.
 
-        Hybrid retrieval: Reciprocal Rank Fusion (k=60) over dense embedding similarity
-        and BM25-style lexical scoring, with the fused score weighted by the entity's
-        catalog confidence (high=1.0, medium=0.7, low=0.4, review=0.1, unspecified=0.5).
+        Hybrid retrieval: weighted Reciprocal Rank Fusion (k=60) over dense embedding
+        similarity (favoured) and BM25-style lexical scoring. The fused score is weighted
+        by the entity's catalog confidence (high=1.0, medium=0.7, low=0.4, review=0.1,
+        unspecified=0.5), then boosted for an exact name/alias/technology match and for
+        query terms that hit the entity's structured metadata (domain attributes / glossary).
         Returns the top-N Components / APIs / Resources / Providers with score, tagline,
         source repos, confidence, and any matched domain_attribute or glossary entries.
 

@@ -46,7 +46,9 @@ from typing import Any
 
 from servicescout.storage import (
     Backend,
+    LEXICAL_RRF_WEIGHT,
     SEARCHABLE_KINDS,
+    VECTOR_RRF_WEIGHT,
     _edge_record,
     _kind_rank,
     _rrf,
@@ -325,22 +327,30 @@ class KuzuBackend(Backend):
         if not candidates:
             return []
         rank_lists: list[list[str]] = []
+        weights: list[float] = []
         if vec_rank:
             rank_lists.append(vec_rank)
+            weights.append(VECTOR_RRF_WEIGHT)
         if lex_rank:
             rank_lists.append(lex_rank)
-        # RRF over refs.
+            weights.append(LEXICAL_RRF_WEIGHT)
+        # RRF over refs, weighting dense similarity above lexical/BM25.
         ref_to_idx = {ref: i for i, ref in enumerate(candidates)}
         ranking_indices = [[ref_to_idx[r] for r in rl if r in ref_to_idx] for rl in rank_lists]
-        fused = _rrf(ranking_indices)
+        fused = _rrf(ranking_indices, weights=weights)
         idx_to_ref = {i: r for r, i in ref_to_idx.items()}
-        from servicescout.storage import _confidence_at_least, _confidence_weight, _exact_term_boost, _hit_record  # local import to avoid cycle
+        from servicescout.storage import _confidence_at_least, _confidence_weight, _exact_term_boost, _hit_record, _metadata_match_boost  # local import to avoid cycle
         weighted: dict[int, float] = {}
         for idx, score in fused.items():
-            ent_conf = candidates[idx_to_ref[idx]]["ent"].get("confidence")
+            ent = candidates[idx_to_ref[idx]]["ent"]
+            ent_conf = ent.get("confidence")
             if not _confidence_at_least(ent_conf, min_confidence):
                 continue
-            weighted[idx] = (score * _confidence_weight(ent_conf)) + _exact_term_boost(candidates[idx_to_ref[idx]]["ent"], terms)
+            weighted[idx] = (
+                (score * _confidence_weight(ent_conf))
+                + _exact_term_boost(ent, terms)
+                + _metadata_match_boost(ent, terms)
+            )
         scored = [(s, idx_to_ref[i], candidates[idx_to_ref[i]]) for i, s in sorted(weighted.items(), key=lambda kv: -kv[1])]
         out = []
         for rrf_score, ref, data in scored[:limit]:
