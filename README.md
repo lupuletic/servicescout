@@ -211,6 +211,14 @@ Then open `http://<host>:<port>/` for the UI or point agents at
 balancer or reverse proxy; the bundled nginx is intentionally a small internal
 edge, not an identity provider.
 
+For serverless or single-process hosting, the dashboard can serve the same
+streamable HTTP MCP endpoint directly:
+
+```bash
+SERVICESCOUT_PUBLIC_URL=https://servicescout.example.com \
+python -m servicescout.dashboard --catalog /data/catalog.json --host 0.0.0.0 --port "${PORT:-8080}" --serve-mcp --backend auto
+```
+
 Extraction shells out to the Codex or Claude Code CLI inside the
 crawler/scheduler container, with two auth modes:
 
@@ -448,6 +456,10 @@ k=60) and exposes eight tools for agents to navigate the result.
 | `GOOGLE_CLOUD_PROJECT` | optional | — | GCP project for Vertex AI embeddings. Empty disables embeddings (lexical-only fallback). |
 | `BUDGET_USD` | optional | `100` | Hard cost cap per crawl. |
 | `SERVICESCOUT_HTTP_BIND` | optional | `127.0.0.1:8080` | nginx edge bind address for remote Compose deployments. |
+| `SERVICESCOUT_PUBLIC_URL` | optional | request origin | Canonical dashboard URL. Used to render remote MCP setup commands in the UI. |
+| `SERVICESCOUT_MCP_URL` | optional | `$SERVICESCOUT_PUBLIC_URL/mcp` | Explicit MCP endpoint URL when it differs from the dashboard origin. |
+| `SERVICESCOUT_MCP_PATH` | optional | `/mcp` | MCP endpoint path used by the UI and the combined dashboard/MCP server. |
+| `SERVICESCOUT_MCP_ALLOWED_HOSTS` / `SERVICESCOUT_MCP_ALLOWED_ORIGINS` | optional | localhost + configured public URL | Extra comma-separated Host/Origin allowlist entries for the MCP transport's DNS-rebinding protection. |
 | `CRAWL_INTERVAL_MINUTES` | optional | `360` | Continuous scheduler interval. |
 | `CRAWL_TICK_BUDGET_USD` | optional | `20` | Hard cost cap per scheduler tick. |
 

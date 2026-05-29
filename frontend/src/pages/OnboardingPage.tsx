@@ -135,8 +135,8 @@ export function OnboardingPage() {
   return (
     <div className="h-full grid grid-rows-[auto_1fr]">
       <PageHeader
-        title="New crawl"
-        description="Choose entry-point repos, set a spend guardrail, then crawl downstream dependencies."
+        title="Add seed"
+        description="Choose entry-point repos, set a spend guardrail, then crawl downstream dependencies to enrich the current graph."
         actions={
           <Link to="/activity" className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-fg hover:bg-bg-elevated">
             <Activity size={14} /> Activity
@@ -292,7 +292,7 @@ export function OnboardingPage() {
                 <CardTitle className="mb-1 flex items-center gap-2">
                   <Settings2 size={14} /> Crawl plan
                 </CardTitle>
-                <p className="text-sm text-fg-muted">Save the workspace and start a manual crawl immediately.</p>
+                <p className="text-sm text-fg-muted">Save seed changes and start a manual enrichment crawl immediately.</p>
               </div>
 
               <div className="grid grid-cols-2 gap-2">

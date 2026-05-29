@@ -23,6 +23,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+from contextlib import asynccontextmanager
 import datetime as dt
 import json
 import os
@@ -33,6 +34,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
@@ -134,6 +136,63 @@ def _persist_github_token(token: str) -> bool:
 
 def _workspace_config_path() -> Path:
     return Path(os.environ.get("SERVICESCOUT_WORKSPACE_CONFIG") or str(HERE / "workspace.json"))
+
+
+def _public_base_url(request: Request) -> str:
+    configured = (os.environ.get("SERVICESCOUT_PUBLIC_URL") or "").strip()
+    if configured:
+        return configured.rstrip("/")
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    if forwarded_host:
+        scheme = (forwarded_proto or request.url.scheme or "http").split(",")[0].strip()
+        host = forwarded_host.split(",")[0].strip()
+        return f"{scheme}://{host}".rstrip("/")
+    return str(request.base_url).rstrip("/")
+
+
+def _deployment_config(request: Request) -> dict[str, str]:
+    base_url = _public_base_url(request)
+    mcp_path = (os.environ.get("SERVICESCOUT_MCP_PATH") or "/mcp").strip() or "/mcp"
+    if not mcp_path.startswith("/"):
+        mcp_path = f"/{mcp_path}"
+    mcp_url = (os.environ.get("SERVICESCOUT_MCP_URL") or "").strip() or f"{base_url}{mcp_path}"
+    return {
+        "public_url": base_url,
+        "mcp_url": mcp_url,
+        "install_command": (
+            "curl -fsSL https://raw.githubusercontent.com/lupuletic/servicescout/main/install.sh "
+            f"| bash -s -- --agent both --url {mcp_url} --yes"
+        ),
+        "claude_command": f"claude mcp add servicescout --scope user --transport http {mcp_url}",
+        "codex_command": f"codex mcp add servicescout --url {mcp_url}",
+    }
+
+
+def _mcp_transport_security(public_url: str, mcp_url: str) -> Any:
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    allowed_hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+    allowed_origins = ["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"]
+    for value in (public_url, mcp_url):
+        parsed = urlparse(value)
+        if not parsed.netloc:
+            continue
+        allowed_hosts.append(parsed.netloc)
+        allowed_origins.append(f"{parsed.scheme}://{parsed.netloc}")
+    for value in (os.environ.get("SERVICESCOUT_MCP_ALLOWED_HOSTS") or "").split(","):
+        value = value.strip()
+        if value:
+            allowed_hosts.append(value)
+    for value in (os.environ.get("SERVICESCOUT_MCP_ALLOWED_ORIGINS") or "").split(","):
+        value = value.strip()
+        if value:
+            allowed_origins.append(value)
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=sorted(set(allowed_hosts)),
+        allowed_origins=sorted(set(allowed_origins)),
+    )
 
 
 def _audit(data_dir: Path, action: str, **fields: Any) -> None:
@@ -1305,9 +1364,54 @@ def create_app(
     extraction_log: Path,
     decisions_path: Path,
     tag_aliases_path: Path | None = None,
+    serve_mcp: bool = False,
+    mcp_backend: str = "auto",
+    mcp_kuzu_path: Path | None = None,
+    mcp_project: str | None = None,
+    mcp_location: str = "us-central1",
+    mcp_embed_model: str = "gemini-embedding-001",
+    mcp_embed_dim: int = 768,
 ) -> FastAPI:
-    app = FastAPI(title="ServiceScout dashboard")
     tag_aliases_path = tag_aliases_path or (catalog_path.parent / "tag_aliases.json")
+    mcp_session_manager: Any | None = None
+    mcp_app: Any | None = None
+    if serve_mcp:
+        from servicescout import mcp_server
+        from servicescout.storage import make_backend
+
+        mcp_path = (os.environ.get("SERVICESCOUT_MCP_PATH") or "/mcp").strip() or "/mcp"
+        if not mcp_path.startswith("/"):
+            mcp_path = f"/{mcp_path}"
+        public_url = (os.environ.get("SERVICESCOUT_PUBLIC_URL") or "").strip()
+        mcp_url = (os.environ.get("SERVICESCOUT_MCP_URL") or "").strip()
+        if public_url and not mcp_url:
+            mcp_url = f"{public_url.rstrip('/')}{mcp_path}"
+        backend = make_backend(mcp_backend, catalog_path, kuzu_path=mcp_kuzu_path or (catalog_path.parent / "catalog.kuzu"))
+        mcp = mcp_server.build_server(
+            backend,
+            project=mcp_project,
+            location=mcp_location,
+            embed_model=mcp_embed_model,
+            embed_dim=mcp_embed_dim,
+            http_config={
+                "path": mcp_path,
+                "transport_security": _mcp_transport_security(public_url, mcp_url),
+            },
+        )
+        mcp_app = mcp.streamable_http_app()
+        mcp_session_manager = mcp.session_manager
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if mcp_session_manager is None:
+            yield
+            return
+        async with mcp_session_manager.run():
+            yield
+
+    app = FastAPI(title="ServiceScout dashboard", lifespan=lifespan if serve_mcp else None)
+    if mcp_app is not None:
+        app.router.routes.extend(mcp_app.routes)
 
     def scheduler_command(*, interval_minutes: int, budget_usd: float, trigger: str | None = None, force_repos: list[str] | None = None) -> list[str]:
         data_dir = catalog_path.parent.resolve()
@@ -1345,12 +1449,13 @@ def create_app(
         return cmd
 
     @app.get("/api/state.json")
-    def api_state() -> JSONResponse:
+    def api_state(request: Request) -> JSONResponse:
         catalog = load_catalog(catalog_path)
         summary = catalog.get("summary") or {}
         log_path, log_tail = latest_crawl_log()
         return JSONResponse({
             "backend": "kuzu" if (catalog_path.parent / "catalog.kuzu").exists() else "json",
+            "deployment": _deployment_config(request),
             "summary": {
                 "entities": summary.get("entities") or 0,
                 "relations": summary.get("relations") or 0,
@@ -2321,7 +2426,18 @@ def main() -> int:
     parser.add_argument("--decisions", type=Path, default=DEFAULT_DECISIONS)
     parser.add_argument("--tag-aliases", type=Path, default=None, help="Optional tag alias map generated by servicescout-reconcile-tags.")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8788)
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT") or 8788))
+    parser.add_argument("--serve-mcp", action="store_true", help="Serve the streamable HTTP MCP endpoint from this web process.")
+    parser.add_argument("--backend", choices=("auto", "json", "kuzu"), default="auto",
+                        help="MCP storage backend when --serve-mcp is set.")
+    parser.add_argument("--kuzu-db", type=Path, default=None,
+                        help="Path to the Kuzu database when --serve-mcp is set. Defaults to catalog_dir/catalog.kuzu.")
+    parser.add_argument("--project", default=os.getenv("GOOGLE_CLOUD_PROJECT") or None,
+                        help="GCP project for MCP query embeddings.")
+    parser.add_argument("--location", default=os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1",
+                        help="GCP location for MCP query embeddings.")
+    parser.add_argument("--embed-model", default="gemini-embedding-001")
+    parser.add_argument("--embed-dim", type=int, default=768)
     args = parser.parse_args()
 
     import uvicorn
@@ -2330,6 +2446,13 @@ def main() -> int:
         extraction_log=args.extraction_log,
         decisions_path=args.decisions,
         tag_aliases_path=args.tag_aliases,
+        serve_mcp=args.serve_mcp,
+        mcp_backend=args.backend,
+        mcp_kuzu_path=args.kuzu_db,
+        mcp_project=args.project,
+        mcp_location=args.location,
+        mcp_embed_model=args.embed_model,
+        mcp_embed_dim=args.embed_dim,
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0

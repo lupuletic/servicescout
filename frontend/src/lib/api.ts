@@ -2,6 +2,13 @@
 
 export type StatusPayload = {
   backend: string;
+  deployment?: {
+    public_url?: string;
+    mcp_url?: string;
+    install_command?: string;
+    claude_command?: string;
+    codex_command?: string;
+  };
   summary: {
     entities?: number;
     relations?: number;

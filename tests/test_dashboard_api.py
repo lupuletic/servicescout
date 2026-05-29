@@ -124,6 +124,59 @@ class DashboardApiTests(unittest.TestCase):
             self.assertEqual(entities["limit"], 1)
             self.assertTrue(entities["truncated"])
 
+    def test_deployment_config_uses_public_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.dict(os.environ, {"SERVICESCOUT_PUBLIC_URL": "https://servicescout.example.com"}):
+                app = dashboard.create_app(
+                    catalog_path=_write_catalog(root),
+                    extraction_log=root / "extractions.jsonl",
+                    decisions_path=root / "decisions.jsonl",
+                )
+                client = TestClient(app)
+
+                deployment = client.get("/api/state.json").json()["deployment"]
+
+            self.assertEqual(deployment["public_url"], "https://servicescout.example.com")
+            self.assertEqual(deployment["mcp_url"], "https://servicescout.example.com/mcp")
+            self.assertIn("claude mcp add", deployment["claude_command"])
+            self.assertIn("codex mcp add", deployment["codex_command"])
+
+    def test_embedded_mcp_accepts_configured_public_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.dict(os.environ, {"SERVICESCOUT_PUBLIC_URL": "https://servicescout.example.com"}):
+                app = dashboard.create_app(
+                    catalog_path=_write_catalog(root),
+                    extraction_log=root / "extractions.jsonl",
+                    decisions_path=root / "decisions.jsonl",
+                    serve_mcp=True,
+                    mcp_backend="json",
+                )
+                with TestClient(app, base_url="https://servicescout.example.com") as client:
+                    response = client.post(
+                        "/mcp",
+                        headers={
+                            "accept": "application/json, text/event-stream",
+                            "content-type": "application/json",
+                        },
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "initialize",
+                            "params": {
+                                "protocolVersion": "2025-06-18",
+                                "capabilities": {},
+                                "clientInfo": {"name": "dashboard-test", "version": "1"},
+                            },
+                        },
+                    )
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["jsonrpc"], "2.0")
+            self.assertEqual(payload["result"]["serverInfo"]["name"], "ServiceScout")
+
     def test_tag_facets_use_canonical_aliases(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

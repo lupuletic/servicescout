@@ -80,6 +80,7 @@ def build_server(
         port=int(http_config.get("port", 8765)),
         streamable_http_path=http_config.get("path", "/mcp"),
         stateless_http=True,
+        transport_security=http_config.get("transport_security"),
     )
 
     @mcp.tool()
