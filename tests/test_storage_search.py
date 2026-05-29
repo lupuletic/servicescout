@@ -7,6 +7,7 @@ from servicescout.storage import (
     JSONBackend,
     _entity_haystack,
     _exact_term_boost,
+    _matched_metadata,
     _metadata_hit_count,
     _metadata_ranking,
     _rrf,
@@ -144,6 +145,26 @@ class MetadataFusionTests(unittest.TestCase):
     def test_hit_count_counts_attribute_and_glossary(self) -> None:
         self.assertEqual(_metadata_hit_count(self._entity(), ["dispatched", "waybill"]), 2)
 
+    def test_metadata_matching_ignores_non_string_values_and_synonyms(self) -> None:
+        entity = {
+            "spec": {
+                "domain_attributes": [
+                    {"attribute": "StatusCode", "values": [200, "DELIVERED", None], "meaning": "shipment status"},
+                    {"attribute": 123, "values": [456], "meaning": "malformed entry"},
+                ],
+                "glossary": [
+                    {"term": "manifest", "definition": "list of parcels", "synonyms": ["waybill", 100]},
+                    {"term": None, "definition": "malformed entry", "synonyms": 42},
+                ],
+            }
+        }
+
+        matched_attrs, matched_glossary = _matched_metadata(entity, ["delivered", "waybill"])
+
+        self.assertEqual(matched_attrs, [{"attribute": "StatusCode", "values": ["DELIVERED"], "meaning": "shipment status"}])
+        self.assertEqual(matched_glossary, [{"term": "manifest", "definition": "list of parcels"}])
+        self.assertEqual(_metadata_hit_count(entity, ["200", "456"]), 0)
+
     def test_no_match_and_empty_terms_give_zero(self) -> None:
         self.assertEqual(_metadata_hit_count(self._entity(), ["unrelated"]), 0)
         self.assertEqual(_metadata_hit_count(self._entity(), []), 0)
@@ -190,6 +211,48 @@ class MetadataFusionTests(unittest.TestCase):
             hits = JSONBackend(path).search(
                 "which service tracks the dispatch shipment lifecycle status", query_vector=None, limit=1
             )
+
+        self.assertEqual(hits[0]["ref"], "Component:logistics")
+
+    def test_malformed_metadata_does_not_break_search_ranking(self) -> None:
+        catalog = {
+            "entities": [
+                {
+                    "kind": "Component",
+                    "metadata": {
+                        "name": "logistics",
+                        "description": "shipment lifecycle service",
+                        "annotations": {},
+                    },
+                    "spec": {
+                        "type": "service",
+                        "domain_attributes": [
+                            {"attribute": "StatusCode", "values": [200, "DISPATCHED"], "meaning": "dispatch state"},
+                        ],
+                        "glossary": [
+                            {"term": "manifest", "definition": "parcel list", "synonyms": ["waybill", 123]},
+                        ],
+                    },
+                    "confidence": "high",
+                },
+                {
+                    "kind": "Component",
+                    "metadata": {"name": "broken", "description": "unrelated service", "annotations": {}},
+                    "spec": {
+                        "type": "service",
+                        "domain_attributes": [{"attribute": 404, "values": [500], "meaning": "malformed"}],
+                        "glossary": [{"term": None, "definition": "malformed", "synonyms": 500}],
+                    },
+                    "confidence": "high",
+                },
+            ],
+            "relations": [],
+            "summary": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "catalog.json"
+            path.write_text(json.dumps(catalog), encoding="utf-8")
+            hits = JSONBackend(path).search("which service handles dispatched waybill shipments", query_vector=None, limit=1)
 
         self.assertEqual(hits[0]["ref"], "Component:logistics")
 

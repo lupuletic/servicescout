@@ -583,6 +583,16 @@ def _rrf(rankings: list[list[int]], k: int = 60, weights: list[float] | None = N
     return out
 
 
+def _string_value(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
 def _entity_haystack(entity: dict[str, Any]) -> str:
     meta = entity.get("metadata", {})
     spec = entity.get("spec", {})
@@ -607,15 +617,15 @@ def _entity_haystack(entity: dict[str, Any]) -> str:
     for attr in spec.get("domain_attributes") or []:
         if not isinstance(attr, dict):
             continue
-        parts.append(attr.get("attribute", "") or "")
-        parts.extend([v for v in (attr.get("values") or []) if isinstance(v, str)])
-        parts.append(attr.get("meaning", "") or "")
+        parts.append(_string_value(attr.get("attribute")))
+        parts.extend(_string_list(attr.get("values")))
+        parts.append(_string_value(attr.get("meaning")))
     for term in spec.get("glossary") or []:
         if not isinstance(term, dict):
             continue
-        parts.append(term.get("term", "") or "")
-        parts.append(term.get("definition", "") or "")
-        parts.extend([s for s in (term.get("synonyms") or []) if isinstance(s, str)])
+        parts.append(_string_value(term.get("term")))
+        parts.append(_string_value(term.get("definition")))
+        parts.extend(_string_list(term.get("synonyms")))
     # The capability sheet is the richest descriptive prose and is already part of
     # the embedding text; fold it into the lexical haystack too so dense and lexical
     # retrieval see the same content (truncated to bound BM25 length normalisation).
@@ -628,7 +638,7 @@ def _entity_haystack(entity: dict[str, Any]) -> str:
 def _matched_metadata(entity: dict[str, Any], terms: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Domain-attribute and glossary entries whose text contains a query term.
 
-    Shared by ranking (_metadata_match_boost) and presentation (_hit_record) so
+    Shared by ranking (_metadata_hit_count) and presentation (_hit_record) so
     the signal that lifts a hit is exactly the signal shown to the caller.
     """
     spec = entity.get("spec", {}) or {}
@@ -636,21 +646,25 @@ def _matched_metadata(entity: dict[str, Any], terms: list[str]) -> tuple[list[di
     for attr in (spec.get("domain_attributes") or [])[:30]:
         if not isinstance(attr, dict):
             continue
-        haystack = (attr.get("attribute", "") + " " + " ".join(attr.get("values") or [])).lower()
+        attribute_text = _string_value(attr.get("attribute"))
+        values = _string_list(attr.get("values"))
+        haystack = f"{attribute_text} {' '.join(values)}".lower()
         if any(t in haystack for t in terms):
             matched_attrs.append({
-                "attribute": attr.get("attribute", ""),
-                "values": (attr.get("values") or [])[:8],
+                "attribute": attribute_text,
+                "values": values[:8],
                 "meaning": attr.get("meaning", ""),
             })
     matched_glossary = []
     for term in (spec.get("glossary") or [])[:40]:
         if not isinstance(term, dict):
             continue
-        haystack = (term.get("term", "") + " " + " ".join(term.get("synonyms") or [])).lower()
+        term_text = _string_value(term.get("term"))
+        synonyms = _string_list(term.get("synonyms"))
+        haystack = f"{term_text} {' '.join(synonyms)}".lower()
         if any(t in haystack for t in terms):
             matched_glossary.append({
-                "term": term.get("term", ""),
+                "term": term_text,
                 "definition": term.get("definition", ""),
             })
     return matched_attrs, matched_glossary
