@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from servicescout.storage import HAYSTACK_CAPABILITY_CHARS, _string_list, _string_value
+
 
 HERE = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG = HERE / "data" / "catalog.json"
@@ -67,15 +69,18 @@ def _entity_haystack(entity: dict[str, Any]) -> str:
     for attr in spec.get("domain_attributes") or []:
         if not isinstance(attr, dict):
             continue
-        parts.append(attr.get("attribute", "") or "")
-        parts.extend([v for v in (attr.get("values") or []) if isinstance(v, str)])
-        parts.append(attr.get("meaning", "") or "")
+        parts.append(_string_value(attr.get("attribute")))
+        parts.extend(_string_list(attr.get("values")))
+        parts.append(_string_value(attr.get("meaning")))
     for term in spec.get("glossary") or []:
         if not isinstance(term, dict):
             continue
-        parts.append(term.get("term", "") or "")
-        parts.append(term.get("definition", "") or "")
-        parts.extend([s for s in (term.get("synonyms") or []) if isinstance(s, str)])
+        parts.append(_string_value(term.get("term")))
+        parts.append(_string_value(term.get("definition")))
+        parts.extend(_string_list(term.get("synonyms")))
+    capability_sheet = annotations.get("capability_sheet") or ""
+    if capability_sheet:
+        parts.append(capability_sheet[:HAYSTACK_CAPABILITY_CHARS])
     return " ".join(parts).lower()
 
 
