@@ -80,18 +80,18 @@ export function EntityPage() {
         }
       />
       {/* Tab bar */}
-      <div className="flex items-center gap-1 px-6 border-b border-border bg-bg-elevated/40">
-        <div className="flex items-center gap-2.5 mr-4">
+      <div className="flex items-center gap-1 overflow-x-auto border-b border-border bg-bg-elevated/40 px-4 sm:px-6">
+        <div className="mr-4 flex min-w-0 shrink-0 items-center gap-2.5">
           <KindBadge kind={data.kind} />
           <ConfidenceBadge confidence={data.confidence} />
-          <span className="text-xs text-fg-dim font-mono">{data.ref}</span>
+          <span className="max-w-[44vw] truncate font-mono text-xs text-fg-dim lg:max-w-xs">{data.ref}</span>
         </div>
         {TABS.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
             className={cn(
-              "px-3 py-2.5 text-sm transition-colors border-b-2 -mb-px",
+              "-mb-px shrink-0 border-b-2 px-3 py-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70",
               tab === t.id
                 ? "text-fg border-accent"
                 : "text-fg-muted hover:text-fg border-transparent",

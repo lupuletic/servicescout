@@ -113,7 +113,7 @@ export function OnboardingPage() {
         token: token || undefined,
       });
       await postJSON("/api/crawl/trigger", {});
-      setResult("Crawl started - follow it on the Activity page.");
+      setResult("Crawl started. Follow it on the Activity page.");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -164,15 +164,19 @@ export function OnboardingPage() {
                   {login ? `Connected as ${login}` : "Not connected"}
                 </StatusPill>
               </div>
-              <div className="grid gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_auto]">
-                <Input
-                  type="password"
-                  placeholder="github_pat_... (read-only)"
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  className="font-mono"
-                  autoComplete="off"
-                />
+              <div className="grid gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                <label className="text-xs font-medium uppercase tracking-[0.04em] text-fg-dim">
+                  Read-only GitHub token
+                  <Input
+                    id="github-token"
+                    type="password"
+                    placeholder="github_pat_... (read-only)"
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                    className="mt-1 font-mono"
+                    autoComplete="off"
+                  />
+                </label>
                 <Button onClick={connect} disabled={!token || connecting} className="h-9">
                   {connecting ? <Loader2 className="animate-spin" size={16} /> : <KeyRound size={16} />}
                   {login ? "Reconnect" : "Connect"}
@@ -204,7 +208,7 @@ export function OnboardingPage() {
                             type="button"
                             onClick={() => toggleSeed(seed)}
                             aria-label={`Remove ${seed}`}
-                            className="grid h-4 w-4 shrink-0 place-items-center rounded text-fg-dim hover:bg-bg hover:text-red-400"
+                            className="-mr-1 grid h-8 w-8 shrink-0 place-items-center rounded text-fg-dim hover:bg-bg hover:text-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
                           >
                             <X size={11} />
                           </button>
@@ -312,7 +316,7 @@ export function OnboardingPage() {
               </div>
 
               <Button onClick={saveAndCrawl} disabled={!canCrawl} className="h-10 w-full">
-                {saving ? <Loader2 className="animate-spin" size={16} /> : <Rocket size={16} />} Save &amp; crawl
+                {saving ? <Loader2 className="animate-spin" size={16} /> : <Rocket size={16} />} Save and start crawl
               </Button>
 
               {seeds.size === 0 && <p className="text-xs text-fg-dim">Select at least one seed repo before crawling.</p>}

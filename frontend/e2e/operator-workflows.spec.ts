@@ -251,7 +251,7 @@ test.beforeEach(async ({ page }) => {
 
 test("new crawl page summarizes saved seeds and starts a crawl", async ({ page }) => {
   await page.goto("/onboard");
-  await expect(page.getByRole("heading", { name: "New crawl" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Add seed" })).toBeVisible();
   await expect(page.getByText("2 selected")).toBeVisible();
   await expect(page.getByText("acme/storefront", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Budget (USD)")).toHaveValue("100");
@@ -261,7 +261,7 @@ test("new crawl page summarizes saved seeds and starts a crawl", async ({ page }
     request.url().endsWith("/api/workspace/config") && request.method() === "POST",
   );
   const triggerRequest = page.waitForRequest("**/api/crawl/trigger");
-  await page.getByRole("button", { name: "Save & crawl" }).click();
+  await page.getByRole("button", { name: "Save and start crawl" }).click();
   await expect((await configRequest).postData() || "").toContain("acme/storefront");
   await expect((await triggerRequest).method()).toBe("POST");
   await expect(page.getByText("Crawl started")).toBeVisible();

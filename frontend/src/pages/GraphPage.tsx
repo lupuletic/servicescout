@@ -4,9 +4,9 @@ import useSWR from "swr";
 import { SigmaContainer, useLoadGraph, useRegisterEvents, useSigma } from "@react-sigma/core";
 import { NodeCircleProgram, EdgeArrowProgram } from "sigma/rendering";
 import forceAtlas2 from "graphology-layout-forceatlas2";
-import { Filter, RotateCcw, Tags } from "lucide-react";
+import { AlertCircle, Filter, LocateFixed, Maximize2, RotateCcw, Tags, ZoomIn, ZoomOut } from "lucide-react";
 import { type EntityRecord, type GraphPayload } from "@/lib/api";
-import { Button, ConfidenceBadge, Input, KindBadge, PageHeader } from "@/components/ui";
+import { Button, ConfidenceBadge, EmptyState, IconButton, Input, KindBadge, PageHeader } from "@/components/ui";
 import { EDGE_TYPE_META, KIND_META, edgeTypeLabel, kindColor, kindLabel } from "@/lib/catalogLabels";
 import { cn } from "@/lib/cn";
 import { drawReadableNodeHover } from "@/lib/sigmaRenderers";
@@ -226,6 +226,16 @@ export function GraphPage() {
     const cur = cam.getState();
     cam.animate({ ...cur, ratio: Math.max(0.05, Math.min(4, cur.ratio * factor)) }, { duration: 250 });
   };
+  const focusNode = (ref: string) => {
+    setSelectedRef(ref);
+    if (!sigmaRef) return;
+    const pos = sigmaRef.getNodeDisplayData(ref);
+    if (pos) {
+      const current = sigmaRef.getCamera().getState();
+      const ratio = Math.min(current.ratio, nodeFocusRatioForNodeCount(sigmaRef.getGraph().order));
+      sigmaRef.getCamera().animate({ x: pos.x, y: pos.y, ratio }, { duration: 350 });
+    }
+  };
   const fitToView = () => {
     if (!sigmaRef) return;
     const nodeCount = sigmaRef.getGraph().order;
@@ -258,7 +268,7 @@ export function GraphPage() {
     qs.set("limit", String(limit));
     return qs.toString();
   }, [effectiveKinds, edgeTypes, confidences, flowActive, limit]);
-  const { data, isLoading } = useSWR<GraphPayload>(`/api/graph?${graphQs}`);
+  const { data, isLoading, error } = useSWR<GraphPayload>(`/api/graph?${graphQs}`);
   const { data: selectedEntity } = useSWR<EntityFull>(
     selectedRef ? `/api/entity/${encodeURIComponent(selectedRef)}` : null,
   );
@@ -386,15 +396,15 @@ export function GraphPage() {
         description={
           data
             ? `Showing ${data.nodes.length} / ${data.node_total} nodes · ${data.edges.length} edges. Force-directed layout.`
-            : "Loading…"
+            : "Loading graph data..."
         }
         actions={
           <>
             <Input
-              placeholder="Find a node…"
+              placeholder="Find a node..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-56"
+              className="w-full sm:w-56"
             />
             <Button
               variant="outline"
@@ -409,7 +419,7 @@ export function GraphPage() {
       <div className="grid min-h-0 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px]">
         <div className="grid min-h-0 grid-cols-1 bg-bg lg:grid-cols-[344px_minmax(0,1fr)]">
           <div className="min-h-0 border-b border-border bg-bg p-3 lg:border-b-0 lg:border-r">
-            <div className="max-h-[min(52vh,560px)] overflow-hidden rounded-lg border border-border bg-bg-elevated shadow-xl lg:max-h-full">
+            <div className="max-h-[min(52vh,560px)] overflow-hidden rounded-lg border border-border bg-bg-elevated lg:max-h-full">
               <div className="flex items-start justify-between gap-3 border-b border-border px-3 py-2.5">
                 <div>
                   <div className="flex items-center gap-1.5 text-sm font-medium text-fg">
@@ -424,7 +434,7 @@ export function GraphPage() {
                   type="button"
                   onClick={resetFilters}
                   title="Reset graph filters"
-                  className="grid h-7 w-7 shrink-0 place-items-center rounded text-fg-dim hover:bg-bg hover:text-fg"
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-fg-dim hover:bg-bg hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
                 >
                   <RotateCcw size={13} />
                 </button>
@@ -517,10 +527,10 @@ export function GraphPage() {
                 <button
                   key={n.id}
                   onClick={() => {
-                    setSelectedRef(n.id);
+                    focusNode(n.id);
                     setSearch("");
                   }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-bg"
+                  className="flex min-h-9 w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/70"
                 >
                   <KindBadge kind={n.kind} />
                   <span className="truncate text-fg">{n.label}</span>
@@ -531,53 +541,75 @@ export function GraphPage() {
 
           {isLoading && (
             <div className="absolute inset-0 flex items-center justify-center text-fg-muted">
-              Building force-directed layout…
+              Building force-directed layout...
+            </div>
+          )}
+
+          {error && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center p-4">
+              <EmptyState
+                icon={AlertCircle}
+                title="Graph failed to load"
+                description="The graph API did not return data. Refresh the page or check the Activity page for crawler status."
+                actions={<Button variant="outline" onClick={() => window.location.reload()}>Reload graph</Button>}
+                className="max-w-lg"
+              />
+            </div>
+          )}
+
+          {!isLoading && !error && data && data.nodes.length === 0 && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center p-4">
+              <EmptyState
+                icon={Filter}
+                title="No nodes match these filters"
+                description="Reset the graph filters or switch to Evidence graph to inspect raw API, datastore, queue, system, domain, and owner relationships."
+                actions={<Button variant="outline" onClick={resetFilters}>Reset filters</Button>}
+                className="max-w-lg"
+              />
             </div>
           )}
 
           {/* Camera control bar — bottom-right */}
-          <div className="absolute bottom-3 right-3 z-10 flex flex-col gap-1.5 rounded-md border border-border bg-bg-elevated/80 backdrop-blur-sm p-1">
-            <button
+          <div className="absolute bottom-3 right-3 z-10 flex flex-col gap-1.5 rounded-md border border-border bg-bg-elevated/90 p-1">
+            <IconButton
               onClick={() => setShowLabels((value) => !value)}
               title={showLabels ? "Hide labels" : "Show labels"}
               aria-label={showLabels ? "Hide graph labels" : "Show graph labels"}
               aria-pressed={showLabels}
-              className={cn(
-                "h-7 w-7 rounded grid place-items-center hover:bg-bg",
-                showLabels ? "text-accent hover:text-fg" : "text-fg-muted hover:text-fg",
-              )}
+              active={showLabels}
             >
               <Tags size={14} />
-            </button>
-            <button
+            </IconButton>
+            <IconButton
               onClick={() => zoom(0.75)}
               title="Zoom in"
-              className="h-7 w-7 rounded grid place-items-center text-fg-muted hover:text-fg hover:bg-bg"
+              aria-label="Zoom in"
             >
-              +
-            </button>
-            <button
+              <ZoomIn size={14} />
+            </IconButton>
+            <IconButton
               onClick={() => zoom(1.4)}
               title="Zoom out"
-              className="h-7 w-7 rounded grid place-items-center text-fg-muted hover:text-fg hover:bg-bg"
+              aria-label="Zoom out"
             >
-              −
-            </button>
-            <button
+              <ZoomOut size={14} />
+            </IconButton>
+            <IconButton
               onClick={fitToView}
               title="Fit to view"
-              className="h-7 w-7 rounded grid place-items-center text-fg-muted hover:text-fg hover:bg-bg text-[11px]"
+              aria-label="Fit graph to view"
             >
-              ⛶
-            </button>
+              <Maximize2 size={14} />
+            </IconButton>
             {selectedRef && (
-              <button
+              <IconButton
                 onClick={centerSelected}
-                title="Centre on selected"
-                className="h-7 w-7 rounded grid place-items-center text-accent hover:text-fg hover:bg-bg text-[11px]"
+                title="Center on selected"
+                aria-label="Center on selected node"
+                active
               >
-                ◎
-              </button>
+                <LocateFixed size={14} />
+              </IconButton>
             )}
           </div>
 
@@ -659,7 +691,7 @@ function FilterChip({
           : active
           ? "border-accent/45 bg-accent/15 text-fg"
           : "border-border bg-bg/45 text-fg-muted hover:border-border-strong hover:bg-bg hover:text-fg"
-      }`}
+      } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70`}
     >
       {children}
     </button>
@@ -684,10 +716,11 @@ function CompactChip({
       title={title}
       onClick={onClick}
       className={cn(
-        "inline-flex h-7 items-center rounded-md border px-2 text-[11px] transition-colors",
+        "inline-flex h-8 items-center rounded-md border px-2 text-[11px] transition-colors",
         active
           ? "border-accent/45 bg-accent/15 text-fg"
           : "border-border bg-bg/45 text-fg-muted hover:border-border-strong hover:bg-bg hover:text-fg",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70",
       )}
     >
       {children}
@@ -715,6 +748,7 @@ function ModeButton({
       className={cn(
         "flex h-8 items-center justify-center rounded px-2 text-xs transition-colors",
         active ? "bg-accent/18 text-fg" : "text-fg-muted hover:bg-bg hover:text-fg",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70",
       )}
     >
       {children}

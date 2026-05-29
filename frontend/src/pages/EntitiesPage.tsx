@@ -2,7 +2,8 @@ import { useState, useMemo } from "react";
 import useSWR from "swr";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { type EntityRecord } from "@/lib/api";
-import { ConfidenceBadge, Input, KindBadge, PageHeader } from "@/components/ui";
+import { SearchX } from "lucide-react";
+import { Button, ConfidenceBadge, EmptyState, Input, KindBadge, PageHeader } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { KIND_META, kindLabel } from "@/lib/catalogLabels";
 
@@ -62,7 +63,7 @@ export function EntitiesPage() {
     return `/api/entities?${params.toString()}`;
   }, [selections, query]);
 
-  const { data, isLoading } = useSWR<EntitiesPayload>(entitiesUrl);
+  const { data, isLoading, error } = useSWR<EntitiesPayload>(entitiesUrl);
 
   const toggle = (key: FacetKey, value: string) => {
     const next = new URLSearchParams(sp);
@@ -92,6 +93,11 @@ export function EntitiesPage() {
     setSp(next, { replace: true });
   };
 
+  const clearSearchAndFilters = () => {
+    setQuery("");
+    setSp(new URLSearchParams(), { replace: true });
+  };
+
   const rows = data?.entities ?? [];
   const returned = data?.returned ?? rows.length;
   const total = data?.count ?? 0;
@@ -118,16 +124,17 @@ export function EntitiesPage() {
               else next.delete("q");
               setSp(next, { replace: true });
             }}
-            className="w-80"
+            className="w-full sm:w-80"
           />
         }
       />
-      <div className="grid grid-cols-[260px_1fr] min-h-0">
-        <aside className="border-r border-border bg-bg-elevated/40 overflow-auto p-4 space-y-5 text-sm">
+      <div className="grid min-h-0 grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)]">
+        <aside className="max-h-[42vh] overflow-auto border-b border-border bg-bg-elevated/40 p-4 text-sm lg:max-h-none lg:border-b-0 lg:border-r">
+          <div className="space-y-5">
           {anyFacetActive && (
             <button
               onClick={clearAll}
-              className="text-xs text-fg-dim hover:text-accent w-full text-left"
+              className="w-full rounded-md px-2 py-1 text-left text-xs text-fg-dim hover:bg-bg hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
             >
               Clear all filters
             </button>
@@ -148,12 +155,30 @@ export function EntitiesPage() {
           <FacetGroup title="Owner"         entries={facets?.owner       || []} selected={selections.owner}       onToggle={(v) => toggle("owner", v)}       onClear={() => clearFacet("owner")} renderLabel={(v) => v} max={12} />
           <FacetGroup title="Type"          entries={facets?.type        || []} selected={selections.type}        onToggle={(v) => toggle("type", v)}        onClear={() => clearFacet("type")} renderLabel={(v) => v} max={10} />
           <FacetGroup title="Tag"           entries={facets?.tag         || []} selected={selections.tag}         onToggle={(v) => toggle("tag", v)}         onClear={() => clearFacet("tag")} renderLabel={(v) => v} max={12} />
+          </div>
         </aside>
 
-        <div className="overflow-auto">
-          {isLoading && <div className="p-6 text-fg-muted">Loading entities…</div>}
-          {!isLoading && rows.length === 0 && (
-            <div className="p-6 text-fg-muted">No entities match the current filters.</div>
+        <div className="min-w-0 overflow-auto">
+          {isLoading && <div className="p-6 text-fg-muted">Loading entities...</div>}
+          {error && (
+            <div className="p-6">
+              <EmptyState
+                icon={SearchX}
+                title="Catalog failed to load"
+                description="The catalog API did not return entities. Refresh the page or check whether the dashboard API is running."
+                actions={<Button variant="outline" onClick={() => window.location.reload()}>Reload catalog</Button>}
+              />
+            </div>
+          )}
+          {!isLoading && !error && rows.length === 0 && (
+            <div className="p-6">
+              <EmptyState
+                icon={SearchX}
+                title="No entities match"
+                description="Adjust the search terms or clear filters to return to the full catalog."
+                actions={<Button variant="outline" onClick={clearSearchAndFilters}>Clear search and filters</Button>}
+              />
+            </div>
           )}
           <table className="w-full min-w-[980px] table-fixed text-sm">
             <colgroup>
@@ -177,7 +202,15 @@ export function EntitiesPage() {
                 <tr
                   key={e.ref}
                   onClick={() => navigate(`/entity/${encodeURIComponent(e.ref)}`)}
-                  className="border-t border-border hover:bg-bg-elevated cursor-pointer"
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      navigate(`/entity/${encodeURIComponent(e.ref)}`);
+                    }
+                  }}
+                  tabIndex={0}
+                  title={`Open ${e.name}`}
+                  className="cursor-pointer border-t border-border hover:bg-bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/70"
                 >
                   <td className="px-6 py-2.5"><KindBadge kind={e.kind} /></td>
                   <td className="px-3 py-2.5 font-medium text-fg truncate">{e.name}</td>
@@ -221,7 +254,7 @@ function FacetGroup({
       <div className="flex items-center justify-between mb-1.5">
         <h3 className="text-xs uppercase tracking-wider text-fg-dim">{title}</h3>
         {selected.size > 0 && (
-          <button onClick={onClear} className="text-[10px] text-fg-dim hover:text-accent">clear</button>
+          <button onClick={onClear} className="rounded px-1 text-[10px] text-fg-dim hover:bg-bg hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70">clear</button>
         )}
       </div>
       <ul className="space-y-0.5">
@@ -232,10 +265,11 @@ function FacetGroup({
               <button
                 onClick={() => onToggle(e.value)}
                 className={cn(
-                  "w-full flex items-start justify-between gap-2 px-2 py-1.5 rounded text-xs transition-colors",
+                  "flex min-h-9 w-full items-start justify-between gap-2 rounded px-2 py-1.5 text-xs transition-colors",
                   isOn
                     ? "bg-accent/15 text-fg border border-accent/30"
                     : "text-fg-muted hover:bg-bg hover:text-fg border border-transparent",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70",
                 )}
               >
                 <span className="min-w-0 text-left">
@@ -255,7 +289,7 @@ function FacetGroup({
       {entries.length > max && (
         <button
           onClick={() => setExpanded((x) => !x)}
-          className="mt-1 text-[10px] text-fg-dim hover:text-accent"
+          className="mt-1 inline-flex min-h-8 items-center rounded px-2 text-[10px] text-fg-dim hover:bg-bg hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
         >
           {expanded ? "Show less" : `Show ${entries.length - max} more`}
         </button>
