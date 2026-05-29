@@ -23,6 +23,8 @@
   html {
     @apply bg-bg text-fg;
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-kerning: normal;
+    text-rendering: optimizeLegibility;
   }
 
   body {
@@ -48,6 +50,36 @@
   }
   ::-webkit-scrollbar-thumb:hover {
     background: var(--color-fg-dim);
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-accent) 35%, transparent);
+    color: var(--color-fg);
+  }
+
+  :focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 72%, white 8%);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  @media (pointer: coarse) {
+    button,
+    [role="button"],
+    input,
+    select {
+      min-height: 44px;
+    }
   }
 }
 

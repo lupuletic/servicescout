@@ -2,7 +2,7 @@
 // re-style. If we need anything fancier (combobox, popover, sheet), add via
 // `npx shadcn@latest add` later.
 
-import { type ReactNode, type HTMLAttributes, type ButtonHTMLAttributes, type InputHTMLAttributes, forwardRef } from "react";
+import { type ReactNode, type HTMLAttributes, type ButtonHTMLAttributes, type InputHTMLAttributes, type SelectHTMLAttributes, type ElementType, forwardRef } from "react";
 import { cn } from "@/lib/cn";
 import { kindLabel } from "@/lib/catalogLabels";
 
@@ -17,7 +17,7 @@ export const Card = ({ className, ...props }: HTMLAttributes<HTMLDivElement>) =>
 );
 
 export const CardTitle = ({ className, ...props }: HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn("text-xs uppercase tracking-wider text-fg-dim mb-2", className)} {...props} />
+  <div className={cn("mb-2 text-xs font-medium uppercase tracking-[0.04em] text-fg-dim", className)} {...props} />
 );
 
 export const CardValue = ({ className, ...props }: HTMLAttributes<HTMLDivElement>) => (
@@ -29,7 +29,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLBut
     <button
       ref={ref}
       className={cn(
-        "inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50 disabled:pointer-events-none",
+        "inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:pointer-events-none disabled:opacity-50",
         variant === "default" && "bg-accent text-accent-fg hover:bg-accent/90",
         variant === "ghost" && "text-fg-muted hover:text-fg hover:bg-bg-elevated",
         variant === "outline" && "border border-border text-fg hover:border-border-strong hover:bg-bg-elevated",
@@ -41,12 +41,27 @@ export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLBut
 );
 Button.displayName = "Button";
 
+export const IconButton = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean }>(
+  ({ className, active = false, ...props }, ref) => (
+    <button
+      ref={ref}
+      className={cn(
+        "grid h-9 w-9 shrink-0 place-items-center rounded-md border border-transparent text-fg-muted transition-colors hover:border-border hover:bg-bg hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:pointer-events-none disabled:opacity-50",
+        active && "border-accent/45 bg-accent/15 text-accent",
+        className,
+      )}
+      {...props}
+    />
+  ),
+);
+IconButton.displayName = "IconButton";
+
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
   ({ className, ...props }, ref) => (
     <input
       ref={ref}
       className={cn(
-        "flex h-9 w-full rounded-md border border-border bg-bg-elevated px-3 py-1 text-sm text-fg placeholder:text-fg-dim focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent",
+        "flex h-9 w-full rounded-md border border-border bg-bg-elevated px-3 py-1 text-sm text-fg placeholder:text-fg-muted focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/50 disabled:cursor-not-allowed disabled:opacity-60",
         className,
       )}
       {...props}
@@ -54,6 +69,20 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
   ),
 );
 Input.displayName = "Input";
+
+export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(
+  ({ className, ...props }, ref) => (
+    <select
+      ref={ref}
+      className={cn(
+        "h-9 w-full rounded-md border border-border bg-bg-elevated px-3 text-sm text-fg focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/50 disabled:cursor-not-allowed disabled:opacity-60",
+        className,
+      )}
+      {...props}
+    />
+  ),
+);
+Select.displayName = "Select";
 
 const KIND_COLORS: Record<string, string> = {
   Component: "bg-component/15 text-component border-component/30",
@@ -137,12 +166,43 @@ export function Stat({ label, value, hint }: { label: string; value: ReactNode; 
 
 export function PageHeader({ title, description, actions }: { title: string; description?: string; actions?: ReactNode }) {
   return (
-    <div className="flex items-start justify-between border-b border-border bg-bg-elevated/40 px-6 py-4">
-      <div>
+    <div className="flex flex-col gap-3 border-b border-border bg-bg-elevated/40 px-4 py-4 sm:px-6 lg:flex-row lg:items-start lg:justify-between">
+      <div className="min-w-0">
         <h1 className="text-lg font-semibold tracking-tight text-fg">{title}</h1>
-        {description && <p className="text-sm text-fg-muted mt-0.5">{description}</p>}
+        {description && <p className="mt-0.5 max-w-[72ch] text-sm leading-5 text-fg-muted">{description}</p>}
       </div>
-      {actions && <div className="flex items-center gap-2">{actions}</div>}
+      {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
+    </div>
+  );
+}
+
+export function EmptyState({
+  icon: Icon,
+  title,
+  description,
+  actions,
+  className,
+}: {
+  icon?: ElementType;
+  title: string;
+  description?: string;
+  actions?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={cn("rounded-lg border border-border bg-bg-elevated px-4 py-6 text-sm", className)}>
+      <div className="flex items-start gap-3">
+        {Icon && (
+          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted">
+            <Icon size={16} aria-hidden="true" />
+          </div>
+        )}
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-fg">{title}</h2>
+          {description && <p className="mt-1 max-w-[58ch] text-sm leading-5 text-fg-muted">{description}</p>}
+          {actions && <div className="mt-3 flex flex-wrap gap-2">{actions}</div>}
+        </div>
+      </div>
     </div>
   );
 }

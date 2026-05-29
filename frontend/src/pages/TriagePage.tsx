@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import { Button, Input, PageHeader } from "@/components/ui";
+import { CheckCircle2 } from "lucide-react";
+import { Button, EmptyState, Input, PageHeader, Select } from "@/components/ui";
 
 type TriageRow = {
   ref: string;
@@ -90,9 +91,9 @@ export function TriagePage() {
             : "Loading…"
         }
       />
-      <div className="grid grid-cols-[1fr_380px] min-h-0">
+      <div className="grid min-h-0 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px]">
         <div className="min-h-0 grid grid-rows-[auto_1fr]">
-          <div className="flex items-center gap-1 border-b border-border bg-bg-elevated/40 px-6 py-2">
+          <div className="flex items-center gap-1 overflow-x-auto border-b border-border bg-bg-elevated/40 px-4 py-2 sm:px-6">
             <TabButton active={mode === "facts"} onClick={() => { setMode("facts"); setSelectedRef(null); }}>
               Disconfirmed facts
               {" "}
@@ -109,8 +110,12 @@ export function TriagePage() {
             <>
               {factsLoading && <div className="p-6 text-fg-muted">Loading facts...</div>}
               {!factsLoading && facts.length === 0 && (
-                <div className="p-6 text-fg-muted">
-                  No disconfirmed verifier facts are open.
+                <div className="p-6">
+                  <EmptyState
+                    icon={CheckCircle2}
+                    title="No disconfirmed facts"
+                    description="Verifier facts that need operator review will appear here."
+                  />
                 </div>
               )}
               {facts.length > 0 && (
@@ -150,8 +155,12 @@ export function TriagePage() {
             <>
             {isLoading && <div className="p-6 text-fg-muted">Loading…</div>}
             {!isLoading && rows.length === 0 && (
-              <div className="p-6 text-fg-muted">
-                Nothing to triage. All external components have been processed.
+              <div className="p-6">
+                <EmptyState
+                  icon={CheckCircle2}
+                  title="No external components"
+                  description="All extracted external components have either been linked, marked, merged, or skipped."
+                />
               </div>
             )}
             {rows.length > 0 && (
@@ -189,7 +198,7 @@ export function TriagePage() {
         </div>
 
         {/* Decision panel */}
-        <aside className="border-l border-border bg-bg-elevated overflow-auto">
+        <aside className="overflow-auto border-t border-border bg-bg-elevated xl:border-l xl:border-t-0">
           {mode === "facts" && selectedFact && (
             <FactDecisionPanel row={selectedFact} onSubmit={submitFact} onCancel={() => setSelectedFactId(null)} />
           )}
@@ -233,7 +242,7 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
+      className={`shrink-0 rounded-md border px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${
         active
           ? "border-accent/40 bg-accent/15 text-fg"
           : "border-transparent text-fg-muted hover:bg-bg hover:text-fg"
@@ -323,7 +332,7 @@ function FactDecisionPanel({
               key={a}
               type="button"
               onClick={() => setAction(a)}
-              className={`rounded-md border px-3 py-2 text-xs font-medium transition-colors ${
+              className={`rounded-md border px-3 py-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${
                 action === a
                   ? "border-accent bg-accent/15 text-fg"
                   : "border-border text-fg-muted hover:border-border-strong hover:text-fg"
@@ -450,7 +459,7 @@ function DecisionPanel({
               key={a}
               type="button"
               onClick={() => setAction(a)}
-              className={`rounded-md border px-3 py-2 text-xs font-medium transition-colors ${
+              className={`rounded-md border px-3 py-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${
                 action === a
                   ? "border-accent bg-accent/15 text-fg"
                   : "border-border text-fg-muted hover:border-border-strong hover:text-fg"
@@ -465,15 +474,14 @@ function DecisionPanel({
       {action === "mark_external" && (
         <div>
           <div className="text-xs uppercase tracking-wider text-fg-dim mb-1.5">Category</div>
-          <select
+          <Select
             value={category}
             onChange={(e) => setCategory(e.target.value)}
-            className="w-full h-9 rounded-md border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent"
           >
             {CATEGORIES.map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
-          </select>
+          </Select>
         </div>
       )}
 
@@ -492,17 +500,16 @@ function DecisionPanel({
       {action === "merge" && (
         <div>
           <div className="text-xs uppercase tracking-wider text-fg-dim mb-1.5">Merge into</div>
-          <select
+          <Select
             value={into}
             onChange={(e) => setInto(e.target.value)}
             required
-            className="w-full h-9 rounded-md border border-border bg-bg-elevated px-3 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent"
           >
             <option value="">Pick a component…</option>
             {realComponents.map((c) => (
               <option key={c.ref} value={c.ref}>{c.name}</option>
             ))}
-          </select>
+          </Select>
         </div>
       )}
 
