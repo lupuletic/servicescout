@@ -6,7 +6,9 @@
 #   the same image keeps the service count to one).
 # - Non-root user `cg` (uid/gid overridable via build arg + entrypoint).
 
-FROM nikolaik/python-nodejs:python3.12-nodejs22-slim AS base
+# Pinned by digest: the floating tag shipped Node 22.22.3 (CVE-2026-123865,
+# CVE-2026-123872). This digest carries Node 22.23.5. Bump deliberately.
+FROM nikolaik/python-nodejs:python3.12-nodejs22-slim@sha256:0555ee1790d31e3551d88fca32cc082892a5350debfc7dbd56c44367347a56bd AS base
 
 ARG GH_VERSION=2.62.0
 ARG PIP_INDEX_URL=
