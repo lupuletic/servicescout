@@ -251,7 +251,7 @@ test.beforeEach(async ({ page }) => {
 
 test("new crawl page summarizes saved seeds and starts a crawl", async ({ page }) => {
   await page.goto("/onboard");
-  await expect(page.getByRole("heading", { name: "New crawl" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Add seed" })).toBeVisible();
   await expect(page.getByText("2 selected")).toBeVisible();
   await expect(page.getByText("acme/storefront", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Budget (USD)")).toHaveValue("100");
